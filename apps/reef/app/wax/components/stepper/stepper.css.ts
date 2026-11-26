@@ -1,6 +1,6 @@
-import { recipe, style } from '@/wax/css'
+import { recipe, style } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
 export const journey = style({ display: 'flex', flexDirection: 'column', gap: 32, minWidth: 0 })
 export const rail = style({

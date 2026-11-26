@@ -3,10 +3,10 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { expect, waitFor, within } from 'storybook/test'
 
-import { Button, Dialog, Menu } from '@/wax/components'
-import { Tooltip } from '@/wax/components/tooltip'
+import { Button, Dialog, Menu } from '..'
+import { Tooltip } from '../tooltip'
 
-import { resizeViewport } from '../../../../.storybook/browser'
+import { resizeViewport } from '../../storybook/browser'
 
 const meta: Meta = {
   parameters: {

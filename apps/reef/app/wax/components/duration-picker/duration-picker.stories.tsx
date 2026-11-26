@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 
-import { Button } from '@/wax/components'
+import { Button } from '..'
 
 import { DurationPicker } from './duration-picker'
 

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Button, Inputs, Typography } from '@/wax/components'
+import { Button, Inputs, Typography } from '..'
 
 import { Container } from './container'
 

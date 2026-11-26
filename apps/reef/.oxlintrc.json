@@ -10,7 +10,7 @@
   },
   "overrides": [
     {
-      "files": [".storybook/**"],
+      "files": [".storybook/**", "app/wax/storybook/**"],
       "rules": {
         "no-underscore-dangle": "off",
         "no-shadow": "off",
@@ -33,11 +33,11 @@
             "paths": [
               {
                 "name": "@vanilla-extract/css",
-                "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+                "message": "Import from app/wax/css.ts instead, by a relative path, so wax rules land in the wax cascade layer."
               },
               {
                 "name": "@vanilla-extract/recipes",
-                "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+                "message": "Import from app/wax/css.ts instead, by a relative path, so wax rules land in the wax cascade layer."
               },
               {
                 "name": "lucide-react",

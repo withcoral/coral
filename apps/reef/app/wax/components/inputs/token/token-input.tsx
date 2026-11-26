@@ -1,8 +1,8 @@
 import { useState } from 'react'
 
-import * as Combobox from '@/wax/components/combobox'
-import { Container as ScrollArea } from '@/wax/components/scroll-area'
-import { Tooltip } from '@/wax/components/tooltip'
+import * as Combobox from '../../combobox'
+import { Container as ScrollArea } from '../../scroll-area'
+import { Tooltip } from '../../tooltip'
 
 import * as styles from './token-input.css'
 

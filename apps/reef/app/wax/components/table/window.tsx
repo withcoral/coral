@@ -1,5 +1,5 @@
 import { Fragment, useContext, useId, useLayoutEffect, useRef, type ReactNode } from 'react'
-import { fallbackVar } from '@/wax/css'
+import { fallbackVar } from '../../css'
 import { ReadingContext } from './reading-position'
 import * as styles from './table.css'
 

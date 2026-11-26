@@ -1,6 +1,6 @@
 import classNames from 'classnames'
 import { useRef } from 'react'
-import { Icon } from '@/wax/components/icon'
+import { Icon } from '../icon'
 import * as styles from './divider.css'
 
 /**

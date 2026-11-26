@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Button } from '@/wax/components'
-import { Pill } from '@/wax/components/pill'
+import { Button } from '..'
+import { Pill } from '../pill'
 
 import * as SettingRow from './index'
 

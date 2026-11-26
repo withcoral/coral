@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { expect, waitFor } from 'storybook/test'
 
-import { Button, Radio } from '@/wax/components'
+import { Button, Radio } from '..'
 
 const meta = {
   parameters: {

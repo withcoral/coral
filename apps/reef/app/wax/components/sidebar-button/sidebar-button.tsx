@@ -1,8 +1,8 @@
 import classNames from 'classnames'
 import React, { ElementType, useState } from 'react'
 
-import { Icon } from '@/wax/components/icon'
-import type { IconName } from '@/wax/components/icon'
+import { Icon } from '../icon'
+import type { IconName } from '../icon'
 
 import {
   activeClass,

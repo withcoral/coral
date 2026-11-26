@@ -4,7 +4,7 @@ import type { DateValue } from 'react-aria-components'
 import { CalendarDate, getLocalTimeZone, parseDate, today } from '@internationalized/date'
 import { useState } from 'react'
 
-import { Button } from '@/wax/components'
+import { Button } from '..'
 
 import { DatePicker } from './index'
 

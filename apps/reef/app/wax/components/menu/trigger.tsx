@@ -1,8 +1,8 @@
 import { Menu as BaseMenu } from '@base-ui/react/menu'
 import classNames from 'classnames'
 
-import { Container as ButtonContainer } from '@/wax/components/button/container'
-import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
+import { Container as ButtonContainer } from '../button/container'
+import { SidebarButton } from '../sidebar-button/sidebar-button'
 
 import * as styles from './menu.css'
 

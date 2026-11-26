@@ -1,9 +1,9 @@
-import { createTheme } from '@/wax/css'
+import { createTheme } from '../css'
 
-import { utils } from '@/styles/utils'
-import { paletteLight } from '@/wax/base/palette/palette-light'
-import { fontFamily } from '@/wax/theme/font.css'
-import { staticUtilities, theme } from '@/wax/theme/theme.css'
+import { utils } from '../styles/utils'
+import { paletteLight } from '../base/palette/palette-light'
+import { fontFamily } from './font.css'
+import { staticUtilities, theme } from './theme.css'
 
 export const lightThemeValues = {
   avatarFallback: {

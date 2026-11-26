@@ -3,10 +3,10 @@ import type { ReactNode } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect, within } from 'storybook/test'
 
-import { resizeViewport } from '../../../../.storybook/browser'
+import { resizeViewport } from '../../storybook/browser'
 
-import { Banner, Button, Typography } from '@/wax/components'
-import { Brand } from '@/wax/components/brand'
+import { Banner, Button, Typography } from '..'
+import { Brand } from '../brand'
 
 import { PageLayout, TopBar, type PageLayoutProps } from './page-layout'
 

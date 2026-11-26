@@ -1,8 +1,8 @@
-import { recipe, style } from '@/wax/css'
+import { recipe, style } from '../../css'
 
-import { darkTheme } from '@/wax/theme/theme-dark.css'
-import { lightTheme } from '@/wax/theme/theme-light.css'
-import { theme } from '@/wax/theme/theme.css'
+import { darkTheme } from '../../theme/theme-dark.css'
+import { lightTheme } from '../../theme/theme-light.css'
+import { theme } from '../../theme/theme.css'
 
 // A rounded square plate, so every logo has the same shape and reads on any surface.
 export const logoContainer = recipe({

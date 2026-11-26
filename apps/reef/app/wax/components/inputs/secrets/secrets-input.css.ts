@@ -1,7 +1,7 @@
-import { style } from '@/wax/css'
+import { style } from '../../../css'
 
-import { baseInput } from '@/wax/components/inputs/base-input.css'
-import { theme } from '@/wax/theme/theme.css'
+import { baseInput } from '../base-input.css'
+import { theme } from '../../../theme/theme.css'
 
 export const container = style([
   baseInput,

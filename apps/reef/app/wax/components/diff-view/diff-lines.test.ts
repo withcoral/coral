@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sourceLines } from '@/wax/components/code-block'
+import { sourceLines } from '../code-block'
 
 import { diffLines, foldUnchanged, shownLines, type DiffLine } from './diff-lines'
 

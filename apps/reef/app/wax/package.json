@@ -1,0 +1,68 @@
+{
+  "name": "@withcoral/wax",
+  "version": "0.0.0",
+  "description": "Wax, the Coral design system, as TypeScript source for a Vite app.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/withcoral/coral.git",
+    "directory": "apps/reef/app/wax"
+  },
+  "type": "module",
+  "files": [
+    "**",
+    "!**/*.test.ts",
+    "!**/*.test.tsx"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "main"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "@internationalized/date": "^3.12.4",
+    "@lezer/highlight": "^1.2.5",
+    "@lezer/javascript": "^1.5.6",
+    "@lezer/json": "^1.0.3",
+    "@tanstack/react-virtual": "^3.14.25",
+    "@vanilla-extract/recipes": "^0.5.7",
+    "classnames": "^2.5.1",
+    "lucide-react": "^1.66.0",
+    "react-aria": "^3.53.1",
+    "react-aria-components": "^1.22.1",
+    "react-markdown": "^10.1.0",
+    "react-toastify": "^11.2.0",
+    "tinykeys": "^4.0.1"
+  },
+  "peerDependencies": {
+    "@storybook/icons": "^2.2.0",
+    "@storybook/react-vite": "^10.6.5",
+    "@vanilla-extract/css": "^1.21.3",
+    "@vanilla-extract/vite-plugin": "^5.2.6",
+    "jotai": "^3.0.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-hook-form": "^7.91.0",
+    "react-router": "^8.5.1",
+    "storybook": "^10.6.5",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "peerDependenciesMeta": {
+    "@storybook/icons": {
+      "optional": true
+    },
+    "@storybook/react-vite": {
+      "optional": true
+    },
+    "react-hook-form": {
+      "optional": true
+    },
+    "storybook": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
+  }
+}

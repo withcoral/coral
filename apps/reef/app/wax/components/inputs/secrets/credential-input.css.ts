@@ -1,4 +1,4 @@
-import { style } from '@/wax/css'
+import { style } from '../../../css'
 
 // Room at the end of the input for the reveal button.
 export const input = style({ paddingInlineEnd: '36px' })

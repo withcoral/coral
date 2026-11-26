@@ -1,5 +1,5 @@
-import { style, styleVariants } from '@/wax/css'
-import { theme } from '@/wax/theme/theme.css'
+import { style, styleVariants } from '../../../css'
+import { theme } from '../../../theme/theme.css'
 
 const track = style({
   display: 'flex',

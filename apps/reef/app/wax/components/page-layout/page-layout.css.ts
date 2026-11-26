@@ -1,8 +1,8 @@
-import { recipe, style } from '@/wax/css'
+import { recipe, style } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
-import { breakpoints } from '@/styles/breakpoints'
+import { breakpoints } from '../../styles/breakpoints'
 
 import { TOP_BAR_HEIGHT_PX } from './constants'
 

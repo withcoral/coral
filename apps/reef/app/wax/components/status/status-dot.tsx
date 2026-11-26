@@ -1,4 +1,4 @@
-import { Icon } from '@/wax/components/icon'
+import { Icon } from '../icon'
 
 import * as styles from './status.css'
 

@@ -13,7 +13,7 @@ import {
   inTestBrowser,
   press,
   resizeViewport,
-} from '../../../.storybook/browser'
+} from '@/wax/storybook/browser'
 
 // Real keypresses in Chromium: focus order, what the reader sees, and keys that
 // race a record load. Key ownership and traversal rules are keyboard.test.tsx's

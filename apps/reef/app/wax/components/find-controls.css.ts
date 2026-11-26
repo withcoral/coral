@@ -1,4 +1,4 @@
-import { style } from '@/wax/css'
+import { style } from '../css'
 
 export const find = style({
   alignItems: 'center',

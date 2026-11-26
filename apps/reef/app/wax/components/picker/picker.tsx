@@ -1,7 +1,7 @@
 import classNames from 'classnames'
-import { Button, Menu, Typography } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
-import type { IconColor, IconName } from '@/wax/components/icon'
+import { Button, Menu, Typography } from '..'
+import { Icon } from '../icon'
+import type { IconColor, IconName } from '../icon'
 
 import * as styles from './picker.css'
 

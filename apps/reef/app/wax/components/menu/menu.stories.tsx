@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { expect, screen, waitFor } from 'storybook/test'
 
-import { Button, Menu } from '@/wax/components'
+import { Button, Menu } from '..'
 
 const meta: Meta<typeof Menu.Container> = {
   component: Menu.Container,

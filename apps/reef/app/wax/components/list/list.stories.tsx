@@ -2,9 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { fn } from 'storybook/test'
 
-import { utils } from '@/styles/utils'
-import { List } from '@/wax/components'
-import { theme } from '@/wax/theme/theme.css'
+import { utils } from '../../styles/utils'
+import { List } from '..'
+import { theme } from '../../theme/theme.css'
 
 const meta: Meta<typeof List.Container> = {
   component: List.Container,

@@ -1,7 +1,7 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { Button, Dialog } from '@/wax/components'
-import { visuallyHidden } from '@/wax/components/visually-hidden.css'
+import { Button, Dialog } from '..'
+import { visuallyHidden } from '../visually-hidden.css'
 import * as styles from './navigation-frame.css'
 
 interface Drawer {

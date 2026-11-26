@@ -4,7 +4,7 @@ import { Table } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
 import { Person, personLabel } from './person'
 import type { PersonView } from './types'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 
 interface MemberRow {
   key: string

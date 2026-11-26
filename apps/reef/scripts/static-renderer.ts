@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
@@ -35,11 +35,14 @@ export async function buildStaticRenderer<T>(entry: URL): Promise<{ css: string;
     .map((file) => (file.type === 'asset' ? Buffer.from(file.source).toString('utf8') : ''))
     .join('\n')
   // Self-contained fonts work on the auth listener and in private evidence
-  // viewers without a dependency on Reef's static-file listener.
-  for (const match of css.matchAll(/url\(["']?(\/fonts\/[\w./-]+\.woff2)["']?\)/g)) {
-    const font = await readFile(`${root}/public${match[1]}`)
-    css = css.replaceAll(match[0], `url(data:font/woff2;base64,${font.toString('base64')})`)
+  // viewers without a dependency on Reef's static-file listener. Wax names its
+  // fonts by a relative path, so the build emits each one beside the stylesheet.
+  for (const file of bundle.output) {
+    if (file.type !== 'asset' || !file.fileName.endsWith('.woff2')) continue
+    const font = Buffer.from(file.source).toString('base64')
+    css = css.replaceAll(`/${file.fileName}`, `data:font/woff2;base64,${font}`)
   }
+  if (/url\((?!["']?data:)/.test(css)) throw new Error('Static styles name a file by its URL')
   // The vanilla-extract plugin keeps `@vanilla-extract/css` external for SSR,
   // so import the bundle from where Node resolves Reef's packages.
   const temporary = await mkdtemp(join(root, 'node_modules', '.coral-static-renderer-'))

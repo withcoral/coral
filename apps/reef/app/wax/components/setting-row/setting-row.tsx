@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { Typography } from '@/wax/components/typography'
+import { Typography } from '../typography'
 
 import * as styles from './setting-row.css'
 

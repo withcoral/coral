@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { parseSync, traverse } from '@babel/core'
 
+import { runtimeImports } from '../wax/vite.js'
+
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const componentsDir = path.join(appDir, 'components')
 const routesDir = path.join(appDir, 'routes')
@@ -630,3 +632,173 @@ it('guards every route action with mutationForm or names why not', () => {
     'Remove allowlist entries whose route no longer has an action.',
   ).toEqual([])
 })
+
+// Wax is published as `@withcoral/wax`: the folder `app/wax` is the package, as source.
+// Reef reads it as its own files and never installs it, so nothing else in Reef's gates
+// notices a file, a manifest entry or a pre-bundle entry that only an installed copy needs.
+describe('the Wax package', () => {
+  const waxDir = path.join(appDir, 'wax')
+  const waxFiles = filesUnder(waxDir, (name) => /\.(?:tsx?|css)$/.test(name))
+
+  it('imports nothing outside itself', () => {
+    const violations = waxFiles.flatMap((file) =>
+      moduleSpecifiers(file)
+        .filter(({ specifier }) => {
+          if (specifier.startsWith('.')) {
+            return !within(path.resolve(path.dirname(file), specifier), waxDir)
+          }
+          // `@/` and `~/` are Reef's aliases, and a path from `/` is Reef's `public` folder.
+          return /^[@~]?\//.test(specifier)
+        })
+        .map(({ specifier }) => `${path.relative(appDir, file)} -> ${specifier}`),
+    )
+
+    expect(
+      violations,
+      'app/wax is published as @withcoral/wax, and an app that installs it has only the ' +
+        'files in that folder. Import a Wax file by a relative path. Move a helper that Wax ' +
+        'needs into app/wax; Reef then imports it from @/wax.',
+    ).toEqual([])
+  })
+
+  it('declares each package it imports, at the range Reef installs', () => {
+    const wax = readManifest(path.join(waxDir, 'package.json'))
+    const reef = readManifest(path.join(coralWebRoot, 'package.json'))
+    const declared = { ...wax.dependencies, ...wax.peerDependencies }
+    const installed = { ...reef.dependencies, ...reef.devDependencies }
+
+    // The unit tests stay out of the tarball, so what only they import is not declared.
+    const undeclared = waxFiles
+      .filter((file) => !/\.test\.tsx?$/.test(file))
+      .flatMap((file) =>
+        moduleSpecifiers(file)
+          .map(({ specifier }) => packageName(specifier))
+          .filter((name) => name !== null && !(name in declared))
+          .map((name) => `${path.relative(appDir, file)} -> ${name}`),
+      )
+    expect(
+      undeclared,
+      'app/wax/package.json must declare each package that a published Wax file imports. ' +
+        'A peer is a package that holds state the app shares with Wax, such as React. ' +
+        'An optional peer is one that only the stories and their helpers import.',
+    ).toEqual([])
+
+    // An app builds Wax against its own lockfile, so Wax states the versions it was
+    // tested with. A package that Reef pins to one version takes a caret, or an app
+    // would have to move that package in the same change as Wax.
+    const tested = Object.fromEntries(
+      Object.keys(declared).map((name) => [
+        name,
+        /^\d/.test(installed[name] ?? '') ? `^${installed[name]}` : installed[name],
+      ]),
+    )
+    expect(
+      declared,
+      'Each range in app/wax/package.json must equal the range in apps/reef/package.json. ' +
+        'Change both files together.',
+    ).toEqual(tested)
+  })
+
+  it('lists each run-time import for the dev server of an app', () => {
+    const imported = waxFiles
+      // A test and a story never reach an app's pages, and a `.css.ts` file runs at
+      // build time and leaves only class names.
+      .filter((file) => /\.tsx?$/.test(file) && !/\.(?:test|stories|css|d)\.tsx?$/.test(file))
+      .filter((file) => !within(file, path.join(waxDir, 'storybook')))
+      .flatMap((file) => moduleSpecifiers(file))
+      .filter(({ runtime, specifier }) => runtime && packageName(specifier) !== null)
+      .map(({ specifier }) => specifier)
+    // The Vanilla Extract plugin writes this import into each compiled recipe.
+    const expected = new Set([...imported, '@vanilla-extract/recipes/createRuntimeFn'])
+
+    expect(
+      runtimeImports,
+      'runtimeImports in app/wax/vite.js must name each specifier that a Wax file imports ' +
+        'at run time, in order. The dev server of an app pre-bundles only what the list ' +
+        'names, and a CommonJS package that it misses fails in the browser.',
+    ).toEqual([...expected].toSorted())
+  })
+})
+
+/** The packages a `package.json` names, by section. */
+function readManifest(file: string) {
+  return JSON.parse(fs.readFileSync(file, 'utf8')) as Record<
+    'dependencies' | 'devDependencies' | 'peerDependencies',
+    Record<string, string> | undefined
+  >
+}
+
+/** The package a bare specifier names, or null for a path, an alias or a Node built-in. */
+function packageName(specifier: string): string | null {
+  if (/^[./~]|^@\/|^node:/.test(specifier)) return null
+  // addon-vitest 10 names this Vitest 4 path, and an app maps it to `vitest/browser`.
+  if (specifier === '@vitest/browser/context') return 'vitest'
+  return specifier
+    .split('/')
+    .slice(0, specifier.startsWith('@') ? 2 : 1)
+    .join('/')
+}
+
+/**
+ * Each module a file names: an import, a re-export, a dynamic `import()`, a Vitest mock,
+ * and in a stylesheet an `@import` or a `url()`. `runtime` is false for a type-only one.
+ */
+function moduleSpecifiers(file: string): { runtime: boolean; specifier: string }[] {
+  const source = fs.readFileSync(file, 'utf8')
+  if (file.endsWith('.css')) {
+    return [
+      ...source.matchAll(/@import\s+(?:url\(\s*)?['"]([^'"]+)['"]/g),
+      ...source.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g),
+    ]
+      .map((match) => match[1])
+      .filter((specifier) => !/^(?:data:|https?:|#)/.test(specifier))
+      .map((specifier) => ({ runtime: false, specifier }))
+  }
+
+  const found: { runtime: boolean; specifier: string }[] = []
+  const ast = parseSync(source, {
+    babelrc: false,
+    configFile: false,
+    parserOpts: { plugins: file.endsWith('.tsx') ? ['typescript', 'jsx'] : ['typescript'] },
+  })!
+  traverse(ast, {
+    ImportDeclaration({ node }) {
+      const typeOnly =
+        node.importKind === 'type' ||
+        (node.specifiers.length > 0 &&
+          node.specifiers.every(
+            (specifier) => specifier.type === 'ImportSpecifier' && specifier.importKind === 'type',
+          ))
+      found.push({ runtime: !typeOnly, specifier: node.source.value })
+    },
+    ExportNamedDeclaration({ node }) {
+      if (node.source) {
+        found.push({ runtime: node.exportKind !== 'type', specifier: node.source.value })
+      }
+    },
+    ExportAllDeclaration({ node }) {
+      found.push({ runtime: node.exportKind !== 'type', specifier: node.source.value })
+    },
+    CallExpression({ node }) {
+      const [first] = node.arguments
+      if (first?.type !== 'StringLiteral') return
+      const { callee } = node
+      const mock =
+        callee.type === 'MemberExpression' &&
+        callee.object.type === 'Identifier' &&
+        callee.object.name === 'vi' &&
+        callee.property.type === 'Identifier' &&
+        /^(?:mock|doMock|unmock|importActual|importMock)$/.test(callee.property.name)
+      if (mock) found.push({ runtime: false, specifier: first.value })
+    },
+    ImportExpression({ node }) {
+      if (node.source.type === 'StringLiteral') {
+        found.push({ runtime: true, specifier: node.source.value })
+      }
+    },
+    TSImportType({ node }) {
+      found.push({ runtime: false, specifier: node.source.value })
+    },
+  })
+  return found
+}

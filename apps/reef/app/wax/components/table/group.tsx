@@ -11,10 +11,10 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react'
-import * as Button from '@/wax/components/button'
+import * as Button from '../button'
 import { Row, type RowProps } from './row'
 import { Cell } from './cell'
-import { Typography } from '@/wax/components/typography'
+import { Typography } from '../typography'
 import { GROUP_DEPTH_PROPERTY } from './constants'
 import * as styles from './table.css'
 

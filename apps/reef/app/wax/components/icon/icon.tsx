@@ -1,7 +1,7 @@
 import classnames from 'classnames'
 
-import { customIcons, isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
-import type { CustomIconName } from '@/wax/components/icon/custom-icons/custom-icons'
+import { customIcons, isCustomIcon } from './custom-icons/custom-icons'
+import type { CustomIconName } from './custom-icons/custom-icons'
 
 import { iconContainer, plate } from './icon.css'
 import type { IconContainerVariants } from './icon.css'

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { animations } from '@/wax/animations'
-import { Icon } from '@/wax/components/icon'
+import { animations } from '.'
+import { Icon } from '../components/icon'
 
 const SpinDemo = () => <Icon className={animations.spinAnimation} color="tertiary" name="Loader" />
 

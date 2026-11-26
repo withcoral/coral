@@ -1,8 +1,8 @@
 import classNames from 'classnames'
 import type React from 'react'
 
-import { Icon } from '@/wax/components/icon'
-import type { IconName } from '@/wax/components/icon'
+import { Icon } from '../icon'
+import type { IconName } from '../icon'
 
 import * as styles from './banner.css'
 

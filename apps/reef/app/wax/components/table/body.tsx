@@ -1,7 +1,7 @@
 import classNames from 'classnames'
 import type { PropsWithChildren, Ref } from 'react'
 
-import { Container as ScrollArea } from '@/wax/components/scroll-area'
+import { Container as ScrollArea } from '../scroll-area'
 
 import { useTableLayout } from './columns-context'
 import * as styles from './table.css'

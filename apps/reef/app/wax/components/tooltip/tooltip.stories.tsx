@@ -4,9 +4,9 @@ import { Info } from 'lucide-react'
 import { useState } from 'react'
 import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 
-import { IconButton } from '@/wax/components/button/icon-button'
-import { Icon } from '@/wax/components/icon'
-import { Pill } from '@/wax/components/pill/pill'
+import { IconButton } from '../button/icon-button'
+import { Icon } from '../icon'
+import { Pill } from '../pill/pill'
 
 import { InfoTip } from './info-tip'
 import { Tooltip } from './tooltip'

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { Icon } from '@/wax/components/icon'
+import { Icon } from '../icon'
 
 import type { TableSort } from './constants'
 import * as styles from './table.css'

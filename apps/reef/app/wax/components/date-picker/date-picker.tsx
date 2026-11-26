@@ -8,8 +8,8 @@ import {
   Group,
 } from 'react-aria-components'
 
-import { Button } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
+import { Button } from '..'
+import { Icon } from '../icon'
 
 import { Calendar } from './calendar'
 import { Popover } from './popover'

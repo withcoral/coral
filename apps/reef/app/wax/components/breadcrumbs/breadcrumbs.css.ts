@@ -1,6 +1,6 @@
-import { style } from '@/wax/css'
+import { style } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
 // Every part is set in the button-strong style: links at their 32 size, the
 // current page and the separators to match.

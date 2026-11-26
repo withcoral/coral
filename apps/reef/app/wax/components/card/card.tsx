@@ -1,9 +1,9 @@
 import classNames from 'classnames'
 import React, { ElementType, ReactNode } from 'react'
 
-import { Pill, type PillProps } from '@/wax/components/pill'
-import { Tooltip } from '@/wax/components/tooltip'
-import { Typography } from '@/wax/components/typography'
+import { Pill, type PillProps } from '../pill'
+import { Tooltip } from '../tooltip'
+import { Typography } from '../typography'
 
 import * as styles from './card.css'
 import { Container } from './container'

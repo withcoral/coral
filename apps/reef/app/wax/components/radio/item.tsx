@@ -1,7 +1,7 @@
 import { Radio as BaseRadio } from '@base-ui/react/radio'
 import classNames from 'classnames'
 import { useId, type ReactNode } from 'react'
-import { Typography } from '@/wax/components/typography'
+import { Typography } from '../typography'
 
 import * as styles from './radio.css'
 

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 
-import { animations } from '@/wax/animations'
+import { animations } from '../../animations'
 import { TextButton } from '../button/text-button'
 import { Icon } from '../icon'
 import { Typography } from '../typography'

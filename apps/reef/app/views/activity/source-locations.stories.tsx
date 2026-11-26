@@ -7,7 +7,7 @@ import { ActionReviewSession } from '../actions/review'
 import { Activity } from './activity'
 import { activityPage } from './fixtures'
 import type { ActivityPage, ActivityRow, RecordSourceLocation, RunDetail, RunEvent } from './types'
-import { resizeViewport } from '../../../.storybook/browser'
+import { resizeViewport } from '@/wax/storybook/browser'
 
 const workspace = 'workspaces/finance'
 const runName = `${workspace}/runs/reminder-batch`

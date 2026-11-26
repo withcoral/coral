@@ -1,7 +1,7 @@
 import classNames from 'classnames'
 import type { ReactNode } from 'react'
 
-import type { FilterQuery } from '@/utils/filter-query'
+import type { FilterQuery } from '../utils/filter-query'
 
 import * as styles from './highlighted-matches.css'
 

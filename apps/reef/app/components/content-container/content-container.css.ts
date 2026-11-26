@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
-import { breakpoints } from '@/styles/breakpoints'
+import { breakpoints } from '@/wax/styles/breakpoints'
 import { theme } from '@/wax/theme/theme.css'
 
 import { FRAME_INSET_PX, FRAME_LINE_PX } from './constants'

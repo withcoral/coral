@@ -1,6 +1,6 @@
-import { style } from '@/wax/css'
+import { style } from '../../css'
 
-import { animation, theme } from '@/wax/theme/theme.css'
+import { animation, theme } from '../../theme/theme.css'
 
 export const group = style({
   alignItems: 'center',

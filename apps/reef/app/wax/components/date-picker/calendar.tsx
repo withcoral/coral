@@ -13,7 +13,7 @@ import {
   Heading,
 } from 'react-aria-components'
 
-import { Button, Typography } from '@/wax/components'
+import { Button, Typography } from '..'
 
 import * as styles from './calendar.css'
 

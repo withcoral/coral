@@ -1,6 +1,6 @@
-import { style, styleVariants } from '@/wax/css'
+import { style, styleVariants } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
 /** The logo and the name on one line, which gives way to the name's ellipsis. */
 export const root = style({

@@ -1,4 +1,4 @@
-import { style } from '@/wax/css'
+import { style } from '../../css'
 
 export const root = style({ gap: 16, minWidth: 0 })
 export const intro = style({ display: 'flex', flexDirection: 'column', gap: 8 })

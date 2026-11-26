@@ -1,7 +1,7 @@
-import { createVar, recipe } from '@/wax/css'
-import type { RecipeVariants } from '@/wax/css'
+import { createVar, recipe } from '../../css'
+import type { RecipeVariants } from '../../css'
 
-import { animation, staticUtilities, theme } from '@/wax/theme/theme.css'
+import { animation, staticUtilities, theme } from '../../theme/theme.css'
 
 import { button, disabledClass } from './button.css'
 

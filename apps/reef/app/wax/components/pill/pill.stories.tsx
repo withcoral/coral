@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Icon } from '@/wax/components/icon'
+import { Icon } from '../icon'
 
 import { Pill } from './pill'
 

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
-import { darkTheme } from '@/wax/theme/theme-dark.css'
+import { isCustomIcon } from './custom-icons/custom-icons'
+import { darkTheme } from '../../theme/theme-dark.css'
 
 import { Icon, IconPlate } from './icon'
 import type { IconColor, IconName } from './icon'

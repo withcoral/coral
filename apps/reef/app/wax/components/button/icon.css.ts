@@ -1,7 +1,7 @@
-import { keyframes, recipe, style } from '@/wax/css'
-import type { RecipeVariants } from '@/wax/css'
+import { keyframes, recipe, style } from '../../css'
+import type { RecipeVariants } from '../../css'
 
-import { staticUtilities, theme } from '@/wax/theme/theme.css'
+import { staticUtilities, theme } from '../../theme/theme.css'
 
 import { button, disabledClass } from './button.css'
 

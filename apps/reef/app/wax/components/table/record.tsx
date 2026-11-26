@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import * as Button from '@/wax/components/button'
-import { Icon, type IconName } from '@/wax/components/icon'
-import { Pill } from '@/wax/components/pill'
+import * as Button from '../button'
+import { Icon, type IconName } from '../icon'
+import { Pill } from '../pill'
 import * as styles from './record.css'
 
 /** A summary label with hierarchy controls. Exact evidence never belongs in this cell. */

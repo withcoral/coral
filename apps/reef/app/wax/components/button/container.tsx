@@ -1,7 +1,7 @@
 import classNames from 'classnames'
 import React, { ComponentProps, ElementType } from 'react'
 
-import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
+import type { ButtonSize, ButtonVariant } from './button.css'
 
 import { button, disabledClass } from './button.css'
 import {

@@ -1,7 +1,7 @@
 import { Popover } from '@base-ui/react/popover'
 
-import { Icon } from '@/wax/components/icon'
-import { Typography } from '@/wax/components/typography'
+import { Icon } from '../icon'
+import { Typography } from '../typography'
 
 import type { TooltipProps } from './tooltip'
 import * as styles from './tooltip.css'

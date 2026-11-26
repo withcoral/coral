@@ -1,6 +1,6 @@
-import { recipe, style } from '@/wax/css'
+import { recipe, style } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
 // Capped at its container, so a narrow table cell truncates the pill's text
 // instead of clipping the pill.

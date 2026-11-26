@@ -1,9 +1,9 @@
 import { Tabs as BaseTabs } from '@base-ui/react/tabs'
 import classNames from 'classnames'
 
-import { Icon, type IconName } from '@/wax/components/icon'
-import { SkeletonText } from '@/wax/components/skeleton'
-import { Typography } from '@/wax/components/typography'
+import { Icon, type IconName } from '../icon'
+import { SkeletonText } from '../skeleton'
+import { Typography } from '../typography'
 
 import * as styles from './metric.css'
 

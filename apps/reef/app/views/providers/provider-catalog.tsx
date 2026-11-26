@@ -9,7 +9,7 @@ import {
   type SourceChoice,
 } from '@/lib/provider-recipes/choice'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import { filterQuery, type FilterQuery } from '@/utils/filter-query'
+import { filterQuery, type FilterQuery } from '@/wax/utils/filter-query'
 import * as styles from './providers.css'
 import type { ProviderLogo } from './types'
 

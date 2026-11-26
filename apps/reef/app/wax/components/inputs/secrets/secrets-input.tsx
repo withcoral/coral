@@ -1,7 +1,7 @@
 import classNames from 'classnames'
 import { useState } from 'react'
 
-import { IconButton } from '@/wax/components/button'
+import { IconButton } from '../../button'
 
 import * as styles from './secrets-input.css'
 

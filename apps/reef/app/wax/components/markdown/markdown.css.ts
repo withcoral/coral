@@ -1,6 +1,6 @@
-import { globalStyle, style, styleVariants } from '@/wax/css'
+import { globalStyle, style, styleVariants } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
 export const root = style({
   ...theme.typography.bodySmall,

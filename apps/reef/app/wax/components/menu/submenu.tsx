@@ -2,9 +2,9 @@ import { Menu as BaseMenu } from '@base-ui/react/menu'
 import classNames from 'classnames'
 import { RefObject } from 'react'
 
-import { Icon } from '@/wax/components/icon'
-import type { IconName } from '@/wax/components/icon'
-import { Tooltip } from '@/wax/components/tooltip'
+import { Icon } from '../icon'
+import type { IconName } from '../icon'
+import { Tooltip } from '../tooltip'
 
 import { hideWhileClosing } from './content'
 import * as styles from './menu.css'

@@ -2,7 +2,7 @@ import { Tabs as BaseTabs } from '@base-ui/react/tabs'
 import classNames from 'classnames'
 import { useEffect, useRef } from 'react'
 
-import { Container as ScrollArea } from '@/wax/components/scroll-area'
+import { Container as ScrollArea } from '../scroll-area'
 
 import * as styles from './tabs.css'
 

@@ -1,7 +1,7 @@
 import { createContainer, style } from '@vanilla-extract/css'
 
-import { breakpoints } from '@/styles/breakpoints'
-import { utils } from '@/styles/utils'
+import { breakpoints } from '@/wax/styles/breakpoints'
+import { utils } from '@/wax/styles/utils'
 import { theme } from '@/wax/theme/theme.css'
 
 export const stack = style({ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 })

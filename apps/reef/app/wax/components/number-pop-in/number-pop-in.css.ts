@@ -1,4 +1,4 @@
-import { keyframes, style } from '@/wax/css'
+import { keyframes, style } from '../../css'
 
 // Number pop-in (transitions.dev): each character rises into place as it fades in
 // and sharpens, with a slight overshoot, one after another.

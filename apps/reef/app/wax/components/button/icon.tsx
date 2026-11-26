@@ -1,8 +1,8 @@
 import classNames from 'classnames'
 
-import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
-import { Icon as BaseIcon } from '@/wax/components/icon'
-import type { IconName, IconSize } from '@/wax/components/icon'
+import type { ButtonSize, ButtonVariant } from './button.css'
+import { Icon as BaseIcon } from '../icon'
+import type { IconName, IconSize } from '../icon'
 
 import { iconContainer, spinning } from './icon.css'
 

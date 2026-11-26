@@ -5,8 +5,8 @@ import { Tree, filterNodes, type TreeNode } from '@/wax/components/tree'
 
 import { DestinationList, destinationGroups, toolCount } from './configuration-details'
 import { REFRESH_NEW, REFRESH_REMOVED, reviewToolNodes } from './tree-model'
-import { countLabel } from '@/utils/count-label'
-import { filterQuery } from '@/utils/filter-query'
+import { countLabel } from '@/wax/utils/count-label'
+import { filterQuery } from '@/wax/utils/filter-query'
 import type { LiveToolView, SetupView } from './types'
 import * as styles from './providers.css'
 

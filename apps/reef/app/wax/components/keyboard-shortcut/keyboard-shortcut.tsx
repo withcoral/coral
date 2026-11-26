@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 import { tinykeys } from 'tinykeys'
 
-import { KeyboardHint } from '@/wax/components/keyboard-hint'
-import { Tooltip } from '@/wax/components/tooltip'
+import { KeyboardHint } from '../keyboard-hint'
+import { Tooltip } from '../tooltip'
 
 export type KeyboardShortcutProps =
   | KeyboardShortcutWithoutTooltipProps

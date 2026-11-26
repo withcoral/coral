@@ -1,8 +1,8 @@
-import { createVar, globalStyle, keyframes, style, styleVariants } from '@/wax/css'
+import { createVar, globalStyle, keyframes, style, styleVariants } from '../../css'
 
-import { utils } from '@/styles/utils'
-import { stickyBottom, stickyTop } from '@/wax/components/card/card.css'
-import { animation, staticUtilities, theme, zIndex } from '@/wax/theme/theme.css'
+import { utils } from '../../styles/utils'
+import { stickyBottom, stickyTop } from '../card/card.css'
+import { animation, staticUtilities, theme, zIndex } from '../../theme/theme.css'
 
 export const backdrop = style({
   backgroundColor: staticUtilities.black,

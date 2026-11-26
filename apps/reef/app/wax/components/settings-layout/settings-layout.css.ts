@@ -1,7 +1,7 @@
-import { globalStyle, style } from '@/wax/css'
+import { globalStyle, style } from '../../css'
 
-import { breakpoints } from '@/styles/breakpoints'
-import { theme } from '@/wax/theme/theme.css'
+import { breakpoints } from '../../styles/breakpoints'
+import { theme } from '../../theme/theme.css'
 
 // One resource's settings: the header over a column of cards, with an optional
 // aside beside them, and removal closing the page apart from the rest.

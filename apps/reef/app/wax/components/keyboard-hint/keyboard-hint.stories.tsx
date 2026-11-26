@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Tooltip } from '@/wax/components/tooltip'
+import { Tooltip } from '../tooltip'
 
 import { KeyboardHint } from './keyboard-hint'
 

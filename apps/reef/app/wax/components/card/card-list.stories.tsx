@@ -3,8 +3,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Link, MemoryRouter } from 'react-router'
 import { fn } from 'storybook/test'
 
-import { Card } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
+import { Card } from '..'
+import { Icon } from '../icon'
 
 type StoryCard = Pick<Card.CardProps, 'description' | 'headerPill' | 'icon' | 'title'> & {
   id: string

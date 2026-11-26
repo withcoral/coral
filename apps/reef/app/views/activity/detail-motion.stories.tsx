@@ -12,7 +12,7 @@ import {
   inTestBrowser,
   press,
   recordAnimations,
-} from '../../../.storybook/browser'
+} from '@/wax/storybook/browser'
 
 // The selected record's slide between records of one Run, in Chromium: its
 // direction, what it leaves alone, and when it replaces the record at once.

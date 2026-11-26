@@ -1,7 +1,7 @@
 import { Field } from '@base-ui/react/field'
 import classNames from 'classnames'
 
-import { Container as ScrollArea } from '@/wax/components/scroll-area'
+import { Container as ScrollArea } from '../../scroll-area'
 
 import * as styles from './text-area.css'
 

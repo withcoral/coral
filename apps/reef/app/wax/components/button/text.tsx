@@ -1,8 +1,8 @@
 import classNames from 'classnames'
 import React from 'react'
 
-import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
-import { Tooltip } from '@/wax/components/tooltip'
+import type { ButtonSize, ButtonVariant } from './button.css'
+import { Tooltip } from '../tooltip'
 
 import { text } from './text.css'
 

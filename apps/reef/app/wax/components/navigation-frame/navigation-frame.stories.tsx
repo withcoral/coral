@@ -1,8 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
-import { Button, Typography } from '@/wax/components'
-import { PageLayout } from '@/wax/components/page-layout'
+import { Button, Typography } from '..'
+import { PageLayout } from '../page-layout'
 import { NavigationFrame, NavigationRoot } from './navigation-frame'
 
 const meta = {

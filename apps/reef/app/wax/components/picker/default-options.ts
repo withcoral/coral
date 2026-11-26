@@ -1,5 +1,5 @@
-import type { IconColor, IconName } from '@/wax/components/icon'
-import type { PickerProps } from '@/wax/components/picker/picker'
+import type { IconColor, IconName } from '../icon'
+import type { PickerProps } from './picker'
 
 export const STATUS_PICKER_OPTIONS: PickerProps['options'] = [
   { icon: { color: 'error', name: 'CircleDot' }, label: 'Open', value: 'OPEN' },

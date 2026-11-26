@@ -1,6 +1,6 @@
-import { style } from '@/wax/css'
+import { style } from '../../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../../theme/theme.css'
 
 export const container = style({
   display: 'block',

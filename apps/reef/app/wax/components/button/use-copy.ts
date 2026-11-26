@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { addToast } from '@/wax/components/toast'
+import { addToast } from '../toast'
 
 const COPIED_MS = 3000
 

@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 
-import { Button } from '@/wax/components'
+import { Button } from '..'
 import { Container } from './scroll-area'
 
 const meta: Meta<typeof Container> = {

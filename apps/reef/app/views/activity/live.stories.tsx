@@ -13,7 +13,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
-import { recordAnimations } from '../../../.storybook/browser'
+import { recordAnimations } from '@/wax/storybook/browser'
 import {
   activityPage,
   approvalRequest,

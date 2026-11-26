@@ -8,8 +8,8 @@ import type {
   SetupView,
 } from './types'
 import * as styles from './providers.css'
-import { countLabel } from '@/utils/count-label'
-import { filterQuery } from '@/utils/filter-query'
+import { countLabel } from '@/wax/utils/count-label'
+import { filterQuery } from '@/wax/utils/filter-query'
 
 /** The one label each credential method has, wherever a method is named. */
 export const authenticationLabels: Record<CredentialMethod | '', string> = {

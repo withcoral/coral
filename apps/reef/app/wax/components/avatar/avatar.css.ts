@@ -1,7 +1,7 @@
-import { recipe, style } from '@/wax/css'
-import type { RecipeVariants } from '@/wax/css'
+import { recipe, style } from '../../css'
+import type { RecipeVariants } from '../../css'
 
-import { animation, theme } from '@/wax/theme/theme.css'
+import { animation, theme } from '../../theme/theme.css'
 
 export const avatarContainer = recipe({
   base: {

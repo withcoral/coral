@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { expect } from 'storybook/test'
-import { Button, Typography } from '@/wax/components'
+import { Button, Typography } from '..'
 import { NumberPopIn } from './number-pop-in'
 
 const meta: Meta = { parameters: { layout: 'centered' }, title: 'Wax/NumberPopIn' }

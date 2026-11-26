@@ -1,6 +1,6 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import { useEffect, useEffectEvent, useState } from 'react'
-import * as Button from '@/wax/components/button'
+import * as Button from '../button'
 import { Backdrop } from './backdrop'
 import { Close } from './close'
 import { Header } from './header'

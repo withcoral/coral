@@ -1,7 +1,7 @@
 import { Menu as BaseMenu } from '@base-ui/react/menu'
 import classNames from 'classnames'
 
-import { Typography } from '@/wax/components/typography'
+import { Typography } from '../typography'
 
 import * as styles from './menu.css'
 

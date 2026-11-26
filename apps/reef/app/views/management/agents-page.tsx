@@ -14,7 +14,7 @@ import { ArchivedBanner, ManagementLayout, trail } from './layout'
 import { Person } from './person'
 import type { ActionResult, AgentView, FormContext, WorkspaceView } from './types'
 import * as styles from './management.css'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 
 type StatusFilter = 'all' | 'ready' | 'blocked'
 

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Typography } from '@/wax/components'
+import { Typography } from '..'
 import { TextLink } from './text-link'
 
 const meta = {

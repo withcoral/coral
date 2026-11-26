@@ -2,8 +2,8 @@ import { useAtom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
 import { useSyncExternalStore } from 'react'
 
-import { darkTheme } from '@/wax/theme/theme-dark.css'
-import { lightTheme } from '@/wax/theme/theme-light.css'
+import { darkTheme } from './theme-dark.css'
+import { lightTheme } from './theme-light.css'
 
 type Theme = 'dark' | 'light'
 type ThemePreference = 'dark' | 'light' | 'system'

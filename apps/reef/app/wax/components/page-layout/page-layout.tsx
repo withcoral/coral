@@ -1,11 +1,11 @@
 import classNames from 'classnames'
 import type { ReactNode } from 'react'
 
-import { Breadcrumbs, type Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
-import { NavigationTrigger } from '@/wax/components/navigation-frame/navigation-frame'
+import { Breadcrumbs, type Segment } from '../breadcrumbs/breadcrumbs'
+import { NavigationTrigger } from '../navigation-frame/navigation-frame'
 
-import * as ScrollArea from '@/wax/components/scroll-area'
-import { lightTheme } from '@/wax/theme/theme-light.css'
+import * as ScrollArea from '../scroll-area'
+import { lightTheme } from '../../theme/theme-light.css'
 import * as styles from './page-layout.css'
 
 interface PageLayoutBaseProps {

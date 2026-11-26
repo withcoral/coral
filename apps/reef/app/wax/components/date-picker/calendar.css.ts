@@ -1,6 +1,6 @@
-import { globalStyle, style } from '@/wax/css'
+import { globalStyle, style } from '../../css'
 
-import { animation, theme } from '@/wax/theme/theme.css'
+import { animation, theme } from '../../theme/theme.css'
 
 export const calendar = style({
   display: 'flex',

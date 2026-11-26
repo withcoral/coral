@@ -1,7 +1,7 @@
 import { Combobox as BaseCombobox } from '@base-ui/react/combobox'
 import classNames from 'classnames'
 
-import { Icon } from '@/wax/components/icon'
+import { Icon } from '../icon'
 
 import * as styles from './combobox.css'
 

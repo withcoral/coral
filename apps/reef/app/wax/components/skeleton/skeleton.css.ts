@@ -1,6 +1,6 @@
-import { keyframes, style } from '@/wax/css'
+import { keyframes, style } from '../../css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { theme } from '../../theme/theme.css'
 
 const shimmer = keyframes({
   '0%': {

@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 
-import { countLabel } from '@/utils/count-label'
-import { Container as ScrollArea } from '@/wax/components/scroll-area'
-import { Typography } from '@/wax/components/typography'
-import { visuallyHidden } from '@/wax/components/visually-hidden.css'
+import { countLabel } from '../../utils/count-label'
+import { Container as ScrollArea } from '../scroll-area'
+import { Typography } from '../typography'
+import { visuallyHidden } from '../visually-hidden.css'
 
 import { diffLines, foldUnchanged, shownLines } from './diff-lines'
 import * as styles from './diff-view.css'

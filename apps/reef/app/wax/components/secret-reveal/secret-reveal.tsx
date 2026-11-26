@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react'
 
-import { Banner } from '@/wax/components/banner'
-import { Button } from '@/wax/components'
-import { Container } from '@/wax/components/card/container'
-import { Typography } from '@/wax/components/typography'
+import { Banner } from '../banner'
+import { Button } from '..'
+import { Container } from '../card/container'
+import { Typography } from '../typography'
 
 import * as styles from './secret-reveal.css'
 

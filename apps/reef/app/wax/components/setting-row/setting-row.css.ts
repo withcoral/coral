@@ -1,7 +1,7 @@
-import { style } from '@/wax/css'
+import { style } from '../../css'
 
-import { breakpoints } from '@/styles/breakpoints'
-import { theme } from '@/wax/theme/theme.css'
+import { breakpoints } from '../../styles/breakpoints'
+import { theme } from '../../theme/theme.css'
 
 export const list = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 export const row = style({

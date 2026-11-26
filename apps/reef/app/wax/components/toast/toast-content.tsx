@@ -1,10 +1,10 @@
 import type React from 'react'
 
-import { IconButton } from '@/wax/components/button/icon-button'
-import { TextButton } from '@/wax/components/button/text-button'
-import { Icon } from '@/wax/components/icon/icon'
-import type { IconColor, IconName } from '@/wax/components/icon/icon'
-import { Typography } from '@/wax/components/typography/typography'
+import { IconButton } from '../button/icon-button'
+import { TextButton } from '../button/text-button'
+import { Icon } from '../icon/icon'
+import type { IconColor, IconName } from '../icon/icon'
+import { Typography } from '../typography/typography'
 
 import type { ToastAction, ToastVariant } from './toast'
 

@@ -2,9 +2,9 @@ import React from 'react'
 import { Link } from 'react-router'
 import { To } from 'react-router'
 
-import { Button } from '@/wax/components'
+import { Button } from '..'
 import type { ButtonVariant } from './button.css'
-import type { IconName } from '@/wax/components/icon'
+import type { IconName } from '../icon'
 
 interface ButtonLinkProps {
   children: React.ReactNode

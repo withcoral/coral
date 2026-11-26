@@ -1,7 +1,7 @@
-import { style } from '@/wax/css'
+import { style } from '../../css'
 
-import { breakpoints } from '@/styles/breakpoints'
-import { theme } from '@/wax/theme/theme.css'
+import { breakpoints } from '../../styles/breakpoints'
+import { theme } from '../../theme/theme.css'
 
 export const section = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 export const title = style({ paddingBottom: 8 })

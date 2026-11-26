@@ -1,6 +1,6 @@
-import { keyframes, style } from '@/wax/css'
+import { keyframes, style } from '../../css'
 
-import { theme, zIndex } from '@/wax/theme/theme.css'
+import { theme, zIndex } from '../../theme/theme.css'
 
 const fadeIn = keyframes({
   from: {

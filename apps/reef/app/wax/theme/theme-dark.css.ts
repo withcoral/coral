@@ -1,9 +1,9 @@
-import { createTheme } from '@/wax/css'
+import { createTheme } from '../css'
 
-import { utils } from '@/styles/utils'
-import { paletteDark } from '@/wax/base/palette/palette-dark'
-import { fontFamily } from '@/wax/theme/font.css'
-import { theme } from '@/wax/theme/theme.css'
+import { utils } from '../styles/utils'
+import { paletteDark } from '../base/palette/palette-dark'
+import { fontFamily } from './font.css'
+import { theme } from './theme.css'
 
 export const darkThemeValues = {
   avatarFallback: {

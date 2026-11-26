@@ -1,5 +1,5 @@
-import { style } from '@/wax/css'
-import { theme } from '@/wax/theme/theme.css'
+import { style } from '../../css'
+import { theme } from '../../theme/theme.css'
 
 // The tiles share the card's top edge; the chosen one carries a rule along its foot.
 export const metricList = style({
