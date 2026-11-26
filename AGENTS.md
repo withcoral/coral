@@ -73,6 +73,10 @@
   metric catalog, and export filtering in `coral-telemetry`. Domain modules own
   signal timing and record metrics through `coral_telemetry::metric`.
   Application bootstrap owns exporter configuration.
+- A Run Executor opens no span: Coral opens every span of a Run and of a
+  compile. A number that only a Run Executor knows is a metric that the Run
+  Executor records through its own exporter, not a new field on the link
+  (ADR 0027).
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 - A build that Coral publishes sets `RUSTY_V8_ARCHIVE_SHA256` to its target's
   digest in `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8
