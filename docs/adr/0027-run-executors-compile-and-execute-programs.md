@@ -375,7 +375,8 @@ and the options not chosen.
 - **Coral reads the queue from the database.** Every Coral Instance reads the Runs waiting, the oldest wait and the
   Runs held on a period, and reports the same values. A backend takes their maximum, not their sum.
 - **Each side reports what it holds.** A Coral Instance reports the Run Executors whose pull stream it holds, by kind.
-  A Run Executor reports its free room and its maximum. No metric carries a Run Executor's id.
+  A Run Executor reports its free room and its maximum. No metric attribute names a Run Executor's id: only a Run
+  Executor's own telemetry carries it, as its instance id.
 - **Coral counts** the put-backs, the reconnects and the relayed compiles. A rejected output stays counted in Coral,
   from OutputRejected.
 - **Logs.** Coral logs each refused dial with its reason. A Run Executor logs once when its link goes down and once
