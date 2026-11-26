@@ -11,6 +11,7 @@ import { useEffect } from 'react'
 import { expect, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
+import { resizeViewport } from '../../../.storybook/browser'
 import { Activity } from './activity'
 import { MIN_LIVE_RECORD_STAY_MS, TAKS_MAX_AGE } from './navigation'
 import { ActionReviewSession } from '../actions/review'
@@ -515,6 +516,23 @@ async function surface({ canvasElement, userEvent }: Play) {
         .getAllByRole('button', { name: 'Live' })
         .find((button) => !button.closest('[role="dialog"]'))!,
     railToggle: (name: string) => within(rail()).getByRole('button', { name }),
+    /** The live toggle in the header of the Task the waterfall shows. */
+    taskToggle: () =>
+      within(screen.getByRole('region', { name: 'Task' })).getByRole('button', {
+        name: 'Follow this task',
+      }),
+    /**
+     * Waits until the header above the waterfall states the Task `heading`, which the address
+     * selects. A Task opens no rail, and the table holds no row of it to select.
+     */
+    selectsTask: (heading: string) =>
+      waitFor(() => {
+        const header = screen.getByRole('region', { name: 'Task' })
+        expect(within(header).getByRole('heading', { name: heading, level: 2 })).toBeVisible()
+        expect(address().get('record')).toMatch(/\/tasks\/[^/]+$/)
+        expect(screen.queryByRole('dialog', { name: /^Activity details$/ })).toBeNull()
+        expect(table.querySelectorAll('[role="row"][aria-selected="true"]')).toHaveLength(0)
+      }, stays),
     press: (name: string) => userEvent.click(canvas.getByRole('button', { name })),
     idle: async () => {
       await waitFor(() => expect(canvas.getByLabelText('Navigation')).toHaveTextContent('idle'))
@@ -551,7 +569,8 @@ export const OpensActivityThenStaysOnIt: Story = {
   beforeEach: () => world.reset([]),
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, press, selects, closed, idle, canvas } = await surface(context)
+    const { latest, address, press, selects, selectsTask, closed, idle, canvas } =
+      await surface(context)
     const before = address().toString()
 
     // With no record yet, live mode waits, and the rail stays closed.
@@ -568,7 +587,7 @@ export const OpensActivityThenStaysOnIt: Story = {
 
     // A new Task without a Run opens in the rail. Focus stays on the control you used.
     await press('Add task')
-    await selects('Task t1', 'Task t1')
+    await selectsTask('Task t1')
     await expect(canvas.getByRole('button', { name: 'Add task' })).toHaveFocus()
     latest().focus()
     await press('Add run to newest task')
@@ -629,13 +648,17 @@ export const KeepsWhatYouExpanded: Story = {
     await expect(address().get('record')).toBe(runRow('s2', '').name)
     await expect(address().getAll('expand')).toEqual([task, runRow('s2', '').name])
 
-    // A Run you pick opens. As before, picking a record turns live mode off, and keeps
-    // what live mode expanded open. Later activity never takes the selection back.
-    await userEvent.click(canvas.getByRole('link', { name: 'run r1' }))
-    await selects('Run r1', 'run r1')
+    // The list opens another top-level record's waterfall. As before, your own pick turns
+    // live mode off, and the waterfall shows that record alone. Beside a docked rail the
+    // list shows only on a very wide screen.
+    await resizeViewport(2000, 900)
+    await userEvent.click(await canvas.findByRole('link', { name: 'Task kept' }))
     await waitFor(() => expect(address().has('live')).toBe(false))
     await expect(address().has('liveExpanded')).toBe(false)
-    await expect(address().getAll('expand')).toContain(runRow('s2', '').name)
+    await expect(address().getAll('expand')).toEqual([task])
+    // A Run you pick there opens. Later activity never takes the selection back.
+    await userEvent.click(await canvas.findByRole('link', { name: 'run r1' }))
+    await selects('Run r1', 'run r1')
     await press('Add standalone run')
     await idle()
     await selects('Run r1', 'run r1')
@@ -865,7 +888,7 @@ export const PassesTasksOlderThanAnHour: Story = {
   },
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, press, selects, closed, idle } = await surface(context)
+    const { latest, address, press, selectsTask, closed, idle } = await surface(context)
 
     // The Task started over an hour ago: live mode opens neither it nor its Run.
     await userEvent.click(latest())
@@ -876,7 +899,7 @@ export const PassesTasksOlderThanAnHour: Story = {
 
     // A Task that starts now opens.
     await press('Add task')
-    await selects('Task t1', 'Task t1')
+    await selectsTask('Task t1')
   },
 }
 
@@ -923,14 +946,16 @@ export const FollowsTheTaskYouOpen: Story = {
   },
   play: async (context) => {
     const { userEvent } = context
-    const { railToggle, address, press, selects, latest, idle } = await surface(context)
-    await selects('Task work', 'Task work')
+    const { railToggle, taskToggle, address, press, selects, selectsTask, latest, idle } =
+      await surface(context)
+    await selectsTask('Task work')
 
-    // From the Task, live mode starts on its first Run that has not ended.
-    await userEvent.click(railToggle('Follow this task'))
+    // From the Task's header, live mode starts on its first Run that has not ended.
+    await userEvent.click(taskToggle())
     await selects('call.w2-op-1', 'call.w2-op-1')
     await expect(address().get('live')).toBe('task')
     await expect(railToggle('Follow this task')).toHaveAttribute('aria-pressed', 'true')
+    await expect(taskToggle()).toHaveAttribute('aria-pressed', 'true')
     await expect(latest()).toHaveAttribute('aria-pressed', 'false')
 
     // When that Run ends, it selects the Run itself. It never moves on to the
@@ -1004,12 +1029,15 @@ export const StopsAtTheExpansionLimit: Story = {
     await userEvent.hover(latest())
     await expect(
       // The tooltip itself, not the toggle's hidden description.
-      await screen.findByText('Collapse a record before you follow the latest activity.', {
-        selector: ':not([id])',
-      }),
+      await screen.findByText(
+        'Too many records are open. Open a task or run from the list first.',
+        {
+          selector: ':not([id])',
+        },
+      ),
     ).toBeVisible()
     await expect(latest()).toHaveAccessibleDescription(
-      'Collapse a record before you follow the latest activity.',
+      'Too many records are open. Open a task or run from the list first.',
     )
     // Pressed, the toggle still turns live mode off.
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
@@ -1150,7 +1178,7 @@ export const PassesARunThatAKeptWindowSaysRuns: Story = {
   },
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, press, selects, idle } = await surface(context)
+    const { latest, address, press, selects, selectsTask, idle } = await surface(context)
     const a = runRow('a', keptTask).name
     await userEvent.click(latest())
     await selects('Run a', 'run a')
@@ -1158,9 +1186,9 @@ export const PassesARunThatAKeptWindowSaysRuns: Story = {
     // `a` and its Task end. The older Task's window still says `a` runs. Nothing runs,
     // so live mode shows the newest record and stays there.
     await press('End oldest task')
-    await selects('Task newer', 'Task newer')
+    await selectsTask('Task newer')
     await idle()
-    await selects('Task newer', 'Task newer')
+    await selectsTask('Task newer')
     await expect(address().get('record')).toBe(nextTask)
 
     // A new Run of the newer Task opens, with no further click.

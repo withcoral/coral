@@ -11,13 +11,16 @@ import * as styles from './description-list.css'
  * `compact` suits a form's short facts: the labels take one column as wide as the widest,
  * and each row is as tall as a control, so a value can be a picker.
  *
+ * `inline` suits a few short facts in a header: they stand side by side, each label over
+ * its value, and wrap onto more lines where the room ends.
+ *
  * A `total` row closes a list of amounts that add up. */
 export function List({
   title,
   heading,
   density = 'default',
   children,
-}: { children: ReactNode; density?: 'default' | 'compact' } & (
+}: { children: ReactNode; density?: 'default' | 'compact' | 'inline' } & (
   | { title: string; heading: 'h2' | 'h3' | 'h4' }
   | { title?: undefined; heading?: undefined }
 )) {
@@ -29,7 +32,13 @@ export function List({
           {title}
         </Typography.BodySmallStrong>
       )}
-      <dl className={classNames(styles.list, density === 'compact' && styles.compactList)}>
+      <dl
+        className={classNames(
+          styles.list,
+          density === 'compact' && styles.compactList,
+          density === 'inline' && styles.inlineList,
+        )}
+      >
         {children}
       </dl>
     </section>
@@ -49,7 +58,7 @@ export function Row({
 }) {
   const Label = total ? Typography.BodySmallStrong : Typography.BodySmall
   return (
-    <div className={classNames(styles.row, total && styles.total)}>
+    <div className={classNames(styles.row, styles.inlineRow, total && styles.total)}>
       <Label as="dt" className={styles.label}>
         {label}
       </Label>

@@ -71,6 +71,50 @@ describe('Table Group', () => {
     expect(onClick).toHaveBeenCalledOnce()
   })
 
+  // Catches: a record heading under ungrouped rows that reads as a top-level row.
+  it('gives a record heading the level its record states', () => {
+    render(
+      <Container columns={columns}>
+        <Group
+          label="Call"
+          heading={<Cell fullWidth>Call</Cell>}
+          headingRow={{ recordKey: 'calls/one', 'aria-level': 3 }}
+        >
+          <Row>
+            <Cell>child</Cell>
+          </Row>
+        </Group>
+      </Container>,
+    )
+    expect(screen.getByRole('row', { name: 'Call' })).toHaveAttribute('aria-level', '3')
+  })
+
+  // Catches: a record that takes a double click as a plain row and loses it once it heads
+  // the rows under it, or a plain row that takes it as two clicks only.
+  it('takes a double click on a row and on a record heading alike', async () => {
+    const onClick = vi.fn()
+    const onDoubleClick = vi.fn()
+    render(
+      <Container columns={columns}>
+        <Group
+          label="Call"
+          heading={<Cell fullWidth>Call</Cell>}
+          headingRow={{ recordKey: 'calls/one', onClick, onDoubleClick }}
+        >
+          <Row onClick={onClick} onDoubleClick={onDoubleClick}>
+            <Cell>child</Cell>
+          </Row>
+        </Group>
+      </Container>,
+    )
+    await userEvent.dblClick(screen.getByRole('row', { name: 'Call' }))
+    expect(onDoubleClick).toHaveBeenCalledOnce()
+    await userEvent.dblClick(screen.getByRole('row', { name: 'child' }))
+    expect(onDoubleClick).toHaveBeenCalledTimes(2)
+    // Each double click is also two clicks, as the browser reports it.
+    expect(onClick).toHaveBeenCalledTimes(4)
+  })
+
   // Catches: a cursor heading that loses its mark to a record heading's own
   // state, or a toggle click that also opens the record.
   it('keeps the cursor mark beside a record heading, and its toggle apart from the row', async () => {

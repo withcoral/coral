@@ -94,11 +94,16 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
         query.append('expand', run)
         await page.goto(`/workspaces/${workspace}/activity?${query}`)
         expect(await root.getByRole('cell').last().innerText()).toBe(total)
-        expect(await table.locator('[aria-label$="B saved"]').count()).toBe(4)
-        // The log and the emission; the return value is the Run's own, on its panel.
-        expect(await table.locator('[aria-label$="B added"]').count()).toBe(2)
+        // The waterfall reads every Run of the Task: the Task, both Runs, and each Run's
+        // one tool call.
+        await expect
+          .poll(() => table.locator('[aria-label$="B saved"]').count(), { timeout: 15_000 })
+          .toBe(5)
+        // The log and the emission are marks on their Run; the return value is the Run's
+        // own, on its panel.
+        expect(await table.locator('[data-timeline-mark][title$="B added"]').count()).toBe(2)
         expect(await page.content()).not.toContain('x'.repeat(100))
-        await table.locator(`[data-record-key="${run}"]`).locator('a[href]').click()
+        await table.locator(`[data-record-key="${run}"]`).locator('[data-record-link]').click()
         await shownPayload(page, '"ok"').waitFor()
         await page
           .getByRole('region', { name: 'Agent context', exact: true })

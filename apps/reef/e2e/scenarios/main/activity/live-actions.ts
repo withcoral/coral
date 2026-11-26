@@ -107,8 +107,19 @@ export async function liveActions(context: TestContext) {
     const selected = rail.getByRole('region', { name: 'Selected record' })
     const toggle = rail.getByRole('button', { name: 'Follow latest record', exact: true })
     const address = () => new URL(page.url()).searchParams
+    /** The record the waterfall shows as selected: an Event's mark, or else a record's row. */
     const selectedKey = () =>
-      table.locator('[role=row][aria-selected=true]').first().getAttribute('data-record-key')
+      table.evaluate((element) => {
+        const mark = element.querySelector<HTMLAnchorElement>(
+          '[data-timeline-mark][aria-current="true"]',
+        )
+        if (mark) return new URL(mark.href).searchParams.get('record')
+        return (
+          element
+            .querySelector('[role=row][aria-selected=true]')
+            ?.getAttribute('data-record-key') ?? null
+        )
+      })
     /** Live mode is on in the address and on the toggle in the record's own header. */
     const following = async (on: boolean) => {
       await expect.poll(() => address().get('live')).toBe(on ? '1' : null)
@@ -191,12 +202,14 @@ export async function liveActions(context: TestContext) {
       // The table shows the newest log, so the stream delivered it to this page.
       const log = await newest()
       expect(log).toMatch(/\/events\/\d+$/)
-      // The background table is virtualized beneath the pending-action cards.
-      // Scroll its viewport without selecting a record; this does not turn Live off.
+      // A log is a mark on its Run's row. Scroll the table without selecting a record;
+      // this does not turn Live off.
       await table.evaluate((port) => {
         port.scrollTop = port.scrollHeight
       })
-      await table.locator(`[data-record-key="${log}"]`).waitFor({ state: 'attached' })
+      await table
+        .locator(`a[data-timeline-mark][href*="${encodeURIComponent(log!)}"]`)
+        .waitFor({ state: 'attached' })
       await reviews(0)
       await following(true)
       expect(page.url()).toBe(before)
@@ -242,12 +255,16 @@ export async function liveActions(context: TestContext) {
 
     // The page's own live toggle, above the list.
     const latest = page.getByRole('button', { name: 'Live', exact: true })
-    /** Reads deep into the long Run's records, away from the newest top-level records. */
+    /**
+     * Reads deep into the waterfall, away from its first records. A long Run's logs are
+     * marks on its row, so its waterfall is a few rows: a low window makes the table
+     * shorter than they are.
+     */
     const readDeep = async () => {
+      await page.setViewportSize({ width: page.viewportSize()!.width, height: 420 })
       await table.evaluate((port) => {
         port.scrollTop = port.scrollHeight
       })
-      // Away from the top, Coral's snapshots hold only the records near the viewport.
       await expect.poll(() => table.evaluate((port) => port.scrollTop)).toBeGreaterThan(1)
     }
     /** Starts a Task whose Run holds on the gate. Returns the Run and its held call. */

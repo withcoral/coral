@@ -75,8 +75,10 @@ test('Someone with no workspace lands on a page that creates their first one', a
           taskIntent: 'First MCP goal',
         })
         await observeRun(runner, await runner.exec('return 1;'))
+        // The list names the goal, and so does its waterfall beside the list.
         await content
           .getByRole('link', { name: 'First MCP goal', exact: true })
+          .first()
           .waitFor({ timeout: 10_000 })
         expect(await content.getByText('No activity yet', { exact: true }).count()).toBe(0)
         expect(

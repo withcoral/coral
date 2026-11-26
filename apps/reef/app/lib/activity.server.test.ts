@@ -18,6 +18,16 @@ import { AccountConnectionState } from '@/generated/coral/management/v1/account_
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
 import { ACTIVITY_CHILD_WINDOW } from './activity-live-types'
+import {
+  absorbPage,
+  missingWindows,
+  nextTraceRequest,
+  openTrace,
+  receiveTrace,
+  traceChildren,
+  traceProgress,
+  traceQuery,
+} from './activity-trace'
 import { approvalReading, loadActivity, loadRunActivity, pendingActions } from './activity.server'
 
 const workspace = 'workspaces/00000000-0000-4000-8000-000000000001'
@@ -735,6 +745,25 @@ function windowsRead(calls: { method: string; input: unknown }[]) {
 }
 
 describe('tool calls inside tool calls', () => {
+  // Catches: a trace that asks for a tool call's calls in a way the loader does not answer,
+  // so the waterfall never shows them or says they are unavailable.
+  it('gives a trace the calls each tool’s body made, down to the innermost', async () => {
+    const { api } = coral(list(), taskDetail(), nestedCalls())
+    let store = openTrace(task)
+    for (let reads = 0; reads < 10; reads++) {
+      const next = nextTraceRequest(store)
+      if (!next) break
+      const query = traceQuery(store, next)
+      store = receiveTrace(
+        store,
+        next,
+        await loadActivity(new Request(`http://reef/activity?${query}`), api, { scope }),
+      )
+    }
+    expect(traceChildren(store, nested.outer).map((row) => row.name)).toEqual([nested.inner])
+    expect(traceChildren(store, nested.inner).map((row) => row.name)).toEqual([nested.leaf])
+    expect(traceProgress(store)).toMatchObject({ complete: true, unavailable: false })
+  })
   // Catches: a Run that lists the calls a tool's body made beside the program's own, or an
   // expanded call that lists none, or another call's.
   it('lists each call inside the tool call whose body made it', async () => {
@@ -1014,7 +1043,8 @@ describe('hierarchical activity through the private server interface', () => {
       expect(page.branches[run].rows).toHaveLength(1)
       const markup = renderActivity(location.pathname + location.search, page)
       expect(markup).not.toContain('Outside this workspace or page:')
-      expect(markup.match(/aria-selected="true"/g)).toHaveLength(1)
+      // The list marks the open Task, and the waterfall marks the Run that holds the Event.
+      expect(markup.match(/role="row"[^>]*aria-selected="true"/g)).toHaveLength(2)
     },
   )
   it('keeps a terminal Event anchor after closing detail and paging away', async () => {
@@ -1184,6 +1214,62 @@ describe('hierarchical activity through the private server interface', () => {
       expect(calls.find((call) => call.method === 'entries')?.input).toMatchObject({ name: run })
       expect(page.detail).toBeNull()
       expect(JSON.stringify(page)).not.toMatch(/secretSource|private@example/)
+    },
+  )
+  // Catches: a trace that takes the number of rows for the length of the window. The
+  // loader adds the expanded Run to its Task's rows from outside the window it read.
+  it.each([0n, 200n])(
+    'gives a trace the ordinals of a Task window with a Run from outside it (ordinal %s)',
+    async (position) => {
+      const { api } = coral(
+        list(),
+        taskDetail({ outOfWindow: true }),
+        runEntries({ submissionPosition: position }),
+      )
+      const store = openTrace(task)
+      const windows = { windows: [{ parent: task, offset: 100 }] } as const
+      const query = traceQuery(store, {
+        windows: [...windows.windows, { parent: run, offset: 0 }],
+      })
+      const page = await loadActivity(new Request(`http://reef/activity?${query}`), api, { scope })
+      const held = Object.keys(absorbPage(store, page).branches[task]!.rows).map(Number)
+      expect(held).toEqual(position === 0n ? [0, 100] : [100, 200])
+      // Only those two ordinals are read: every other one is still missing.
+      expect(missingWindows(absorbPage(store, page).branches[task])).toEqual(
+        position === 0n
+          ? [
+              { from: 1, to: 100 },
+              { from: 101, to: 300 },
+            ]
+          : [
+              { from: 0, to: 100 },
+              { from: 101, to: 200 },
+              { from: 201, to: 300 },
+            ],
+      )
+    },
+  )
+  // Catches: a Run's records staying on screen after Coral refuses to return them, or a
+  // passing fault treated as that refusal.
+  it.each([Code.NotFound, Code.PermissionDenied])(
+    'makes a trace drop the records of a Run that Coral refuses with code %s',
+    async (code) => {
+      const windows = [
+        { parent: task, offset: 0 },
+        { parent: run, offset: 0 },
+      ]
+      const read = async (entries: Handlers) => {
+        const { api } = coral(list(), taskDetail(), entries)
+        const query = traceQuery(openTrace(task), { windows })
+        return loadActivity(new Request(`http://reef/activity?${query}`), api, { scope })
+      }
+      let store = receiveTrace(openTrace(task), { windows }, await read(runEntries()))
+      expect(traceChildren(store, run).length).toBeGreaterThan(0)
+      store = receiveTrace(store, { windows }, await read(runEntries({ runUnavailable: code })))
+      expect(traceChildren(store, run)).toEqual([])
+      expect(traceProgress(store)).toMatchObject({ complete: false, unavailable: true })
+      // A fault that passes is no refusal: the read fails, and the trace keeps what it holds.
+      await expect(read(runEntries({ runUnavailable: Code.Unavailable }))).rejects.toThrow()
     },
   )
   it.each([

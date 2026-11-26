@@ -19,6 +19,8 @@ export type RowProps = PropsWithChildren<{
   status?: { tone: 'success' | 'error' | 'warning' | 'neutral'; label: string }
   /** Opens the row's detail; the row shows a pointer. */
   onClick?: MouseEventHandler<HTMLDivElement>
+  /** A second action on the row, such as fitting a chart to it. It never replaces `onClick`. */
+  onDoubleClick?: MouseEventHandler<HTMLDivElement>
   /**
    * Makes the whole row a link to this path. A click anywhere in the row follows
    * it, except on a control or link inside the row, which keeps its own behavior.
@@ -72,6 +74,7 @@ function RowElement({
   recordKey,
   status,
   onClick,
+  onDoubleClick,
   'aria-busy': busy,
   'aria-level': level,
   'data-index': index,
@@ -92,6 +95,7 @@ function RowElement({
       aria-busy={busy}
       aria-level={level}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       style={style}
       aria-selected={selected || undefined}
       data-status={status?.tone}

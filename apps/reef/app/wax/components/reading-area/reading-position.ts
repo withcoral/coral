@@ -106,10 +106,16 @@ export class ReadingPosition extends Component<ReadingPositionProps> {
     const { pinnedSelector } = this.props
     const port = this.props.element.current!
     if (!pinnedSelector) return top
-    // Each enclosing group's heading pins above the row while its rows scroll.
+    // Each enclosing group's heading pins above the row while its rows scroll, unless the
+    // table is too short to pin it: the heading then scrolls away with its rows.
     for (let group = row.parentElement; group && group !== port; group = group.parentElement) {
       const heading = group.firstElementChild
-      if (heading !== row && heading instanceof HTMLElement && heading.matches(pinnedSelector))
+      if (
+        heading !== row &&
+        heading instanceof HTMLElement &&
+        heading.matches(pinnedSelector) &&
+        getComputedStyle(heading).position === 'sticky'
+      )
         top += heading.getBoundingClientRect().height
     }
     return top
@@ -246,16 +252,37 @@ export class ReadingPosition extends Component<ReadingPositionProps> {
     if (reveal && this.revealed !== reveal) {
       const row = this.rows().find((item) => item.dataset.recordKey === reveal)
       if (row) {
-        const box = this.anchorBox(row)
-        const bottom = port.getBoundingClientRect().top + port.clientHeight
-        const top = this.revealTop(row)
-        if (box.top < top || box.height > bottom - top) port.scrollTop += box.top - top
-        else if (box.bottom > bottom) port.scrollTop += box.bottom - bottom
+        this.bringIntoView(row)
         this.revealed = reveal
         onStartChange?.(port.scrollTop <= 1)
       }
     }
     if (followStart && port.scrollTop > 1) onStartChange?.(false)
+    this.capture()
+  }
+  /** Scrolls the least that shows `row` in full, under the headings pinned above it. */
+  private bringIntoView(row: HTMLElement) {
+    const port = this.props.element.current!
+    const box = this.anchorBox(row)
+    const bottom = port.getBoundingClientRect().top + port.clientHeight
+    const top = this.revealTop(row)
+    if (box.top < top || box.height > bottom - top) port.scrollTop += box.top - top
+    else if (box.bottom > bottom) port.scrollTop += box.bottom - bottom
+  }
+  /**
+   * A port that changes size, as when a panel opens beside it, never cuts the revealed
+   * record while it is on screen. A record the reader scrolled away from stays away.
+   */
+  private keepRevealed() {
+    const port = this.props.element.current
+    const { key, paused, reveal } = this.props.options
+    if (!port || !key || paused || !reveal || this.revealed !== reveal) return
+    const row = this.rows().find((item) => item.dataset.recordKey === reveal)
+    if (!row) return
+    const box = this.anchorBox(row)
+    const bottom = port.getBoundingClientRect().top + port.clientHeight
+    if (box.bottom <= this.headingBottom() || box.top >= bottom) return
+    this.bringIntoView(row)
     this.capture()
   }
   private sizeWindows() {
@@ -370,6 +397,7 @@ export class ReadingPosition extends Component<ReadingPositionProps> {
     if (saved && Math.abs(port.scrollTop - saved.top) > 1) this.capture()
     this.sizeWindows()
     this.restore()
+    this.keepRevealed()
     this.schedule()
   }
   componentDidMount() {

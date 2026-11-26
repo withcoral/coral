@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { ElapsedDuration } from './duration'
+import { ElapsedDuration, RecordedDuration } from './duration'
 import { Link } from 'react-router'
 import { List, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
@@ -31,6 +31,7 @@ import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
 import { ParentInvocationName } from './called-from'
 import { Panel } from './panel'
+import { isOngoing } from './trace'
 import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
 import * as styles from './task-activity.css'
@@ -402,6 +403,13 @@ function RecordDetail({ page }: { page: ActivityPage }) {
   // The call's own times, closing the one list a search, describe, exec or save shows.
   const times = detail.kind === 'tool' && (
     <>
+      <DescriptionList.Row label="Duration">
+        <RecordedDuration
+          startedAt={detail.interaction.startedAt}
+          endedAt={detail.interaction.completedAt}
+          ongoing={false}
+        />
+      </DescriptionList.Row>
       <DescriptionList.Row label="Started">
         <Instant value={detail.interaction.startedAt} />
       </DescriptionList.Row>
@@ -449,6 +457,13 @@ function RecordDetail({ page }: { page: ActivityPage }) {
               <ContextImpact
                 bytes={detail.task.contextImpactBytes}
                 partial={detail.task.contextImpactPartial}
+              />
+            </DescriptionList.Row>
+            <DescriptionList.Row label="Duration">
+              <RecordedDuration
+                startedAt={detail.task.startedAt}
+                endedAt={detail.task.endedAt}
+                ongoing={isOngoing({ kind: 'task', ...detail.task })}
               />
             </DescriptionList.Row>
             <DescriptionList.Row label="Started">

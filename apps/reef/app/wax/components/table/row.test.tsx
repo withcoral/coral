@@ -133,7 +133,40 @@ describe('Table row cursor', () => {
     await userEvent.keyboard('{ArrowDown}')
     expect(screen.getByRole('link', { name: 'visible' })).toHaveFocus()
   })
+
+  // A page whose other controls own the arrows lets them reach the rows from its background only.
+  it('with background reach, takes ↓ from the page background but not from another control', async () => {
+    const Stub = createRoutesStub([{ path: '/', Component: BackgroundReach }])
+    render(<Stub initialEntries={['/']} />)
+    const other = screen.getByRole('button', { name: 'Other' })
+    other.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(other).toHaveFocus()
+    other.blur()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(screen.getByRole('link', { name: 'first' })).toHaveFocus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(screen.getByRole('link', { name: 'second' })).toHaveFocus()
+  })
 })
+
+function BackgroundReach() {
+  const table = useRowCursor({ reach: 'background' })
+  return (
+    <>
+      <button type="button">Other</button>
+      <Container ref={table} columns={[{ label: 'Name' }]}>
+        {['first', 'second'].map((name) => (
+          <Row key={name} to={`/${name}`}>
+            <Cell>
+              <RowLink to={`/${name}`}>{name}</RowLink>
+            </Cell>
+          </Row>
+        ))}
+      </Container>
+    </>
+  )
+}
 
 function LinkTable({ name }: { name: string }) {
   const table = useRowCursor()

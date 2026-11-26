@@ -177,6 +177,9 @@ function MotionRoute() {
       <button type="button" onClick={() => open(unloaded)}>
         Open unloaded tool
       </button>
+      <button type="button" onClick={() => open(audited)}>
+        Open audit tool
+      </button>
       <Activity page={page} windowKey="motion" />
     </ActionReviewSession>
   )
@@ -452,21 +455,29 @@ export const SlidesThroughLogsAndEmissions: Story = {
       rail().focus()
       await press('{ArrowDown}')
       await expect(await shows('mail.check')).toEqual(down('mail.send', 'mail.check'))
+      // ↑ between rows slides the other way.
+      await press('{ArrowUp}')
+      await expect(await shows('mail.send')).toEqual(up('mail.check', 'mail.send'))
       await press('{ArrowDown}')
+      await expect(await shows('mail.check')).toEqual(down('mail.send', 'mail.check'))
+      // → goes to the next mark after the tool the rail shows, then from mark to mark.
+      await press('{ArrowRight}')
       await expect(await shows('console.info #3')).toEqual(down('mail.check', 'console.info #3'))
-      await press('{ArrowDown}')
-      await expect(await shows('mail.archive')).toEqual(down('console.info #3', 'mail.archive'))
-      await press('{ArrowUp}')
-      await expect(await shows('console.info #3')).toEqual(up('mail.archive', 'console.info #3'))
-      await select('emission #6')
+      await press('{ArrowRight}')
       await expect(await shows('coral.emit #6')).toEqual(down('console.info #3', 'coral.emit #6'))
+      await press('{ArrowLeft}')
+      await expect(await shows('console.info #3')).toEqual(up('coral.emit #6', 'console.info #3'))
+      // A click on a row or on a mark slides the same way.
       await select('mail.notify')
-      await expect(await shows('mail.notify')).toEqual(up('coral.emit #6', 'mail.notify'))
-      rail().focus()
-      await press('{ArrowDown}')
+      await expect(await shows('mail.notify')).toEqual(down('console.info #3', 'mail.notify'))
+      await select('emission #6')
       await expect(await shows('coral.emit #6')).toEqual(down('mail.notify', 'coral.emit #6'))
-      await press('{ArrowUp}')
-      await expect(await shows('mail.notify')).toEqual(up('coral.emit #6', 'mail.notify'))
+      await select('mail.archive')
+      await expect(await shows('mail.archive')).toEqual(up('coral.emit #6', 'mail.archive'))
+      // ← from a tool goes to the mark before it.
+      rail().focus()
+      await press('{ArrowLeft}')
+      await expect(await shows('console.info #3')).toEqual(up('mail.archive', 'console.info #3'))
     } finally {
       recorder.stop()
     }
@@ -488,13 +499,13 @@ export const SlidesThroughLifecycleEvents: Story = {
       await select('emission #6')
       await shows('coral.emit #6')
       rail().focus()
-      await press('{ArrowDown}')
+      await press('{ArrowRight}')
       await expect(await shows(callEnded)).toEqual(down('coral.emit #6', callEnded))
-      await press('{ArrowDown}')
+      await press('{ArrowRight}')
       await expect(await shows(cancelRequested)).toEqual(down(callEnded, cancelRequested))
-      await press('{ArrowUp}')
+      await press('{ArrowLeft}')
       await expect(await shows(callEnded)).toEqual(up(cancelRequested, callEnded))
-      await press('{ArrowUp}')
+      await press('{ArrowLeft}')
       await expect(await shows('coral.emit #6')).toEqual(up(callEnded, 'coral.emit #6'))
       await select('cancel #8')
       await expect(await shows(cancelRequested)).toEqual(down('coral.emit #6', cancelRequested))
@@ -520,11 +531,11 @@ export const ReplacesAtOnce: Story = {
       // From the Run itself, which its Task orders, not its Run.
       await select('mail.send')
       await expect(await shows('mail.send')).toEqual(instant)
-      // A tool of another Run.
-      await select('audit.check')
+      // A tool of another Run, whose waterfall then replaces this one, and back.
+      await button('Open audit tool')
       await expect(await shows('audit.check')).toEqual(instant)
-      await select('mail.notify')
-      await expect(await shows('mail.notify')).toEqual(instant)
+      await button('History back')
+      await expect(await shows('mail.send')).toEqual(instant)
       // A tool outside the loaded window has no known position.
       await button('Open unloaded tool')
       await expect(await shows('mail.unloaded')).toEqual(instant)

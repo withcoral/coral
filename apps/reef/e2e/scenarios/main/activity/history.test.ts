@@ -143,7 +143,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           expect(await page.getByRole('button', { name: 'Workspace scope' }).count()).toBe(0)
           const heading = await breadcrumb(page).boundingBox()
           const tableBounds = await page
-            .getByRole('table', { name: 'Activity records', exact: true })
+            .getByRole('table', { name: 'Tasks and runs', exact: true })
             .boundingBox()
           expect(tableBounds!.x).toBe(heading!.x)
           expect(tableBounds!.y).toBeGreaterThan(heading!.y + heading!.height)
@@ -154,19 +154,26 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           expect(await page.getByRole('link', { name: /^Scope to / }).count()).toBe(0)
           expect(await page.getByRole('link', { name: 'all', exact: true }).count()).toBe(0)
           // The other workspace's goal has the same intent but belongs to its own Activity.
-          expect(await page.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
-          expect(
-            await page
-              .getByRole('table', { name: 'Activity records' })
-              .getByRole('columnheader')
-              .allInnerTexts(),
-          ).toEqual(['TIME · UTC', 'RECORD', 'DUR', 'CONTEXT'])
+          const roots = page.getByRole('table', { name: 'Tasks and runs', exact: true })
+          expect(await roots.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
+          expect(await roots.getByRole('columnheader').allInnerTexts()).toEqual([
+            'UTC',
+            'RECORD',
+            'DUR',
+            'CONTEXT',
+          ])
+          // The newest goal's waterfall shows beside the list, on one time axis.
+          await page
+            .getByRole('table', { name: 'Activity records', exact: true })
+            .getByRole('link', { name: intent, exact: true })
+            .waitFor()
+          await page.getByRole('radio', { name: 'Call time', exact: true }).waitFor()
           expect(await page.content()).not.toContain('historical-source-249')
           expect(await page.content()).not.toContain('replacement-source-249')
           expect(await page.content()).not.toContain('No invoice export tool')
           await page.goto(`/workspaces/${second}/activity`)
           await breadcrumb(page, 'Activity').waitFor()
-          expect(await page.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
+          expect(await roots.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
           expect(await page.content()).not.toContain('historical-source-249')
         },
       )
@@ -254,6 +261,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             return overflowing
           })
           expect(overflowingAncestors).toEqual([])
+          // The waterfall reads the rest of the Task in the background. Read a position only
+          // once it holds every record.
+          await page
+            .getByText(/^Loading records… \d/)
+            .waitFor({ state: 'detached', timeout: 30_000 })
           await list.evaluate((element) => {
             element.scrollTop = element.scrollHeight
           })
@@ -314,16 +326,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(new URL(page.url()).searchParams.get(`anchor.workspaces/${first}/runs/${run}`)).toBe(
           selected,
         )
-        await table
-          .getByRole('rowgroup', { name: 'Call one Tool records', exact: true })
-          .evaluate((element) => {
-            const port = element.closest('[role=table]')!
-            port.scrollTop +=
-              element.getBoundingClientRect().top - port.getBoundingClientRect().top - 40
-          })
+        // The waterfall reads the whole Run in the background, so the Run's first emission
+        // is a mark on its row too, with no scrolling to load it.
         await table
           .getByRole('link', { name: 'emission #2', exact: true })
-          .waitFor({ timeout: 10_000 })
+          .waitFor({ timeout: 15_000 })
         expect(
           await table.getByRole('link', { name: 'execution accepted', exact: true }).count(),
         ).toBe(0)
@@ -335,7 +342,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(await table.getByRole('link', { name: 'return value', exact: true }).count()).toBe(0)
         await table
           .locator(`[data-record-key="workspaces/${first}/runs/${run}"]`)
-          .locator('a[href]')
+          .locator('[data-record-link]')
           .click()
         // The Run returns the snapshot's own value, and its panel counts it as its own share.
         await shownPayload(page, 'historical-source-249').waitFor()

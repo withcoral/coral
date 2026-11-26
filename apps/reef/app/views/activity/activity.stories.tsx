@@ -356,7 +356,7 @@ export const MixedHistory: Story = {
     await expectAlignedHeaders(await openDrawer(canvasElement))
   },
 }
-/** The live toggle sits right after the list heading, and Tab moves from it to the table. */
+/** The live toggle sits right after the list heading, and Tab moves from it into the list. */
 export const LiveToggleOrder: Story = {
   args: { page: { ...page, selected: null, selectedRow: null, detail: null } },
   parameters: { initialEntry: '/workspaces/finance/activity' },
@@ -366,7 +366,9 @@ export const LiveToggleOrder: Story = {
     await expect(heading.nextElementSibling).toContainElement(live)
     live.focus()
     await userEvent.tab()
-    await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+    // The list of top-level records comes next, at its first record.
+    const roots = canvas.getByRole('table', { name: 'Tasks and runs' })
+    await expect(within(roots).getAllByRole('link')[0]).toHaveFocus()
   },
 }
 export const CompletionFeedback: Story = {
@@ -382,16 +384,20 @@ export const CompletionFeedback: Story = {
       },
     },
   },
-  // On a phone the Task heading wraps; its status and close control still centre on its first line.
+  // On a phone the Task heading wraps; its status and live toggle still centre on its first
+  // line. The feedback shows as the agent wrote it, in the header above the waterfall.
   globals: shortScreen,
   play: async ({ canvasElement }) => {
-    const dialog = await openDrawer(canvasElement, 'Activity details')
-    const heading = within(dialog).getByRole('heading', { level: 2, name: goal.intent })
+    const body = within(canvasElement.ownerDocument.body)
+    const header = await body.findByRole('region', { name: 'Task' })
+    await expect(body.queryByRole('dialog')).toBeNull()
+    const heading = within(header).getByRole('heading', { level: 2, name: goal.intent })
     const line = parseFloat(getComputedStyle(heading).lineHeight)
     await expect(heading.getBoundingClientRect().height).toBeGreaterThan(line * 2)
-    await expectAlignedHeaders(dialog)
-    // Nothing to decide leaves no footer bar.
-    for (const footer of dialog.querySelectorAll('footer')) await expect(footer).not.toBeVisible()
+    await expectAlignedHeaders(header)
+    await expect(
+      within(header).getByText(/^I could not find a tool to export invoices\./).textContent,
+    ).toBe('I could not find a tool to export invoices.\nSearch returned no matching tools.')
   },
 }
 export const StreamingHistory: Story = {
@@ -487,12 +493,15 @@ export const SingleLineRows: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const table = canvas.getByRole('table', { name: 'Activity records' })
+    // Two lines of set heights: the record's, which never wraps, and its track's.
     for (const row of within(table).getAllByRole('row')) {
-      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(44)
+      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(61)
     }
-    const label = within(table).getByRole('link', {
+    // The long name is the Task's: its row in the list never wraps.
+    const label = within(canvas.getByRole('table', { name: 'Tasks and runs' })).getByRole('link', {
       name: 'Find overdue invoices and notify their owners. '.repeat(12).trim(),
     }).parentElement!
+    await expect(label.getBoundingClientRect().height).toBeLessThanOrEqual(24)
     await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth)
     await expect(getComputedStyle(label).textOverflow).toBe('ellipsis')
     await expect(within(table).queryByRole('img', { name: /^workspace:/ })).not.toBeInTheDocument()
@@ -624,6 +633,11 @@ const ownerLookup: ParentInvocation = {
   toolKind: 'shared',
   sharedToolRevision: '4',
 }
+const archive: ParentInvocation = {
+  invocation: `${workspace}/invocations/archive`,
+  callPath: 'coral.private.billing.archive',
+  toolKind: 'private',
+}
 const nestedCall = (
   name: string,
   callPath: string,
@@ -653,6 +667,12 @@ export const NestedCalls: Story = {
           nestedCall('remind', remind.callPath, 'private'),
           nestedCall('issues', 'coral.providers.linear.listIssues', 'provider'),
           nestedCall('draft', 'coral.private.billing.draft', 'private'),
+          nestedCall('archive', archive.callPath, 'private'),
+        ]),
+        // Its body made no call.
+        [`${workspace}/invocations/draft`]: holding([]),
+        [archive.invocation]: holding([
+          nestedCall('store', 'coral.providers.drive.store', 'provider', archive),
         ]),
         [remind.invocation]: holding([
           nestedCall('send', 'coral.providers.mail.send', 'provider', remind),
@@ -664,22 +684,65 @@ export const NestedCalls: Story = {
       },
     },
   },
-  play: async ({ canvas }) => {
+  play: async ({ canvas, userEvent }) => {
     const table = canvas.getByRole('table', { name: 'Activity records' })
     const row = (path: string) =>
       within(table)
         .getAllByRole('row')
         .find((candidate) => within(candidate).queryByRole('link', { name: path }))!
-    // An open tool call can close; a closed one can open; a provider tool's call holds none.
+    // An open tool call can close; a provider tool's call holds none, and neither does a
+    // tool call with no recorded call.
     for (const path of [remind.callPath, ownerLookup.callPath])
       await expect(within(row(path)).getByRole('button', { name: 'Collapse record' })).toBeVisible()
-    await expect(
-      within(row('coral.private.billing.draft')).getByRole('button', { name: 'Expand record' }),
-    ).toBeVisible()
-    await expect(within(row('coral.providers.linear.listIssues')).queryByRole('button')).toBeNull()
-    // The calls inside the open ones show.
+    for (const path of ['coral.providers.linear.listIssues', 'coral.private.billing.draft'])
+      await expect(within(row(path)).queryByRole('button')).toBeNull()
+    // The calls inside the open ones show, each one level under the call that made it.
     for (const path of ['coral.providers.mail.send', 'coral.providers.crm.getOwner'])
       await expect(within(table).getByRole('link', { name: path })).toBeVisible()
+    const level = (path: string) => Number(row(path).getAttribute('aria-level'))
+    await expect(level('coral.providers.mail.send')).toBe(level(remind.callPath) + 1)
+    await expect(level('coral.providers.crm.getOwner')).toBe(level(remind.callPath) + 2)
+    // A closed tool call hides the calls its body made, and opens again.
+    await userEvent.click(
+      within(row(ownerLookup.callPath)).getByRole('button', { name: 'Collapse record' }),
+    )
+    await expect(
+      within(table).queryByRole('link', { name: 'coral.providers.crm.getOwner' }),
+    ).toBeNull()
+    await userEvent.click(
+      within(row(ownerLookup.callPath)).getByRole('button', { name: 'Expand record' }),
+    )
+    await expect(
+      within(table).getByRole('link', { name: 'coral.providers.crm.getOwner' }),
+    ).toBeVisible()
+    // An open tool call heads the calls under it. Its toggle and its label stay where a
+    // closed tool call beside it has them.
+    await userEvent.click(
+      within(row(archive.callPath)).getByRole('button', { name: 'Collapse record' }),
+    )
+    const left = (element: Element) => element.getBoundingClientRect().left
+    const [open, closed] = [within(row(remind.callPath)), within(row(archive.callPath))]
+    await expect(left(open.getByRole('button', { name: 'Collapse record' }))).toBe(
+      left(closed.getByRole('button', { name: 'Expand record' })),
+    )
+    await expect(left(open.getByRole('link', { name: remind.callPath }))).toBe(
+      left(closed.getByRole('link', { name: archive.callPath })),
+    )
+    // A heading has a row's two lines, its track under its record, at a row's height, so
+    // the headings pinned above the rows stack exactly. Its track spans what a row's does.
+    const box = (element: Element) => element.getBoundingClientRect()
+    const heading = row(remind.callPath)
+    await expect(heading).toHaveAttribute('data-pinned-heading')
+    const track = heading.querySelector('[data-timeline-track]')!
+    await expect(box(track).top).toBeGreaterThanOrEqual(
+      box(open.getByRole('link', { name: remind.callPath })).bottom,
+    )
+    await expect(Math.round(box(heading).height)).toBe(
+      Math.round(box(row('coral.providers.mail.send')).height),
+    )
+    const rowTrack = row('coral.providers.mail.send').querySelector('[data-timeline-track]')!
+    await expect(box(track).left).toBe(box(rowTrack).left)
+    await expect(box(track).right).toBe(box(rowTrack).right)
   },
 }
 export const Collapsed: Story = {
@@ -712,7 +775,7 @@ export const ScrollablePage: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    const list = within(canvasElement).getByRole('table', { name: 'Activity records' })
+    const list = within(canvasElement).getByRole('table', { name: 'Tasks and runs' })
     list.scrollTop = 400
     await expect(list.scrollTop).toBeGreaterThan(0)
   },
@@ -754,56 +817,12 @@ const busyTask = {
   selected: null,
   selectedRow: null,
 } satisfies ActivityPage
-const recordRow = (table: HTMLElement, name: RegExp | string) =>
-  within(table)
-    .getAllByRole('row')
-    .find((row) => within(row).queryByRole('link', { name }))!
 /**
- * Scroll to see an expanded Task pin under its day heading and an expanded Run pin
- * under its Task. Wax tests the pinning; Vitest tests that Activity nests the groups.
+ * A busy Task: scroll its waterfall to see the column headings stay pinned over its records.
+ * Wax tests the pinning; Vitest tests the order of the rows.
  */
 export const PinnedHeadings: Story = {
   args: { page: busyTask },
-}
-const collapsedRun: ActivityRow & { kind: 'run' } = {
-  ...execution,
-  name: `${run}-collapsed`,
-  submission: { ...execution.submission!, intent: 'Archive the paid invoices' },
-}
-/**
- * Expanding a record turns its row into a group heading without moving its toggle
- * or label, at the root and inside a Task. Wax owns the heading's cell layout.
- */
-export const HeadingAlignment: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: [goal, { ...goal, name: `${task}-collapsed`, intent: 'Reconcile the ledger' }],
-      branches: {
-        [task]: { rows: [execution, collapsedRun], next: '', unavailable: false },
-        [run]: { rows: [], next: '', unavailable: false },
-      },
-      expanded: [task, run],
-      detail: null,
-      selected: null,
-      selectedRow: null,
-    },
-  },
-  play: async ({ canvasElement }) => {
-    const row = (name: string) => recordRow(canvasElement, name)
-    const left = (element: Element) => element.getBoundingClientRect().left
-    for (const [expanded, collapsed] of [
-      [goal.intent, 'Reconcile the ledger'],
-      ['Send invoice reminders', 'Archive the paid invoices'],
-    ] as const) {
-      const heading = within(row(expanded))
-      const plain = within(row(collapsed))
-      await expect(left(heading.getByRole('button', { name: 'Collapse record' }))).toBe(
-        left(plain.getByRole('button', { name: 'Expand record' })),
-      )
-      await expect(left(heading.getByRole('link'))).toBe(left(plain.getByRole('link')))
-    }
-  },
 }
 // Enough history to scroll well past 5000px collapsed. Tasks hold 0, 1 or 3
 // executions, and executions hold 0, 1 or 30 tools, in rotation.
@@ -1006,23 +1025,34 @@ export const LoadMoreRecords: Story = {
 export const DrawerNavigation: Story = {
   render: function DrawerNavigation() {
     const [query] = useSearchParams()
-    const rows = Array.from({ length: 40 }, (_, i) => ({
-      ...goal,
-      name: `${task}-${i}`,
-      intent: `Task ${i + 1}`,
-    }))
+    // One open Task whose waterfall lists forty searches.
+    const rows = Array.from(
+      { length: 40 },
+      (_, i) =>
+        ({
+          ...tool(`drawer-${i}`, 'search', 'succeeded', `Task ${i + 1}`),
+          position: i,
+        }) as ActivityRow & { kind: 'tool' },
+    )
     const selected = query.get('record')
     const selectedRow = rows.find((row) => row.name === selected) ?? null
     return (
       <Activity
         page={{
           ...page,
-          rows,
-          branches: {},
-          expanded: [],
+          rows: [goal],
+          branches: { [task]: { rows, total: '40', next: '', unavailable: false } },
+          expanded: [task],
           selected,
           selectedRow,
-          detail: selectedRow ? { kind: 'task', task: selectedRow } : null,
+          detail: selectedRow
+            ? {
+                kind: 'tool',
+                task,
+                interaction: selectedRow,
+                evidence: { kind: 'unknown' },
+              }
+            : null,
         }}
       />
     )
@@ -1059,32 +1089,6 @@ export const DrawerNavigation: Story = {
       await expect(list.scrollTop).toBe(before)
       await expect(canvas.getByRole('heading', { name: 'Your recent activity' })).toBeVisible()
     }
-  },
-}
-export const ExpansionLimit: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: Array.from({ length: 25 }, (_, i) => ({
-        ...goal,
-        name: `${task}-${i}`,
-        intent: `Task ${i + 1}`,
-      })),
-      expanded: Array.from({ length: 20 }, (_, i) => `${task}-${i}`),
-      branches: {},
-      detail: null,
-      selected: null,
-      selectedRow: null,
-    },
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    for (const control of canvas.getAllByRole('button', { name: 'Expand record' }))
-      await expect(control).toBeDisabled()
-    for (const control of canvas.getAllByRole('button', { name: 'Collapse record' }))
-      await expect(control).toBeEnabled()
-    await expect(canvas.queryByRole('navigation', { name: 'Activity scope' })).toBeNull()
-    await expect(canvas.queryByRole('link', { name: /Scope to / })).toBeNull()
   },
 }
 export const StandaloneExecution: Story = {

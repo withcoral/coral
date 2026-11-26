@@ -11,18 +11,11 @@ import {
 import {
   leavesActivityReview,
   activityNavigation,
-  activityStops,
   liveRun,
   liveStep,
   liveTarget,
   orderedRecordPosition,
   readsActivity,
-  recordParents,
-  resolveStop,
-  stepStop,
-  stopPosition,
-  type ActivityStop,
-  type StopPosition,
 } from './navigation'
 import type { ActivityPage, ActivityRow, RunDetail, RunEvent } from './types'
 
@@ -173,13 +166,9 @@ it('converts a revealed accepted Run into its interaction identity for a Task vi
   expect(target(nav.backHref).get(`preceding.${task}`)).toBe('25')
 })
 
-it('carries bounded reader identities and anchored child demand when selecting, expanding, or closing detail', () => {
+it('carries bounded reader identities and anchored child demand when selecting or closing detail', () => {
   const nav = activityNavigation(page, '/activity', '', reading)
-  for (const href of [
-    nav.recordHref(run),
-    nav.toggleHref('workspaces/w/runs/other'),
-    nav.backHref,
-  ]) {
+  for (const href of [nav.recordHref(run), nav.backHref]) {
     const query = target(href)
     // A reload opens at the first record on screen.
     expect(query.get('anchor')).toBe(task)
@@ -204,7 +193,8 @@ it('removes collapsed branch coordinates and never accumulates a child-window hi
     `?tree=1&expand=${task}&expand=${run}&cursor.${run}=old`,
     reading,
   )
-  const query = target(nav.toggleHref(run))
+  // Opening the Task's waterfall alone collapses the Run.
+  const query = target(nav.rootHref(task))
   expect(query.getAll('expand')).toEqual([task])
   for (const prefix of ['offset', 'anchor', 'preceding', 'cursor']) {
     expect(query.has(`${prefix}.${run}`)).toBe(false)
@@ -213,7 +203,6 @@ it('removes collapsed branch coordinates and never accumulates a child-window hi
 })
 it('preserves stable Run selection while returning to its personal list context', () => {
   const nav = activityNavigation(page, `/${run}`, '?workspace=workspaces/w', reading)
-  expect(target(nav.toggleHref(task)).get('record')).toBe(run)
   expect(target(nav.backHref).has('record')).toBe(false)
   expect(target(nav.backHref).get('anchor')).toBe(task)
 })
@@ -264,95 +253,6 @@ const childPage = (rows: ActivityRow[], total: number) => ({
   next: '',
   unavailable: false,
 })
-const positionOf = (row: ActivityRow): StopPosition => ({
-  name: row.name,
-  parents: recordParents(row),
-})
-/** The record a position rests on, if any. */
-const restsOn = (list: ActivityStop[], position: StopPosition) => {
-  const stop = list[resolveStop(list, position)]
-  return stop?.kind === 'record' ? stop.row.name : undefined
-}
-
-describe('keyboard traversal', () => {
-  const [a, c, d, e] = ['a', 'c', 'd', 'e'].map((id) => taskRow(id))
-  const b = runRow('b', a.name, { position: 1 })
-  const first = toolRow(a.name, 'first', { position: 0 })
-  const last = toolRow(a.name, 'last', { position: 3 })
-  const emitted = output(b.name, 'events/1', 0)
-  const logged = output(b.name, 'events/2', 1)
-  const later = output(b.name, 'events/5', 4)
-  // a ▸ first, b ▸ (emitted, logged, ·gap·, later), ·gap·, last; c collapsed;
-  // d's history is unavailable; e.
-  const tree = activityPage({
-    rows: [a, c, d, e],
-    expanded: [a.name, b.name, d.name],
-    branches: {
-      [a.name]: childPage([first, b, last], 4),
-      [b.name]: childPage([emitted, logged, later], 5),
-      [d.name]: { ...childPage([], 0), unavailable: true },
-    },
-  })
-  const stops = activityStops(tree, tree.rows)
-  /** Every record ↓ or ↑ reaches from `from`, until it stops. */
-  const walk = (from: ActivityRow | null, step: 1 | -1) => {
-    const reached: string[] = []
-    let position = from && positionOf(from)
-    for (let next = stepStop(stops, position, step); next; next = stepStop(stops, position, step)) {
-      reached.push(next.row.name)
-      position = stopPosition(next)
-    }
-    return reached
-  }
-
-  it.each<[string, ActivityRow | null, 1 | -1, ActivityRow[]]>([
-    [
-      '↓ with no cursor starts at the first record and stops at a gap',
-      null,
-      1,
-      [a, first, b, emitted, logged],
-    ],
-    ['↑ with no cursor starts at the last record and stops at unavailable history', null, -1, [e]],
-    ['↑ from the first record does not wrap', a, -1, []],
-    ['↓ from the last record does not wrap', e, 1, []],
-    ['↓ stops before a gap between child ordinals', logged, 1, []],
-    ['↑ stops after a gap between child ordinals', later, -1, []],
-    ["↓ from a Run's last child stops at the gap that follows its Run", later, 1, []],
-    ['↓ leaves a branch for the next loaded sibling', last, 1, [c, d]],
-    ['↑ from a collapsed record reaches the record above its sibling branch', c, -1, [last]],
-    ['↓ stops at unavailable history', c, 1, [d]],
-    ['↑ stops at unavailable history from below', e, -1, []],
-  ])('%s', (_name, from, step, expected) => {
-    expect(walk(from, step)).toEqual(expected.map((row) => row.name))
-  })
-
-  it('does nothing in an empty table', () => {
-    expect(stepStop(activityStops(activityPage(), []), null, 1)).toBeNull()
-  })
-
-  it('rests a record inside a collapsed branch on that branch, and an expanded branch never stands in', () => {
-    const collapsed = activityStops({ ...tree, expanded: [a.name, d.name] }, tree.rows)
-    const hidden = positionOf(later)
-    expect(restsOn(collapsed, hidden)).toBe(b.name)
-    // The gap at ordinal 2 follows b, as when it shows its children.
-    expect(stepStop(collapsed, hidden, 1)).toBeNull()
-    expect(stepStop(collapsed, hidden, -1)?.row.name).toBe(first.name)
-    // b is expanded but its window lacks this record: no stop until it arrives.
-    expect(resolveStop(stops, positionOf(output(b.name, 'events/3', 2)))).toBe(-1)
-    expect(stepStop(stops, positionOf(output(b.name, 'events/3', 2)), 1)).toBeNull()
-  })
-
-  it('follows a submission to the Run it was accepted as', () => {
-    const submission = toolRow(a.name, 'submitted', { position: 1, acceptedRun: b.name })
-    const accepted = { ...b, submission: { ...submission, position: undefined } } as ActivityRow
-    const replaced = activityStops(
-      { ...tree, branches: { ...tree.branches, [a.name]: childPage([first, accepted, last], 4) } },
-      tree.rows,
-    )
-    expect(restsOn(replaced, positionOf(submission))).toBe(b.name)
-  })
-})
-
 describe('detail slide order', () => {
   const owner = runRow('ordered', taskRow('t').name, { position: 0 })
   const other = runRow('other', '')
@@ -586,14 +486,11 @@ describe('live mode', () => {
 
   const search = `?tree=1&expand=${task}&expand=${run}&record=${run}&live=1&filter=kept`
   const nav = activityNavigation(page, '/activity', search, reading)
-  it('turns off when you pick a record, collapse the shown one, or close the detail', () => {
-    for (const href of [nav.recordHref(task), nav.collapseHref(run), nav.backHref]) {
+  it('turns off when you pick a record, open a waterfall from the list, or close the detail', () => {
+    for (const href of [nav.recordHref(task), nav.rootHref(task), nav.listHref, nav.backHref]) {
       expect(target(href).has('live')).toBe(false)
       expect(target(href).get('filter')).toBe('kept')
     }
-  })
-  it('stays on while you expand a record', () => {
-    expect(target(nav.toggleHref('workspaces/w/runs/other')).get('live')).toBe('1')
   })
   it('follows to a record and keeps the reading window', () => {
     const query = target(nav.followHref(`${run}/events/321`))
@@ -1553,33 +1450,6 @@ describe('tool calls inside tool calls', () => {
     },
   })
 
-  // Catches: the keys skipping the calls inside an expanded tool call, or a key on one of them
-  // collapsing the Run instead of the call that holds it.
-  it('steps through each call inside the expanded tool call that holds it', () => {
-    const stops = activityStops(tree, tree.rows).flatMap((stop) =>
-      stop.kind === 'record' ? [[stop.row.name, stop.parents]] : [],
-    )
-    expect(stops).toEqual([
-      [owner.name, []],
-      [outer.name, [owner.name]],
-      [inner.name, [outer.name, owner.name]],
-      [leaf.name, [inner.name, outer.name, owner.name]],
-    ])
-  })
-  // Catches: a provider tool's call, which holds no calls, opening as if it did.
-  it('never opens a provider tool’s call', () => {
-    const provider = call('send', undefined, 'provider')
-    const flat = activityPage({
-      rows: [owner],
-      expanded: [owner.name, provider.name],
-      branches: { [owner.name]: holding([provider]), [provider.name]: holding([leaf]) },
-    })
-    expect(
-      activityStops(flat, flat.rows).flatMap((stop) =>
-        stop.kind === 'record' ? [stop.row.name] : [],
-      ),
-    ).toEqual([owner.name, provider.name])
-  })
   // Catches: live mode following an approval of a nested call without opening the calls that
   // hold it, or looking for that call in the Run's own window.
   it('follows a nested call’s approval inside the calls that hold it', () => {
@@ -1608,5 +1478,38 @@ describe('tool calls inside tool calls', () => {
     const query = target(nav.revealHref(leaf))
     expect(query.get('record')).toBe(leaf.name)
     expect(query.has('tree') || query.has('expand')).toBe(false)
+  })
+})
+
+describe('the open waterfall in the address', () => {
+  const other = 'workspaces/w/tasks/other'
+  it('opens one top-level record alone, with nothing selected', () => {
+    const nav = activityNavigation(page, '/activity', `?tree=1&expand=${task}&record=${run}`)
+    const query = target(nav.rootHref(other))
+    expect(query.getAll('expand')).toEqual([other])
+    expect(query.has('record')).toBe(false)
+    // The list alone has no waterfall open.
+    expect(target(nav.listHref).getAll('expand')).toEqual([])
+    expect(target(nav.listHref).get('tree')).toBe('1')
+  })
+  it('names the root with a selection, so its waterfall stays open when the detail closes', () => {
+    const nav = activityNavigation(activityPage(), '/activity', '')
+    const query = target(nav.recordHref(run, task))
+    expect(query.get('record')).toBe(run)
+    expect(query.getAll('expand')).toEqual([task])
+    // A root the address names already is not named twice.
+    const open = activityNavigation(activityPage({ expanded: [task] }), '/activity', '')
+    expect(target(open.recordHref(run, task)).getAll('expand')).toEqual([task])
+  })
+  it('selects without the root when the address holds as many records as Coral expands', () => {
+    const full = Array.from({ length: 20 }, (_, index) => `workspaces/w/runs/r${index}`)
+    const nav = activityNavigation(
+      activityPage({ expanded: full }),
+      '/activity',
+      `?tree=1&${full.map((name) => `expand=${name}`).join('&')}`,
+    )
+    const query = target(nav.recordHref(run, task))
+    expect(query.get('record')).toBe(run)
+    expect(query.getAll('expand')).toEqual(full)
   })
 })

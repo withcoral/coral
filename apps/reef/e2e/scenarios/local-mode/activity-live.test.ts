@@ -124,10 +124,23 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         .locator('header')
         .getByText('success', { exact: true })
         .waitFor()
-      // The open detail leaves the list usable: another goal replaces it in place.
-      await page.getByRole('link', { name: 'Second local goal', exact: true }).click()
+      // The open detail leaves the list usable: another goal opens its own waterfall and
+      // its detail, and once closed, the goal's row there opens its detail again.
       const detail = page.getByRole('dialog', { name: 'Activity details' })
-      await detail.getByRole('heading', { name: 'Second local goal', exact: true }).waitFor()
+      const secondHeading = detail.getByRole('heading', { name: 'Second local goal', exact: true })
+      await page
+        .getByRole('table', { name: 'Tasks and runs', exact: true })
+        .getByRole('link', { name: 'Second local goal', exact: true })
+        .click()
+      await secondHeading.waitFor()
+      expect(await page.locator('dt:text-is("Feedback")').count()).toBe(0)
+      await detail.getByRole('button', { name: 'Close details', exact: true }).click()
+      await page.waitForURL((url) => !url.searchParams.has('record'))
+      await page
+        .getByRole('table', { name: 'Activity records', exact: true })
+        .getByRole('link', { name: 'Second local goal', exact: true })
+        .click()
+      await secondHeading.waitFor()
       expect(await page.getByRole('dialog').count()).toBe(1)
       expect(await page.locator('dt:text-is("Feedback")').count()).toBe(0)
     })

@@ -6,8 +6,10 @@ import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
 import { ProviderMarksContext } from './call-tool'
+import { rowLabel } from './record'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approvalRequest, run as waiting, taskRow, workspace } from './fixtures'
+import { absorbPage, openTrace, receiveTrace, type ActivityTraceStore } from '@/lib/activity-trace'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
 
 const startedAt = '2026-09-18T14:02:00.000Z'
@@ -152,11 +154,37 @@ it.each([
   expect(screen.queryAllByRole('img', { name: 'tool' })).toHaveLength(kindShown ? 1 : 0)
 })
 
+/** A page with the waterfall of `root` open, holding `children` of each record. */
+const waterfallPage = (
+  root: ActivityRow,
+  children: Record<string, ActivityRow[]>,
+  overrides: Partial<ActivityPage> = {},
+) =>
+  activityPage({
+    rows: [root],
+    expanded: Object.keys(children),
+    branches: Object.fromEntries(
+      Object.entries(children).map(([parent, rows]) => [
+        parent,
+        { rows, next: '', unavailable: false },
+      ]),
+    ),
+    ...overrides,
+  })
+const records = () => screen.getByRole('table', { name: 'Activity records' })
+
 it('marks only the tool call as needing action, never its containing Run', () => {
-  expect(render({ ...run, state: 'running', requiresAction: true })).not.toContain('needs action')
-  expect(render({ ...invocation, state: 'pending', requiresAction: true })).toContain(
-    'needs action',
+  const asking = { ...run, task: '', state: 'running' as const, requiresAction: true }
+  expect(render(asking)).not.toContain('needs action')
+  const markup = markupRoute(
+    <Activity
+      page={waterfallPage(asking, {
+        [asking.name]: [{ ...invocation, task: '', state: 'pending', requiresAction: true }],
+      })}
+    />,
+    '/activity',
   )
+  expect(markup.split('needs action')).toHaveLength(2)
 })
 
 it('retains the selected review and draft across a live refresh, but conceals access loss', async () => {
@@ -271,8 +299,9 @@ it.each<[string, ActivityViewProps['more'], boolean, string[]]>([
 // Catches: a glimpse growing past its few roots when one of them is expanded.
 it.each<[string, ActivityViewProps['more'], string[]]>([
   ['a glimpse', { to: '/w/activity', label: 'View all activity', roots: 5 }, ['Find invoices']],
+  // The list names the root; its waterfall lists the child, under the Task's header.
   ['the full list', undefined, ['Find invoices', 'Find tools']],
-])('%s lists child records only when it pages', (_, more, records) => {
+])('%s lists child records only when it pages', (_, more, shownRecords) => {
   renderRoute(
     <Activity
       page={activityPage({
@@ -287,8 +316,15 @@ it.each<[string, ActivityViewProps['more'], string[]]>([
     { entry: '/activity' },
   )
   const shown = screen.getAllByRole('link').map((link) => link.textContent)
-  expect(shown.filter((text) => text !== 'View all activity')).toEqual(records)
-  expect(screen.queryAllByRole('button', { name: /record$/ })).toHaveLength(more ? 0 : 1)
+  expect(shown.filter((text) => text !== 'View all activity')).toEqual(shownRecords)
+  // A record with nothing under it offers no toggle.
+  expect(screen.queryAllByRole('button', { name: /^(Collapse|Expand) record$/ })).toHaveLength(0)
+  if (!more)
+    expect(
+      within(screen.getByRole('region', { name: 'Task' })).getByRole('heading', {
+        name: goal.intent,
+      }),
+    ).toBeInTheDocument()
 })
 
 // Catches: a glimpse loading older records, or keeping newer ones a live update merged in.
@@ -316,15 +352,17 @@ it('a glimpse lists only its latest roots and never loads more', () => {
   expect(control.load).not.toHaveBeenCalled()
 })
 
-// Catches: a glimpse record opening its detail on the Overview instead of the Activity page.
-it.each<[string, ActivityViewProps['more'], string]>([
+// Catches: a glimpse record opening on the Overview instead of the Activity page, or a
+// record of the full list opening its detail without its waterfall.
+it.each<[string, ActivityViewProps['more'], string, 'record' | 'expand']>([
   [
     'a glimpse',
     { to: `/${workspace}/activity`, label: 'View all activity', roots: 5 },
     `/${workspace}/activity`,
+    'record',
   ],
-  ['the full list', undefined, `/${workspace}`],
-])('%s opens a clicked record where it lists in full', async (_, more, pathname) => {
+  ['the full list', undefined, `/${workspace}`, 'expand'],
+])('%s opens a clicked record where it lists in full', async (_, more, pathname, key) => {
   const user = userEvent.setup()
   // The Overview lists its glimpse at the Workspace's own path.
   const { router } = renderRoute(
@@ -335,45 +373,41 @@ it.each<[string, ActivityViewProps['more'], string]>([
   expect(new URL(link.getAttribute('href')!, 'http://reef').pathname).toBe(pathname)
   await user.click(link)
   expect(router.state.location.pathname).toBe(pathname)
-  expect(new URLSearchParams(router.state.location.search).get('record')).toBe(goal.name)
+  const query = new URLSearchParams(router.state.location.search)
+  expect(query.get(key)).toBe(goal.name)
 })
 
-// An expanded record with no children says why, in terms of its own lifecycle.
-// A Run or a tool call in a state Reef does not know may still be running, so its copy claims neither.
-it.each<[string, ActivityRow, string]>([
-  ['ended Run', run, 'This execution called no tools.'],
-  [
-    'running Run',
-    { ...run, state: 'running', endedAt: null },
-    'This execution has not called a tool yet.',
-  ],
-  [
-    'Run in an unknown state',
-    { ...run, state: 'unknown', endedAt: null },
-    'This execution has no recorded tools.',
-  ],
-  ['ended Task', goal, 'This task made no calls.'],
-  ['open Task', { ...goal, outcome: 'open', endedAt: null }, 'This task has not made a call yet.'],
-  [
-    'private tool call in an unknown state',
-    { ...invocation, toolKind: 'private', state: 'unknown', endedAt: null },
-    'This tool has no recorded calls.',
-  ],
-])('an expanded %s with no children explains why', (_name, row, copy) => {
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [row],
-        expanded: [row.name],
-        branches: { [row.name]: { rows: [], next: '', unavailable: false } },
-      })}
-    />,
-    { entry: '/activity' },
-  )
-  expect(screen.getByRole('cell', { name: copy })).toBeInTheDocument()
+// Catches: a Task picked in the list opening its waterfall without its details, or a
+// standalone Run's waterfall opening with a selection it never asked for.
+it.each([
+  ['a Task opens its waterfall and its details', goal, goal.name],
+  ['a standalone Run opens its waterfall alone', { ...run, task: '' }, null],
+])('in the full list, %s', async (_, row, record) => {
+  const user = userEvent.setup()
+  const { router } = renderRoute(<Activity page={activityPage({ rows: [row] })} />)
+  await user.click(screen.getByRole('link', { name: rowLabel(row) }))
+  const query = new URLSearchParams(router.state.location.search)
+  expect(query.getAll('expand')).toEqual([row.name])
+  expect(query.get('record')).toBe(record)
 })
 
-it('an unavailable expanded record heads a group whose only child is the status row', () => {
+// Catches: a root with no children showing rows that are not its own, or a Task's own row
+// in its table, which its header above already states.
+it.each([
+  ['a Task', goal, 0],
+  ['a standalone Run', { ...run, task: '' }, 1],
+] as const)('shows %s with no children as its header or its row alone', (_, root, own) => {
+  renderRoute(<Activity page={waterfallPage(root, { [root.name]: [] })} />, {
+    entry: '/activity',
+  })
+  const rows = within(records()).getAllByRole('row')
+  // The column heading, then the root's own row, if it has one.
+  expect(rows).toHaveLength(1 + own)
+  expect(screen.queryAllByRole('region', { name: 'Task' })).toHaveLength(1 - own)
+  if (own) expect(within(rows[1]!).getByRole('link', { name: rowLabel(root) })).toBeInTheDocument()
+})
+
+it('says that the history of an open record is unavailable, under that record', () => {
   renderRoute(
     <Activity
       page={activityPage({
@@ -384,13 +418,17 @@ it('an unavailable expanded record heads a group whose only child is the status 
     />,
     { entry: '/activity' },
   )
-  // The day heading, then the record heading, then its one child.
-  const rows = within(screen.getByRole('rowgroup', { name: 'Fri 18 Sep 2026' })).getAllByRole('row')
-  expect(rows).toHaveLength(3)
-  expect(rows[1]).toHaveAttribute('aria-level', '2')
-  expect(within(rows[1]!).getByRole('link', { name: goal.intent })).toBeInTheDocument()
-  expect(within(rows[1]!).getByRole('button', { name: 'Collapse record' })).toBeInTheDocument()
-  expect(rows[2]).toHaveTextContent('This history is unavailable.')
+  // The Task's header names it; under the column heading, its history says it is unavailable.
+  expect(
+    within(screen.getByRole('region', { name: 'Task' })).getByRole('heading', {
+      name: goal.intent,
+    }),
+  ).toBeInTheDocument()
+  const rows = within(records()).getAllByRole('row')
+  expect(rows).toHaveLength(2)
+  expect(rows[1]).toHaveTextContent('This history is unavailable.')
+  // No summary states a value from a history it cannot read.
+  expect(screen.getByText('Time is unavailable. Some records are unavailable.')).toBeVisible()
 })
 
 const dayRecords = (label: string) =>
@@ -418,11 +456,11 @@ it('labels a day by its UTC date, even today, and shows the full instant on hove
   expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-30 00:04:00 UTC')
 })
 
-it('names the day of a selected record that sits outside every day group', () => {
+it('names the day of an open record that sits outside every day group', () => {
   renderRoute(<Activity page={activityPage({ rows: [], selectedRow: goal })} />, {
     entry: '/activity',
   })
-  const row = within(screen.getByRole('table', { name: 'Activity records' }))
+  const row = within(screen.getByRole('table', { name: 'Tasks and runs' }))
     .getAllByRole('row')
     .find((candidate) => within(candidate).queryByText('Outside this workspace or page:'))!
   expect(within(row).getByText('Fri 18 Sep 2026')).toBeInTheDocument()
@@ -442,59 +480,305 @@ it('ends the detail of a record outside the list without a link back to it', () 
     />,
     { entry: '/activity?record=x' },
   )
-  const drawer = screen.getByRole('dialog', { name: 'Activity details' })
-  expect(within(drawer).getByRole('heading', { level: 2, name: goal.intent })).toBeInTheDocument()
-  expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
+  // A Task states its details in the header above its waterfall, never in a rail.
+  expect(screen.queryByRole('dialog', { name: 'Activity details' })).toBeNull()
+  const header = screen.getByRole('region', { name: 'Task' })
+  expect(within(header).getByRole('heading', { level: 2, name: goal.intent })).toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'Reveal record' })).toBeNull()
 })
 
-const headingLevel = (name: string) =>
-  screen
+const recordNames = () =>
+  within(records())
     .getAllByRole('row')
-    .find((row) => within(row).queryByRole('link', { name }))!
-    .getAttribute('aria-level')
+    .slice(1)
+    .map((row) => row.querySelector('[data-record-link]')?.textContent)
 
-// Wax pins each heading under its parent's; Activity nests a Run's group in its Task's.
-it('nests an expanded Run under its expanded Task, under the day', () => {
+// Catches: a Run's calls listed beside it instead of under it, or a Run's Events as rows.
+it('lists a Run under its Task and its calls under the Run, with Events as marks', () => {
+  const log: ActivityRow = {
+    kind: 'output',
+    name: `${run.name}/events/2`,
+    workspace,
+    agent: '',
+    task: goal.name,
+    run: run.name,
+    label: 'log #2',
+    startedAt,
+    eventKind: 'program.logged',
+  }
   renderRoute(
+    <Activity page={waterfallPage(goal, { [goal.name]: [run], [run.name]: [invocation, log] })} />,
+    { entry: '/activity' },
+  )
+  // The Task's header names the Task; its table starts at the Run.
+  expect(recordNames()).toEqual(['you', invocation.callPath])
+  // A screen reader hears the same nesting the indent shows.
+  expect(
+    within(records())
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => row.getAttribute('aria-level')),
+  ).toEqual(['1', '2'])
+  const mark = within(records()).getByRole('link', { name: 'log #2' })
+  // The mark sits on its Run's row and links to the Event.
+  expect(mark.closest('[role=row]')).toContainElement(
+    screen.getAllByRole('link', { name: 'you' })[0]!,
+  )
+  expect(new URLSearchParams(mark.getAttribute('href')!.split('?')[1]).get('record')).toBe(log.name)
+})
+
+// Catches: marks that only a pointer reaches, or ← and → acting on a row with no marks.
+it('← and → select the marks of the cursor Run from the keyboard', async () => {
+  const user = userEvent.setup()
+  const mark = (sequence: number): ActivityRow => ({
+    kind: 'output',
+    name: `${run.name}/events/${sequence}`,
+    workspace,
+    agent: '',
+    task: goal.name,
+    run: run.name,
+    label: `log #${sequence}`,
+    startedAt,
+    eventKind: 'program.logged',
+  })
+  const { router } = renderRoute(
     <Activity
-      page={activityPage({
-        rows: [goal],
-        expanded: [goal.name, run.name],
-        branches: {
-          [goal.name]: { rows: [run], next: '', unavailable: false },
-          [run.name]: { rows: [invocation], next: '', unavailable: false },
-        },
+      page={waterfallPage(goal, {
+        [goal.name]: [run],
+        [run.name]: [mark(1), invocation, mark(3)],
       })}
     />,
     { entry: '/activity' },
   )
-  expect(headingLevel(goal.intent)).toBe('2')
-  expect(headingLevel('you')).toBe('3')
-  expect(screen.getByRole('rowgroup', { name: 'Fri 18 Sep 2026' })).toContainElement(
-    screen.getByRole('link', { name: invocation.callPath }),
-  )
+  const selected = () => new URLSearchParams(router.state.location.search).get('record')
+  act(() => records().focus())
+  // The first record under the Task's header is its Run.
+  await user.keyboard('{ArrowDown}{ArrowRight}')
+  expect(selected()).toBe(mark(1).name)
+  await user.keyboard('{ArrowLeft}')
+  expect(selected()).toBe(mark(3).name)
+  // The keys stay with the table.
+  expect(records()).toHaveFocus()
 })
 
-// Only top-level records are grouped by day: a child stays with its parent.
-it('keeps a child that started after midnight under its parent and its day', () => {
+// Catches: a click on a mark opening its Run, or a hidden mark still taking clicks.
+it('opens a mark you click, and hides every mark when you turn marks off', async () => {
+  const user = userEvent.setup()
+  const log: ActivityRow = {
+    kind: 'output',
+    name: `${run.name}/events/2`,
+    workspace,
+    agent: '',
+    task: goal.name,
+    run: run.name,
+    label: 'log #2',
+    startedAt,
+    eventKind: 'program.logged',
+  }
+  const { router } = renderRoute(
+    <Activity page={waterfallPage(goal, { [goal.name]: [run], [run.name]: [log] })} />,
+    { entry: '/activity' },
+  )
+  await user.click(within(records()).getByRole('link', { name: 'log #2' }))
+  expect(new URLSearchParams(router.state.location.search).get('record')).toBe(log.name)
+  const toggle = screen.getByRole('button', { name: 'Marks' })
+  expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  // Its icon has one shape for on and another for off: the pressed fill is not the only cue.
+  const shape = () => toggle.querySelector('svg')!.innerHTML
+  const on = shape()
+  await user.click(toggle)
+  expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  expect(toggle).toHaveAccessibleName('Marks')
+  expect(shape()).not.toBe(on)
+  expect(within(records()).queryByRole('link', { name: 'log #2' })).toBeNull()
+  await user.click(toggle)
+  expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  expect(shape()).toBe(on)
+  expect(within(records()).getByRole('link', { name: 'log #2' })).toBeVisible()
+})
+
+const foreignCall = { ...invocation, task: `${workspace}/tasks/of-an-agent` }
+const foreignPage = activityPage({
+  rows: [goal],
+  selected: foreignCall.name,
+  selectedRow: foreignCall,
+  detail: {
+    kind: 'invocation',
+    invocation: foreignCall,
+    arguments: '{}',
+    result: { kind: 'unknown' },
+    requests: [],
+    request: null,
+    requestUnavailable: false,
+  },
+})
+// Catches: an Agent's call you review showing no row at all, because the list's scope does
+// not return its Task, or the waterfall claiming a history it cannot read.
+it('shows a selected record alone when Coral returns no top-level record for it', () => {
+  const foreign = foreignCall
+  renderRoute(<Activity page={foreignPage} />, { entry: '/activity?record=x' })
+  const rows = within(records()).getAllByRole('row').slice(1)
+  expect(rows[0]).toHaveAttribute('aria-selected', 'true')
+  expect(rows[0]).toHaveAttribute('data-record-key', foreign.name)
+  // Only the record and the line that says its history is unavailable.
+  expect(rows).toHaveLength(1)
+  expect(screen.getByText('Time is unavailable. Some records are unavailable.')).toBeVisible()
+  // The list offers no row that would open a call as if it were a Task or a Run.
+  expect(screen.queryByText('Outside this workspace or page:')).toBeNull()
+})
+
+const reader = (store: ActivityTraceStore) => ({ store, retry: vi.fn(), prefer: vi.fn() })
+
+// Catches: "unavailable" said of a history that only has not loaded yet, such as a record
+// whose Task is not on the list's page, or a value from a read that failed.
+it('says a history loads until Coral answers, and that it did not load when a read fails', async () => {
+  const looking = openTrace(foreignCall.task)
+  const view = renderLivePage(
+    (trace: ReturnType<typeof reader>) => <Activity page={foreignPage} trace={trace} />,
+    reader(looking),
+    { entry: '/activity?record=x' },
+  )
+  // The selected record shows meanwhile, alone.
+  expect(within(records()).getAllByRole('row').slice(1)).toHaveLength(1)
+  expect(screen.getAllByText(/^Loading records…/).length).toBeGreaterThan(0)
+  // One status announces the load, not one for the timeline and one for its time.
+  expect(
+    screen
+      .getAllByRole('status')
+      .filter((status) => status.textContent!.startsWith('Loading records…')),
+  ).toHaveLength(1)
+  expect(screen.queryByText(/unavailable/)).toBeNull()
+
+  const failed = reader({ ...looking, failed: true })
+  await view.update(failed)
+  expect(screen.getByText('Time is unavailable. The records did not load.')).toBeVisible()
+  expect(screen.queryByText(/^Loading records…/)).toBeNull()
+  await userEvent.click(
+    within(screen.getByRole('alert')).getByRole('button', { name: 'Try again' }),
+  )
+  expect(failed.retry).toHaveBeenCalledOnce()
+
+  // Coral answers that it returns no such top-level record.
+  await view.update(reader({ ...looking, unavailable: true }))
+  expect(screen.getByText('Time is unavailable. Some records are unavailable.')).toBeVisible()
+  expect(screen.queryByText(/^Loading records…/)).toBeNull()
+  expect(within(records()).getAllByRole('row').slice(1)).toHaveLength(1)
+})
+
+/** A call of the Run at child ordinal `position`. */
+const callAt = (position: number): ActivityRow => ({
+  ...invocation,
+  name: `${invocation.name}-${position}`,
+  position,
+})
+// Catches: a step that skips children the trace has not read, or that stops at them
+// without asking for the ones it stopped at, so the next press waits for every other read.
+it('stops ↑ and ↓ at children that are not loaded and asks for the ones beside the cursor', async () => {
+  const user = userEvent.setup()
+  const page = activityPage({
+    rows: [goal],
+    expanded: [goal.name, run.name],
+    branches: {
+      [goal.name]: { rows: [{ ...run, position: 0 }], total: '1', next: '', unavailable: false },
+      [run.name]: {
+        rows: [callAt(0), callAt(1), callAt(250), callAt(251)],
+        total: '252',
+        next: '',
+        unavailable: false,
+      },
+    },
+  })
+  const trace = reader(absorbPage(openTrace(goal.name), page))
+  renderRoute(<Activity page={page} trace={trace} />, { entry: '/activity' })
+  const cursor = () =>
+    records().querySelector('[role=row][data-active]')?.getAttribute('data-record-key')
+  expect(within(records()).getByText('Loading 248 records…')).toBeVisible()
+  act(() => records().focus())
+  // The Run under the Task's header, then the two calls before the gap.
+  await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}')
+  expect(cursor()).toBe(callAt(1).name)
+  await user.keyboard('{ArrowDown}')
+  expect(cursor()).toBe(callAt(1).name)
+  expect(trace.prefer).toHaveBeenLastCalledWith([{ parent: run.name, at: 2 }])
+})
+
+const timeParts = () => screen.getByRole('list', { name: 'Time by part' }).textContent
+
+// Catches: the time of work in progress worked out once and never again, so the breakdown
+// stands still while a Run runs.
+it('counts the time of work in progress in the breakdown as the clock moves', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+  onTestFinished(() => {
+    vi.useRealTimers()
+  })
+  const started = Date.parse(goal.startedAt)
+  vi.setSystemTime(started + 10_000)
+  const open = { ...goal, outcome: 'open' as const, endedAt: null }
+  const running = { ...run, state: 'running' as const, endedAt: null, position: 0 }
+  const page = activityPage({
+    rows: [open],
+    expanded: [open.name, running.name],
+    branches: {
+      [open.name]: { rows: [running], total: '1', next: '', unavailable: false },
+      [running.name]: { rows: [], total: '0', next: '', unavailable: false },
+    },
+  })
+  renderRoute(<Activity page={page} trace={reader(absorbPage(openTrace(open.name), page))} />, {
+    entry: '/activity',
+  })
+  const before = timeParts()
+  expect(screen.getByText('Work is in progress. These values change.')).toBeVisible()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000)
+  })
+  expect(timeParts()).not.toBe(before)
+})
+
+// Catches: the controls of an axis shown around a table with no record on it.
+it('shows the table alone while no record is open', () => {
+  renderRoute(<Activity page={activityPage({ rows: [] })} />, { entry: '/activity' })
+  expect(within(records()).getByText('Select a task or a run to see its timeline.')).toBeVisible()
+  expect(screen.queryByRole('group', { name: 'Timeline controls' })).toBeNull()
+})
+
+it('asks for the children that end where ↑ stopped, from a record below them', async () => {
+  const user = userEvent.setup()
+  const below = { ...invocation, name: `${invocation.name}-250`, position: 250 }
+  const page = activityPage({
+    rows: [goal],
+    expanded: [goal.name, run.name],
+    selected: below.name,
+    selectedRow: below,
+    branches: {
+      [goal.name]: { rows: [{ ...run, position: 0 }], total: '1', next: '', unavailable: false },
+      [run.name]: { rows: [below], total: '251', offset: 250, next: '', unavailable: false },
+    },
+  })
+  const trace = reader(absorbPage(openTrace(goal.name), page))
+  renderRoute(<Activity page={page} trace={trace} />, { entry: '/activity?record=x' })
+  // The rail shows the record, so the keys start from it.
+  const rail = await screen.findByRole('dialog')
+  act(() => rail.focus())
+  await user.keyboard('{ArrowUp}')
+  expect(trace.prefer).toHaveBeenLastCalledWith([{ parent: run.name, at: 249 }])
+})
+
+// Only top-level records are grouped by day: a child stays in its parent's waterfall.
+it('keeps a child that started after midnight out of the list of days', () => {
   const parent = { ...goal, startedAt: '2026-09-28T23:58:00.000Z' }
   const child = { ...run, startedAt: '2026-09-29T00:04:00.000Z' }
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [parent],
-        expanded: [parent.name],
-        branches: {
-          [parent.name]: { rows: [child], next: '', unavailable: false },
-        },
-      })}
-    />,
-    { entry: '/activity' },
-  )
+  renderRoute(<Activity page={waterfallPage(parent, { [parent.name]: [child] })} />, {
+    entry: '/activity',
+  })
   expect(screen.queryByRole('rowgroup', { name: 'Tue 29 Sep 2026' })).toBeNull()
-  expect(dayRecords('Mon 28 Sep 2026')).toEqual([goal.intent, 'you'])
-  expect(headingLevel(goal.intent)).toBe('2')
-  expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-29 00:04:00 UTC')
+  expect(dayRecords('Mon 28 Sep 2026')).toEqual([goal.intent])
+  // The page holds no record of the Run's own, and the row after it says so.
+  expect(recordNames()).toEqual(['you', undefined])
+  expect(within(records()).getAllByRole('row')[2]).toHaveTextContent('Not loaded.')
+  // The child still states its own time, on its row.
+  expect(within(records()).getAllByRole('row')[1]).toHaveTextContent(
+    'Start (acceptance): 00:04:00.000 UTC.',
+  )
 })
 
 // Catches: a short call that reads "0s", a unit that shows time that has not passed yet, or
@@ -691,5 +975,49 @@ it.each([
     ])
     for (const name of ['View in history', 'Reveal record'])
       expect(within(drawer).queryByRole('link', { name })).toBeNull()
+  },
+)
+
+// Catches: a Task header without the Task's feedback when a link opens a record under the
+// Task. The trace reads the Task's detail for it; a page that selects the Task holds it.
+it.each(['a link opens a record under the Task', 'the Task itself is selected'] as const)(
+  'states the feedback of the Task when %s',
+  (opened) => {
+    const feedback = 'Found 3 invoices.\nTwo were already paid.'
+    const child = { ...tool, position: 0 }
+    const taskDetail = { kind: 'task' as const, task: goal, feedback }
+    const branches = {
+      [goal.name]: { rows: [child], total: '1', next: '', unavailable: false },
+    }
+    const underTask = opened === 'a link opens a record under the Task'
+    const page = activityPage({
+      rows: [goal],
+      expanded: [goal.name],
+      branches,
+      ...(underTask
+        ? {
+            selected: tool.name,
+            selectedRow: child,
+            detail: {
+              kind: 'tool' as const,
+              task: goal.name,
+              interaction: child,
+              evidence: { kind: 'unknown' as const },
+            },
+          }
+        : { selected: goal.name, selectedRow: goal, detail: taskDetail }),
+    })
+    // The trace's read of the Task's detail, answered as the loader answers it.
+    const read = receiveTrace(
+      absorbPage(openTrace(goal.name), page),
+      { windows: [], taskDetail: true },
+      activityPage({ rows: [goal], selected: goal.name, selectedRow: goal, detail: taskDetail }),
+    )
+    renderRoute(<Activity page={page} trace={underTask ? reader(read) : undefined} />, {
+      entry: `/activity?record=${encodeURIComponent(underTask ? tool.name : goal.name)}`,
+    })
+    const header = screen.getByRole('region', { name: 'Task' })
+    // Exactly as the agent wrote it, line breaks and all.
+    expect(within(header).getByText(/^Found 3 invoices\./).textContent).toBe(feedback)
   },
 )

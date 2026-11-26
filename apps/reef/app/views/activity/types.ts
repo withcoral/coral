@@ -1,6 +1,7 @@
 import type { ConnectionState } from '@/views/accounts/types'
 import type { ToolHintsView } from '@/views/providers/types'
 import type { ActivityViewport } from '@/lib/activity-live-types'
+import type { ActivityTraceReader } from '@/lib/activity-trace-reader'
 
 /** History, pending shortcuts, and exact selection share one authorized reader. */
 export interface ActivityViewProps {
@@ -28,6 +29,11 @@ export interface ActivityViewProps {
     /** Null when nothing older is left to load. */
     older: ActivityLoadControl | null
   }
+  /**
+   * Reads everything under the open top-level record. Absent, the waterfall shows only
+   * what `page` holds.
+   */
+  trace?: ActivityTraceReader
   live?: {
     connected: boolean
     followRoot: boolean

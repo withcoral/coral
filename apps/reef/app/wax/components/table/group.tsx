@@ -69,8 +69,13 @@ export function Group({
   /**
    * Record identity and interaction for a heading that is itself a record row.
    * Its cells keep their row layout, so nothing moves when the record expands.
+   * Its `aria-level` is the record's own level, for a record that sits under rows
+   * no group holds. Without one, the heading's level is the group's depth.
    */
-  headingRow?: Pick<RowProps, 'recordKey' | 'selected' | 'active' | 'status' | 'onClick'>
+  headingRow?: Pick<
+    RowProps,
+    'recordKey' | 'selected' | 'active' | 'status' | 'onClick' | 'onDoubleClick' | 'aria-level'
+  >
   /** Shows only the heading. A virtualized caller also leaves the rows out of its list. */
   collapsed?: boolean
   /** The heading is the keyboard cursor's row. */
@@ -95,7 +100,7 @@ export function Group({
         data-pinned-heading
         data-index={index}
         className={styles.groupHeading({ depth: nested ? 'nested' : 'top' })}
-        aria-level={depth + 1}
+        aria-level={headingRow?.['aria-level'] ?? depth + 1}
       >
         {heading ? (
           // A record heading shows its own depth; a plain one takes the group indent.

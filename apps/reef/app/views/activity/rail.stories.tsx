@@ -17,47 +17,76 @@ import type { ActivityPage, ActivityRow } from './types'
 import { emulateReducedMotion, resizeViewport } from '../../../.storybook/browser'
 
 const at = '2026-09-18T14:02:00.000Z'
-const tasks = [1, 2, 3].map((index): ActivityRow & { kind: 'task' } => ({
+// One open Task, whose waterfall lists the records a play picks: three searches and a Run
+// that waits for an approval.
+const root: ActivityRow & { kind: 'task' } = {
   kind: 'task',
-  name: `${workspace}/tasks/t${index}`,
+  name: `${workspace}/tasks/batch`,
   workspace,
   actor: 'Collections agent',
-  intent: `Task ${index}`,
+  intent: 'Batch',
   outcome: 'open',
   startedAt: at,
   endedAt: null,
   agent: '',
+}
+const tasks = [1, 2, 3].map((index): ActivityRow & { kind: 'tool' } => ({
+  kind: 'tool',
+  name: `${root.name}/interactions/t${index}`,
+  workspace,
+  task: root.name,
+  tool: 'search',
+  intent: `Task ${index}`,
+  outcome: 'succeeded',
+  startedAt: at,
+  completedAt: at,
+  acceptedRun: '',
+  agent: '',
+  position: index - 1,
 }))
 const waiting: ActivityRow & { kind: 'run' } = {
   ...run,
   actor: 'Reminder run',
   agent: '',
+  task: root.name,
   startedAt: at,
+  position: 3,
 }
-const rows: ActivityRow[] = [...tasks, waiting]
+const rows: ActivityRow[] = [root, ...tasks, waiting]
 
 /** The page the loader returns for the record the URL selects. */
 function pageFor(record: string | null): ActivityPage {
   const selectedRow = rows.find((row) => row.name === record) ?? null
   return activityPage({
-    rows,
+    rows: [root],
+    expanded: [root.name],
+    branches: {
+      [root.name]: { rows: [...tasks, waiting], total: '4', next: '', unavailable: false },
+    },
     selected: selectedRow?.name ?? null,
     selectedRow,
     detail:
       selectedRow?.kind === 'task'
         ? { kind: 'task', task: selectedRow }
-        : selectedRow?.kind === 'run'
+        : selectedRow?.kind === 'tool'
           ? {
-              kind: 'run',
-              run: selectedRow,
-              request: approvalRequest,
-              // The program that makes the call this review decides.
-              source: approvalContext.source,
-              linkedSharedTools: [],
-              linkedPrivateTools: [],
-              terminal: { kind: 'unavailable' },
+              kind: 'tool',
+              task: selectedRow.task,
+              interaction: selectedRow,
+              evidence: { kind: 'unknown' },
             }
-          : null,
+          : selectedRow?.kind === 'run'
+            ? {
+                kind: 'run',
+                run: selectedRow,
+                request: approvalRequest,
+                // The program that makes the call this review decides.
+                source: approvalContext.source,
+                linkedSharedTools: [],
+                linkedPrivateTools: [],
+                terminal: { kind: 'unavailable' },
+              }
+            : null,
   })
 }
 
@@ -256,21 +285,37 @@ export const PointerAndHistory: Story = {
     await userEvent.click(link('Task 1'))
     await waitFor(() => expect(focus()).toBe('table on Task 1'))
     const close = within(reopened).getByRole('button', { name: 'Close details' })
-    // The rail's first control is its live toggle.
-    const follow = within(reopened).getByRole('button', { name: 'Follow this task' })
+    // A search follows nothing, so the rail's first control is its close control.
     for (let step = 0; step < 20 && table.contains(document.activeElement); step++)
       await userEvent.tab()
-    await waitFor(() => expect(follow).toHaveFocus())
+    await waitFor(() => expect(close).toHaveFocus())
     await userEvent.tab({ shift: true })
     await waitFor(() => expect(table.contains(document.activeElement)).toBe(true))
     await userEvent.tab()
-    await waitFor(() => expect(follow).toHaveFocus())
+    await waitFor(() => expect(close).toHaveFocus())
+    // A Task states itself, and its live toggle, in the header above its waterfall: the
+    // table holds no row of it, and no rail shows it.
+    const header = screen.getByRole('region', { name: 'Task' })
+    await expect(within(header).getByRole('heading', { name: 'Batch', level: 2 })).toBeVisible()
+    await expect(within(header).getByRole('button', { name: 'Follow this task' })).toBeVisible()
+    await expect(within(table).queryByRole('link', { name: 'Batch' })).toBeNull()
+    await userEvent.click(link('Task 1'))
+    await heading(reopened, 'Task 1')
 
     // Escape in the rail closes it.
     close.focus()
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(rail()).toBeNull())
     // Closing returns focus to the table, the one Tab stop of its records.
+    await waitFor(() => expect(table).toHaveFocus())
+    await expect(address()).not.toContain('record=')
+
+    // The close control does the same as Escape: focus does not stay on a control that is gone.
+    await userEvent.click(link('Task 2'))
+    const again = await screen.findByRole('dialog', { name: 'Activity details' })
+    await heading(again, 'Task 2')
+    await userEvent.click(within(again).getByRole('button', { name: 'Close details' }))
+    await waitFor(() => expect(rail()).toBeNull())
     await waitFor(() => expect(table).toHaveFocus())
     await expect(address()).not.toContain('record=')
   },
@@ -671,11 +716,14 @@ export const DockedTransition: Story = {
     // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
     if (!(await resizeViewport(1440, 900))) return
     const { table, link, rail, shows } = await surface(canvasElement)
-    const full = box(table).width
+    // What the rail docks beside: the list's heading and the panes under it. The list
+    // itself gives its room to the waterfall while the rail is open, so measure them all.
+    const beside = table.closest('[data-activity-view]')!.firstElementChild!
+    const full = box(beside).width
     const closeRail = () =>
       userEvent.click(within(rail()!).getByRole('button', { name: 'Close details' }))
     // The element the rail portals into, beside the table in the page's row: the width
-    // the table gives up.
+    // the page beside it gives up.
     const dockOf = (popup: Element) => {
       let dock = popup
       while (!dock.parentElement!.contains(table)) dock = dock.parentElement!
@@ -725,18 +773,18 @@ export const DockedTransition: Story = {
     const opened = rail()!
     await expect(dockOf(opened)).toBe(dock)
     await expect(opened.getAnimations().map(duration)).toContain(200)
-    const midway = box(table).width
+    const midway = box(beside).width
     const railWidth = box(opened).width
     // Halfway, the table has given up part of its width, and nothing overlaps.
     await expect(midway).toBeLessThan(full)
-    await expect(box(table).right + 16).toBeCloseTo(box(opened).left, 0)
+    await expect(box(beside).right + 16).toBeCloseTo(box(opened).left, 0)
     open.release()
     // The close below starts from rest. A close during the entrance starts no exit
     // motion of its own; this play does not cover that case.
     await Promise.all(opened.getAnimations().map(({ finished }) => finished))
     await open.transition.finished
     await shows('Task 1')
-    const settled = box(table).width
+    const settled = box(beside).width
     await expect(settled).toBeLessThan(midway)
     // The rail keeps its width throughout, so its content never rewraps.
     await expect(box(opened).width).toBeCloseTo(railWidth, 0)
@@ -745,12 +793,12 @@ export const DockedTransition: Story = {
     await userEvent.click(link('Task 3'))
     await shows('Task 3')
     await expect(dock.getAnimations()).toHaveLength(0)
-    await expect(box(table).width).toBeCloseTo(settled, 0)
+    await expect(box(beside).width).toBeCloseTo(settled, 0)
     await resizeViewport(1300, 900)
     await expect(dock.getAnimations()).toHaveLength(0)
-    await expect(box(table).width).toBeLessThan(settled)
+    await expect(box(beside).width).toBeLessThan(settled)
     await resizeViewport(1440, 900)
-    await waitFor(() => expect(box(table).width).toBeCloseTo(settled, 0))
+    await waitFor(() => expect(box(beside).width).toBeCloseTo(settled, 0))
 
     // Closing, the dock narrows over the rail's own exit, which keeps the rail until then.
     const close = await hold(closeRail, 0.5, 'closing')
@@ -762,23 +810,23 @@ export const DockedTransition: Story = {
         .filter((animation) => duration(animation) === 175)
         .map(({ playState }) => playState),
     ).toEqual(['paused', 'paused'])
-    const half = box(table).width
+    const half = box(beside).width
     await expect(half).toBeGreaterThan(settled)
     await expect(half).toBeLessThan(full)
     // Another record reopens the same rail, and the dock widens again from where it was.
     const reopen = await hold(() => userEvent.click(link('Task 2')), 0, 'reopening')
-    await expect(box(table).width).toBeCloseTo(half, 0)
+    await expect(box(beside).width).toBeCloseTo(half, 0)
     close.release()
     reopen.release()
     await reopen.transition.finished
     await shows('Task 2')
     await expect(rail()).toBe(opened)
-    await expect(box(table).width).toBeCloseTo(settled, 0)
+    await expect(box(beside).width).toBeCloseTo(settled, 0)
 
     // A close that runs its course gives the table its whole width back.
     await closeRail()
     await waitFor(() => expect(rail()).toBeNull())
-    await expect(box(table).width).toBeCloseTo(full, 0)
+    await expect(box(beside).width).toBeCloseTo(full, 0)
 
     // With reduced motion, the width changes at once both ways.
     if (!(await emulateReducedMotion(true))) return
@@ -786,10 +834,10 @@ export const DockedTransition: Story = {
       await userEvent.click(link('Task 1'))
       await shows('Task 1')
       await expect(dock.getAnimations()).toHaveLength(0)
-      await expect(box(table).width).toBeCloseTo(settled, 0)
+      await expect(box(beside).width).toBeCloseTo(settled, 0)
       await closeRail()
       await waitFor(() => expect(rail()).toBeNull())
-      await expect(box(table).width).toBeCloseTo(full, 0)
+      await expect(box(beside).width).toBeCloseTo(full, 0)
     } finally {
       await emulateReducedMotion(false)
     }

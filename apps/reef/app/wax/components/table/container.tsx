@@ -1,12 +1,15 @@
 import classNames from 'classnames'
 import {
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
+  useState,
   type CSSProperties,
   type PropsWithChildren,
   type ReactElement,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from 'react'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 
@@ -19,8 +22,10 @@ import { ColumnsProvider } from './columns-context'
 import type { TableDensity, TableGroupHeadings, TableVariant } from './constants'
 import {
   CELL_HEIGHT_PX,
+  GROUP_DEPTH_PROPERTY,
   GROUP_HEADING_HEIGHT_PROPERTY,
   groupHeadingHeightPx,
+  HEADING_HEIGHT_PX,
   ROWS_MAX_HEIGHT_PROPERTY,
 } from './constants'
 import * as styles from './table.css'
@@ -50,6 +55,11 @@ interface ContainerBaseProps {
    * level: a top-level heading on the deeper tint, a nested one on the lighter.
    */
   groupHeadings?: TableGroupHeadings
+  /**
+   * How tall a group heading stands, in pixels, when its rows run taller than one line,
+   * such as a row with a second line under its cells. Pinned headings stack by it.
+   */
+  groupHeadingHeight?: number
   ref?: Ref<HTMLDivElement>
   variant?: TableVariant
 }
@@ -147,6 +157,7 @@ export function Container({
   density = 'default',
   focusable = false,
   groupHeadings = 'plain',
+  groupHeadingHeight: headingHeightOverride,
   layout = 'auto',
   maxRows,
   onPinnedGroupChange,
@@ -163,8 +174,14 @@ export function Container({
 }: ContainerProps) {
   const readingRef = useRef<HTMLDivElement>(null)
   useImperativeHandle(ref, () => readingRef.current!)
-  const groupHeadingHeight = groupHeadingHeightPx(density, groupHeadings)
+  const groupHeadingHeight = headingHeightOverride ?? groupHeadingHeightPx(density, groupHeadings)
   const onScroll = usePinnedGroup(readingRef, density, groupHeadingHeight, onPinnedGroupChange)
+  const unpinned = useUnpinnedHeadings(
+    readingRef,
+    layout,
+    HEADING_HEIGHT_PX[density],
+    groupHeadingHeight,
+  )
   if (maxRows !== undefined && !(Number.isInteger(maxRows) && maxRows > 0))
     throw new RangeError('Table maxRows must be a positive integer.')
 
@@ -201,6 +218,7 @@ export function Container({
             groupHeadings === 'prominent' && styles.prominentGroupHeadings,
             staticRows && styles.staticRows,
             focusable && styles.focusableTable,
+            unpinned && styles.unpinnedHeadings,
             className,
           )}
           ref={readingRef}
@@ -222,6 +240,47 @@ export function Container({
       )}
     </ReadingPosition>
   )
+}
+
+/**
+ * Whether a scroll table is too short to pin its group headings: the headings one above
+ * the other, one for each level of groups it holds, would leave no room for a row under
+ * them. Its headings then scroll with their rows, so every row can still show in full.
+ */
+function useUnpinnedHeadings(
+  table: RefObject<HTMLDivElement | null>,
+  layout: ContainerProps['layout'],
+  headingHeight: number,
+  groupHeadingHeight: number,
+) {
+  const [unpinned, setUnpinned] = useState(false)
+  useLayoutEffect(() => {
+    const element = table.current
+    if (!element || layout !== 'scroll') return
+    const measure = () => {
+      let levels = 0
+      for (const heading of element.querySelectorAll<HTMLElement>('[data-pinned-heading]'))
+        levels = Math.max(
+          levels,
+          Number(heading.parentElement?.style.getPropertyValue(GROUP_DEPTH_PROPERTY) || 0) + 1,
+        )
+      // A row as tall as a heading, under every level of headings.
+      setUnpinned(
+        levels > 0 && element.clientHeight - headingHeight < (levels + 1) * groupHeadingHeight,
+      )
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    // Groups open and close between resizes, which changes how many levels pin.
+    const mutations = new MutationObserver(measure)
+    mutations.observe(element, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      mutations.disconnect()
+    }
+  }, [table, layout, headingHeight, groupHeadingHeight])
+  return unpinned
 }
 
 /**

@@ -200,24 +200,29 @@ export function activityNavigation(
     }
     return `${path}?${next}`
   }
-  const recordHref = (name: string) => href({ ...clearSelection, record: name })
-  /** `stopLive` also turns live mode off, for a collapse that hides the Run it follows. */
-  const toggleHref = (name: string, stopLive = false) =>
-    href({
-      ...(stopLive && { live: null, liveExpanded: null }),
-      tree: '1',
-      expand: page.expanded.includes(name)
-        ? page.expanded.filter((item) => item !== name)
-        : [...page.expanded, name],
-    })
-  /** Collapses `name` and selects it, for a collapse that hides the selected record. */
-  const collapseHref = (name: string) =>
+  /**
+   * Selects `name`. With `root`, the top-level record it sits under, the address also names
+   * that root, so its waterfall stays open after the selection closes.
+   */
+  const recordHref = (name: string, root?: string | null) =>
     href({
       ...clearSelection,
       record: name,
-      tree: '1',
-      expand: page.expanded.filter((item) => item !== name),
+      ...(root &&
+        !page.expanded.includes(root) &&
+        page.expanded.length < MAX_EXPANDED_RECORDS && {
+          tree: '1',
+          expand: [...page.expanded, root],
+        }),
     })
+  /**
+   * Opens the waterfall of the top-level record `name` alone. With `select`, the rail also
+   * shows `name`; otherwise nothing is selected.
+   */
+  const rootHref = (name: string, select = false) =>
+    href({ ...clearSelection, tree: '1', expand: [name], ...(select && { record: name }) })
+  /** The list with no waterfall open, where the single-pane flow goes back to. */
+  const listHref = href({ ...clearSelection, tree: '1', expand: [] })
   const backHref = href(clearSelection)
   /** What live mode follows, or null while it is off. */
   const liveScope = liveScopeOf(query.get('live'))
@@ -299,8 +304,8 @@ export function activityNavigation(
     query,
     href,
     recordHref,
-    toggleHref,
-    collapseHref,
+    rootHref,
+    listHref,
     revealHref,
     backHref,
     liveScope,
@@ -702,36 +707,6 @@ export function recordParents(row: ActivityRow): string[] {
   const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
   const task = row.kind === 'task' ? '' : (row.task ?? '')
   return [call, run, task].filter(Boolean)
-}
-
-/**
- * The displayed record tree in order. An unloaded run of child ordinals and an
- * unavailable history are boundaries, so the keys never skip records.
- */
-export function activityStops(page: ActivityPage, roots: ActivityRow[]): ActivityStop[] {
-  const stops: ActivityStop[] = []
-  const visit = (rows: ActivityRow[], parents: string[]) => {
-    for (const row of rows) {
-      const expanded = expandable(row) && page.expanded.includes(row.name)
-      stops.push({ kind: 'record', row, parents, expanded })
-      if (!expanded) continue
-      const branch = page.branches[row.name]
-      if (!branch || branch.unavailable) {
-        stops.push({ kind: 'boundary' })
-        continue
-      }
-      const { items, total } = childWindow(branch)
-      let next = 0
-      for (const item of items.toSorted((x, y) => x.index - y.index)) {
-        if (item.index > next) stops.push({ kind: 'boundary' })
-        visit([item.row], [row.name, ...parents])
-        next = item.index + 1
-      }
-      if (total > next) stops.push({ kind: 'boundary' })
-    }
-  }
-  visit(roots, [])
-  return stops
 }
 
 /**

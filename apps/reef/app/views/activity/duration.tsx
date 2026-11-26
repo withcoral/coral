@@ -17,6 +17,18 @@ export function duration(nanos: string | number, { counting = false } = {}) {
   return `${Math.floor(ms / 3_600_000)}h ${Math.floor(ms / 60_000) % 60}m`
 }
 
+/**
+ * A duration for a chart's axis and exact readings, from milliseconds: whole milliseconds
+ * under a second, hundredths of a second under ten seconds, tenths under a minute, then as
+ * `duration` reads.
+ */
+export function preciseDuration(milliseconds: number) {
+  const ms = Math.max(0, milliseconds)
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`
+  return duration(ms * 1_000_000)
+}
+
 /** A duration that counts up while its work runs. */
 export function ElapsedDuration({
   milliseconds,
@@ -30,4 +42,22 @@ export function ElapsedDuration({
       {(value) => duration(value * 1_000_000, { counting: running })}
     </Elapsed>
   )
+}
+
+/**
+ * The duration of a record that Coral times by its start and end alone, such as a Task. With
+ * no recorded end, it says why instead of counting from the clock.
+ */
+export function RecordedDuration({
+  startedAt,
+  endedAt,
+  ongoing,
+}: {
+  startedAt: string
+  endedAt: string | null
+  /** Coral's record says the work goes on. */
+  ongoing: boolean
+}) {
+  if (!endedAt) return ongoing ? 'In progress' : 'No recorded end'
+  return duration(Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) * 1_000_000)
 }

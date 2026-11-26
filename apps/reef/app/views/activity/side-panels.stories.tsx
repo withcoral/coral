@@ -98,7 +98,13 @@ const meta = {
     },
   ],
   play: async ({ canvasElement, parameters, args }) => {
-    const opened = await within(canvasElement.ownerDocument.body).findByRole('dialog')
+    const body = within(canvasElement.ownerDocument.body)
+    // A Task states its details in the header above its waterfall, and opens no rail.
+    const ofTask = args.page.detail?.kind === 'task'
+    const opened = ofTask
+      ? await body.findByRole('region', { name: 'Task' })
+      : await body.findByRole('dialog')
+    if (ofTask) await expect(body.queryByRole('dialog')).toBeNull()
     await waitFor(() => expect(opened).toBeVisible())
     for (const text of [parameters.evidence ?? []].flat())
       await expect(opened).toHaveTextContent(text)
@@ -272,8 +278,9 @@ function taskPage(row: ReturnType<typeof task>, feedback?: string) {
   return panelPage(row, { kind: 'task', task: row, ...(feedback !== undefined && { feedback }) })
 }
 /**
- * The Task's Context row leads its list and matches its table cell exactly: the same
- * text, meaning and colour. Savings read green and costs red, each with a sign.
+ * The Task's Context leads the facts in its header and matches its cell in the list
+ * exactly: the same text, meaning and colour. Savings read green and costs red, each with
+ * a sign.
  */
 function contextStory(
   story: Story,
@@ -284,14 +291,17 @@ function contextStory(
     play: async (context) => {
       await meta.play(context)
       const body = within(context.canvasElement.ownerDocument.body)
-      const opened = await body.findByRole('dialog')
+      const opened = await body.findByRole('region', { name: 'Task' })
       const terms = within(opened)
         .getAllByRole('term')
         .map((term) => term.textContent)
-      await expect(terms.slice(0, 2)).toEqual(['Context', 'Started'])
+      await expect(terms.slice(0, 2)).toEqual(['Context', 'Duration'])
       const shown = within(opened).getByLabelText(expected.meaning)
       await expect(shown).toHaveTextContent(expected.label)
-      const cell = within(body.getByRole('table')).getByLabelText(expected.meaning)
+      // The Task's own row is in the list, beside its header.
+      const cell = within(body.getByRole('table', { name: 'Tasks and runs' })).getByLabelText(
+        expected.meaning,
+      )
       const color = (element: Element) => getComputedStyle(element).color
       await expect(color(shown)).toBe(color(cell))
       const [red, green] = color(shown)
@@ -526,7 +536,7 @@ export const DescribeTool = describeStory(
     { evidence: ['Create an issue', 'GitHub', 'Result'] },
   ),
   ['Declaration', 'API method documentation'],
-  { terms: ['Call path', 'Provider', 'Intent', 'Started', 'Completed'], carded: true },
+  { terms: ['Call path', 'Provider', 'Intent', 'Duration', 'Started', 'Completed'], carded: true },
 )
 export const DescribePrivateTool = describeStory(
   panel(
@@ -538,7 +548,7 @@ export const DescribePrivateTool = describeStory(
     { evidence: ['1 error', 'Issue', 'Label'] },
   ),
   ['Source', "Cannot find name 'coral'."],
-  { terms: ['Call path', 'Types', 'Intent', 'Started', 'Completed'], carded: true },
+  { terms: ['Call path', 'Types', 'Intent', 'Duration', 'Started', 'Completed'], carded: true },
 )
 /** Long call paths and long documentation stay inside a phone screen, open or closed. */
 export const DescribeNarrow = describeStory(
@@ -549,7 +559,7 @@ export const DescribeNarrow = describeStory(
   ),
   ['Declaration'],
   {
-    terms: ['Call path', 'Provider', 'Intent', 'Started', 'Completed'],
+    terms: ['Call path', 'Provider', 'Intent', 'Duration', 'Started', 'Completed'],
     fits: true,
     carded: true,
   },
@@ -606,7 +616,7 @@ export const DescribeRejected = noticeStory(
     { evidence: ['Rejected: invalid_argument', 'Unknown call path.'] },
   ),
   'Unknown call path.',
-  ['Started', 'Completed'],
+  ['Duration', 'Started', 'Completed'],
 )
 export const DescribeUnknown = noticeStory(
   panel(
@@ -621,7 +631,7 @@ export const DescribeUnknown = noticeStory(
     { evidence: 'Completion is unknown or incomplete.' },
   ),
   'Completion is unknown or incomplete. External effects may be uncertain.',
-  ['Started'],
+  ['Duration', 'Started'],
 )
 export const DescribeContextUnavailable = noticeStory(
   panel(
@@ -630,7 +640,7 @@ export const DescribeContextUnavailable = noticeStory(
     { evidence: 'The request context is unavailable.' },
   ),
   'The request context is unavailable.',
-  ['Started', 'Completed'],
+  ['Duration', 'Started', 'Completed'],
 )
 
 // Tool calls: other evidence -------------------------------------------------------
@@ -821,7 +831,7 @@ const toolEvidence = {
       }),
       { evidence: 'Send invoice reminders' },
     ),
-    { times: ['Started', 'Completed'], outcome: 'succeeded' },
+    { times: ['Duration', 'Started', 'Completed'], outcome: 'succeeded' },
   ),
   private_tool: privateToolStory(
     panel(
@@ -829,7 +839,7 @@ const toolEvidence = {
       toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
       { evidence: 'Save the reminder batch' },
     ),
-    { times: ['Started', 'Completed'], outcome: 'succeeded' },
+    { times: ['Duration', 'Started', 'Completed'], outcome: 'succeeded' },
   ),
   rejection: execStory(
     panel(
@@ -841,7 +851,7 @@ const toolEvidence = {
       }),
       { evidence: "Cannot find name 'invoices'." },
     ),
-    { times: ['Started', 'Completed'], outcome: 'rejected', error: admissionError },
+    { times: ['Duration', 'Started', 'Completed'], outcome: 'rejected', error: admissionError },
   ),
   unknown: execStory(
     panel(
@@ -849,7 +859,7 @@ const toolEvidence = {
       toolPage(execCall('unknown', { completedAt: null }), { kind: 'unknown' }),
       { evidence: 'Send invoice reminders' },
     ),
-    { times: ['Started'], outcome: 'result unknown', unknown: true },
+    { times: ['Duration', 'Started'], outcome: 'result unknown', unknown: true },
   ),
 } satisfies Record<InteractionEvidence['kind'], Story>
 export const ExecAccepted = toolEvidence.run
@@ -867,7 +877,7 @@ export const ExecRejectedNarrow = execStory(
     { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
   ),
   {
-    times: ['Started', 'Completed'],
+    times: ['Duration', 'Started', 'Completed'],
     outcome: 'rejected',
     error: longAdmissionError,
     fits: true,
@@ -885,7 +895,7 @@ export const ExecRejectedWithoutMessage = execStory(
     { evidence: 'Rejected with no message: program_admission_failed' },
   ),
   {
-    times: ['Started', 'Completed'],
+    times: ['Duration', 'Started', 'Completed'],
     outcome: 'rejected',
     notice: 'Rejected with no message: program_admission_failed',
   },
@@ -898,7 +908,7 @@ export const ExecEvidenceUnavailable = execStory(
     { evidence: 'The submission evidence is unavailable.' },
   ),
   {
-    times: ['Started', 'Completed'],
+    times: ['Duration', 'Started', 'Completed'],
     outcome: 'succeeded',
     notice: 'The submission evidence is unavailable.',
   },
@@ -911,7 +921,7 @@ export const SavePrivateToolNarrow = privateToolStory(
     toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: 'Save the reminder batch', narrow: true },
   ),
-  { times: ['Started', 'Completed'], outcome: 'succeeded', fits: true },
+  { times: ['Duration', 'Started', 'Completed'], outcome: 'succeeded', fits: true },
 )
 /** A save that retained no intent is titled by its tool. Its private tool ID opens no page, so it
  * shows nowhere, not even as the title. */
@@ -921,7 +931,7 @@ const unnamedSave = privateToolStory(
     toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: 'Save private tool' },
   ),
-  { times: ['Started', 'Completed'], outcome: 'succeeded' },
+  { times: ['Duration', 'Started', 'Completed'], outcome: 'succeeded' },
 )
 export const SavePrivateToolWithoutIntent: Story = {
   ...unnamedSave,
@@ -942,7 +952,7 @@ export const SavePrivateToolRejected = privateToolStory(
     }),
     { evidence: 'Declaration or statement expected.' },
   ),
-  { times: ['Started', 'Completed'], outcome: 'rejected', error: saveError },
+  { times: ['Duration', 'Started', 'Completed'], outcome: 'rejected', error: saveError },
 )
 /** A long compiler report on a phone wraps inside its card and keeps its lines. */
 export const SavePrivateToolRejectedNarrow = privateToolStory(
@@ -955,7 +965,12 @@ export const SavePrivateToolRejectedNarrow = privateToolStory(
     }),
     { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
   ),
-  { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
+  {
+    times: ['Duration', 'Started', 'Completed'],
+    outcome: 'rejected',
+    error: longAdmissionError,
+    fits: true,
+  },
 )
 export const SavePrivateToolRejectedWithoutMessage = privateToolStory(
   panel(
@@ -968,7 +983,7 @@ export const SavePrivateToolRejectedWithoutMessage = privateToolStory(
     { evidence: 'Save the reminder batch' },
   ),
   {
-    times: ['Started', 'Completed'],
+    times: ['Duration', 'Started', 'Completed'],
     outcome: 'rejected',
     silent: ['Rejected with no message', 'private_tool_admission_failed'],
   },
@@ -981,7 +996,7 @@ export const SavePrivateToolCompletionUnknown = privateToolStory(
       evidence: 'Save the reminder batch',
     },
   ),
-  { times: ['Started'], outcome: 'result unknown' },
+  { times: ['Duration', 'Started'], outcome: 'result unknown' },
 )
 export const SavePrivateToolEvidenceUnavailable = privateToolStory(
   panel(
@@ -989,7 +1004,11 @@ export const SavePrivateToolEvidenceUnavailable = privateToolStory(
     toolPage(saveCall('succeeded'), { kind: 'unknown' }),
     { evidence: 'Save the reminder batch' },
   ),
-  { times: ['Started', 'Completed'], outcome: 'succeeded', silent: ['evidence is unavailable'] },
+  {
+    times: ['Duration', 'Started', 'Completed'],
+    outcome: 'succeeded',
+    silent: ['evidence is unavailable'],
+  },
 )
 export const DeletePrivateToolDeleted = privateToolStory(
   panel(
@@ -997,7 +1016,7 @@ export const DeletePrivateToolDeleted = privateToolStory(
     toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId },
   ),
-  { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted' },
+  { times: ['Duration', 'Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted' },
 )
 export const DeletePrivateToolNarrow = privateToolStory(
   panel(
@@ -1005,7 +1024,12 @@ export const DeletePrivateToolNarrow = privateToolStory(
     toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId, narrow: true },
   ),
-  { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted', fits: true },
+  {
+    times: ['Duration', 'Started', 'Completed'],
+    outcome: 'succeeded',
+    changed: 'Deleted',
+    fits: true,
+  },
 )
 export const DeletePrivateToolRejected = privateToolStory(
   panel(
@@ -1017,7 +1041,7 @@ export const DeletePrivateToolRejected = privateToolStory(
     }),
     { evidence: deleteError },
   ),
-  { times: ['Started', 'Completed'], outcome: 'rejected', error: deleteError },
+  { times: ['Duration', 'Started', 'Completed'], outcome: 'rejected', error: deleteError },
 )
 export const DeletePrivateToolRejectedNarrow = privateToolStory(
   panel(
@@ -1029,7 +1053,12 @@ export const DeletePrivateToolRejectedNarrow = privateToolStory(
     }),
     { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
   ),
-  { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
+  {
+    times: ['Duration', 'Started', 'Completed'],
+    outcome: 'rejected',
+    error: longAdmissionError,
+    fits: true,
+  },
 )
 export const DeletePrivateToolCompletionUnknown = privateToolStory(
   panel(
@@ -1037,7 +1066,7 @@ export const DeletePrivateToolCompletionUnknown = privateToolStory(
     toolPage(deleteCall('unknown'), { kind: 'unknown' }),
     { evidence: 'Remove the old reminder batch' },
   ),
-  { times: ['Started'], outcome: 'result unknown' },
+  { times: ['Duration', 'Started'], outcome: 'result unknown' },
 )
 export const DeletePrivateToolEvidenceUnavailable = privateToolStory(
   panel(
@@ -1046,7 +1075,7 @@ export const DeletePrivateToolEvidenceUnavailable = privateToolStory(
     { evidence: 'The delete evidence is unavailable.' },
   ),
   {
-    times: ['Started', 'Completed'],
+    times: ['Duration', 'Started', 'Completed'],
     outcome: 'succeeded',
     notice: 'The delete evidence is unavailable.',
   },
@@ -1061,7 +1090,7 @@ function searchRejectedStory(story: Story, code: string, message: string, fits =
       const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
       const opened = within(dialog)
       await expect(opened.getAllByText('rejected')).toHaveLength(1)
-      await expectOneEvenList(dialog, ['Started', 'Completed'])
+      await expectOneEvenList(dialog, ['Duration', 'Started', 'Completed'])
       for (const gone of ['Rejected:', code, 'Results', 'Raw response', 'Technical details'])
         await expect(dialog).not.toHaveTextContent(gone)
       await expect(dialog.querySelector('details')).toBeNull()

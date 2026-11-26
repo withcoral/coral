@@ -89,8 +89,19 @@ export async function followLatest(context: TestContext) {
     const selected = rail.getByRole('region', { name: 'Selected record' })
     const toggle = rail.getByRole('button', { name: 'Follow latest record', exact: true })
     const address = () => new URL(page.url()).searchParams
+    /** The record the waterfall shows as selected: an Event's mark, or else a record's row. */
     const selectedKey = () =>
-      table.locator('[role=row][aria-selected=true]').first().getAttribute('data-record-key')
+      table.evaluate((element) => {
+        const mark = element.querySelector<HTMLAnchorElement>(
+          '[data-timeline-mark][aria-current="true"]',
+        )
+        if (mark) return new URL(mark.href).searchParams.get('record')
+        return (
+          element
+            .querySelector('[role=row][aria-selected=true]')
+            ?.getAttribute('data-record-key') ?? null
+        )
+      })
     /** Live mode selects `record` in the address and the table, and its header holds the toggle. */
     const follows = async (record: string, source: Awaited<ReturnType<typeof highlighted>>) => {
       await expect.poll(() => address().get('record'), { timeout: 15_000 }).toBe(record)

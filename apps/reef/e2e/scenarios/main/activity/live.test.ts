@@ -15,7 +15,7 @@ import { shownPayload } from '../../../support/payloads.ts'
 import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 
-test('Activity automatically streams new rows and continuously loads bounded child viewports without losing detail', async (context) => {
+test('Activity automatically streams new rows and reads a long Task in full without losing detail', async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await api.workspaces.createWorkspace({
@@ -49,7 +49,9 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     let latest!: ReturnType<typeof programRunner>
     for (let index = 0; index < 30; index++) latest = await arrival()
     const activityUrl = `/workspaces/${id}/activity`
-    const table = page.getByRole('table', { name: 'Activity records', includeHidden: true })
+    // The list of Tasks and standalone Runs, and the open one's waterfall beside it.
+    const table = page.getByRole('table', { name: 'Tasks and runs', includeHidden: true })
+    const trace = page.getByRole('table', { name: 'Activity records', includeHidden: true })
     const records = () => table.locator('[data-record-key]')
     const names = () =>
       records().evaluateAll((elements) =>
@@ -88,7 +90,10 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     await step(
       'Show arrivals immediately at the global edge, with no Load new button',
       async () => {
-        await page.setViewportSize({ width: 1440, height: 760 })
+        // Low enough that the end of the list's first page is far from view until you scroll
+        // to it. Near the view, the list loads the older records by itself, and the step that
+        // reaches the end would find nothing left to load.
+        await page.setViewportSize({ width: 1440, height: 700 })
         await page.goto(activityUrl)
         await table.getByRole('link', { name: 'Live goal 30', exact: true }).waitFor()
         latest = await arrival()
@@ -147,17 +152,21 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         await chosen.scrollIntoViewIfNeeded()
         // The URL anchors at the first record on screen, even one partly hidden.
         const anchor = (await (await onScreen(true)).getAttribute('data-record-key'))!
+        // A Task of the list opens its waterfall beside the list, and its details.
+        expect(name).toContain('/tasks/')
         await chosen.getByRole('link').first().click()
-        await page.waitForURL((url) => url.searchParams.get('record') === name)
+        await page.waitForURL((url) => url.searchParams.getAll('expand').includes(name))
+        expect(new URL(page.url()).searchParams.get('record')).toBe(name)
+        await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
         expect(new URL(page.url()).searchParams.get('anchor')).toBe(anchor)
+        await trace.locator(`[data-record-key="${name}"]`).waitFor()
         await page.reload()
         const anchored = table.locator(`[data-record-key="${anchor}"]`)
         await anchored.waitFor()
+        await trace.locator(`[data-record-key="${name}"]`).waitFor()
         const offset = async () =>
           (await anchored.boundingBox())!.y - (await table.boundingBox())!.y
         const opening = await offset()
-        await page.getByRole('button', { name: 'Close details', exact: true }).click()
-        await page.waitForURL((url) => !url.searchParams.has('record'))
         // The newer records load above the anchor; the anchor stays the first record on screen.
         await expect.poll(async () => (await names()).indexOf(anchor)).toBeGreaterThan(0)
         expect(Math.abs((await offset()) - opening)).toBeLessThan(2)
@@ -174,111 +183,84 @@ test('Activity automatically streams new rows and continuously loads bounded chi
           .toBe(1)
       },
     )
-    let taskLabel = ''
     let task = ''
     let run = ''
+    let loadedRecords = 0
     await step(
-      'Expand an execution outside the first task window without fetching the whole history',
+      'Open a Task of hundreds of records: its waterfall reads every window, and no payload',
       async () => {
-        // Fill the Task with the shortest Runs: only their place around the observed Run
-        // matters. An agent adds nothing else to a Task.
+        // Fill the Task with submissions Coral rejects: only their place around the observed
+        // Run matters. Each is a record of the Task and no Run, so the waterfall reads no
+        // window of its own for it.
         async function fill(count: number) {
           for (let index = 0; index < count; index++)
-            expect((await latest.exec('return null;')).isError).not.toBe(true)
+            expect((await latest.exec('return { invalid syntax;')).isError).toBe(true)
         }
         await fill(200)
         const observed = await observeRun(
           latest,
           await latest.exec('for (let i = 0; i < 300; i++) await coral.emit({i});'),
         )
+        // The Run sits in the third of the Task's four child windows.
         await fill(150)
-        taskLabel = `Live goal ${sequence}`
         task = `${workspace.name}/tasks/${latest.taskId()}`
         run = `${workspace.name}/runs/${observed.update.run_id}`
         const query = new URLSearchParams({ tree: '1' })
         query.append('expand', task)
         query.append('expand', run)
         await page.goto(`${activityUrl}?${query}`)
-        await table.locator(`[data-record-key="${run}"]`).waitFor()
-        expect(await records().count()).toBeLessThanOrEqual(226)
+        await trace.locator(`[data-record-key="${run}"]`).waitFor()
+        // The Run holds four child windows of its own.
+        // The waterfall reads them all in the background: each emission is a mark on the Run.
+        await expect
+          .poll(() => trace.locator(`[data-record-key="${run}"] [data-timeline-mark]`).count(), {
+            timeout: 15_000,
+          })
+          .toBe(300)
+        await page.getByText(/^Loading records… \d/).waitFor({ state: 'detached', timeout: 15_000 })
+        // Every record of the Task has its own row, in each of its four windows.
+        loadedRecords = await trace.locator('[data-record-key]').count()
+        expect(loadedRecords).toBeGreaterThan(350)
         expect(
           await page.getByRole('link', { name: /^(Next|Previous|First) records$/ }).count(),
         ).toBe(0)
+        // The time breakdown states a value only now, from the whole Task.
+        await page.getByText('Agent model', { exact: true }).waitFor()
+        // Rows and marks hold no payload: only an exact detail reads one.
         expect(await page.content()).not.toContain('"i":299')
       },
     )
-    const taskSection = () =>
-      table.getByRole('rowgroup', { name: `${taskLabel} records`, exact: true })
-    const runSection = () =>
-      table.getByRole('rowgroup', { name: 'Call one Tool records', exact: true })
-    await step(
-      'Scroll through later execution output and later task records without page controls',
-      async () => {
-        await table.locator(`[data-record-key="${run}"]`).scrollIntoViewIfNeeded()
-        await runSection().evaluate((element) => {
-          const port = element.closest('[role=table]')!
-          port.scrollTop +=
-            element.getBoundingClientRect().bottom -
-            port.getBoundingClientRect().top -
-            port.clientHeight +
-            80
-        })
-        await table
-          .getByRole('link', { name: 'emission #301', exact: true })
-          .waitFor({ timeout: 10_000 })
-        expect(await records().count()).toBeLessThanOrEqual(226)
-        await taskSection().evaluate((element) => {
-          const port = element.closest('[role=table]')!
-          port.scrollTop +=
-            element.getBoundingClientRect().bottom -
-            port.getBoundingClientRect().top -
-            port.clientHeight
-        })
-        const newLabel = 'Save a reusable tool'
-        expect(
-          (
-            await latest.addCustomTool(
-              'live.added',
-              'New child',
-              'const added = () => 43;',
-              'added',
-            )
-          ).isError,
-        ).not.toBe(true)
-        await taskSection()
-          .getByRole('link', { name: newLabel, exact: true })
-          .waitFor({ timeout: 10_000 })
-        expect(await table.locator(`[data-record-key="${run}"]`).count()).toBe(1)
-        expect(await runSection().count()).toBe(1)
-        expect(await records().count()).toBeLessThanOrEqual(226)
-        // The expanded Run's row is a sticky heading, so scroll to the start of its output.
-        await runSection().evaluate((element) => element.scrollIntoView({ block: 'start' }))
-        await table
-          .getByRole('link', { name: 'emission #2', exact: true })
-          .waitFor({ timeout: 10_000 })
-        await runSection().evaluate((element) => {
-          const port = element.closest('[role=table]')!
-          port.scrollTop +=
-            element.getBoundingClientRect().bottom -
-            port.getBoundingClientRect().top -
-            port.clientHeight
-        })
-        await table
-          .getByRole('link', { name: 'emission #301', exact: true })
-          .waitFor({ timeout: 10_000 })
-      },
-    )
+    await step('Add a record that arrives while the waterfall is open', async () => {
+      const newLabel = 'Save a reusable tool'
+      expect(
+        (await latest.addCustomTool('live.added', 'New child', 'const added = () => 43;', 'added'))
+          .isError,
+      ).not.toBe(true)
+      // Later evidence reads only the Task's tail again. The new Run gets its row, and the
+      // call that saved the tool a row under it.
+      await trace.getByRole('link', { name: newLabel, exact: true }).waitFor({ timeout: 10_000 })
+      await expect
+        .poll(() => trace.locator('[data-record-key]').count(), { timeout: 10_000 })
+        .toBe(loadedRecords + 2)
+      expect(await trace.locator(`[data-record-key="${run}"]`).count()).toBe(1)
+      for (const mark of ['emission #2', 'emission #301'])
+        await trace.getByRole('link', { name: mark, exact: true }).waitFor()
+    })
     await step(
       'Keep exact detail, mobile reading position and back/forward navigation during arrivals',
       async () => {
         await page.setViewportSize({ width: 390, height: 700 })
         const selected = `${run}/events/301`
-        const link = table.getByRole('link', { name: 'emission #301', exact: true })
+        // A narrow screen shows the waterfall alone. Its mark opens the full-screen detail.
+        const link = trace.getByRole('link', { name: 'emission #301', exact: true })
+        // The mark comes into view at the table's edge, under its scroll bar. The pointer
+        // rests on the table first, as a hand does, so the bar is there to take the press.
         await link.scrollIntoViewIfNeeded()
+        await trace.hover({ position: { x: 40, y: 40 } })
         const relativePosition = async () =>
-          (await link.boundingBox())!.y - (await table.boundingBox())!.y
+          (await link.boundingBox())!.y - (await trace.boundingBox())!.y
         const top = await relativePosition()
-        expect(await table.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+        expect(await trace.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
         await link.click()
         await page.getByRole('dialog').waitFor()
         await observedArrival()
@@ -302,27 +284,41 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         await page
           .getByText('Activity is unavailable. Reconnecting…', { exact: true })
           .waitFor({ timeout: 10_000 })
+        // Nothing a lost observation showed stays on screen: neither the list nor the waterfall.
         expect(await records().count()).toBe(0)
+        expect(await trace.locator('[data-record-key]').count()).toBe(0)
         await page.context().setOffline(false)
-        await table
+        await trace
           .getByRole('link', { name: 'emission #301', exact: true })
           .waitFor({ timeout: 10_000 })
         await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(before, 0)
-        const anchor = new URL(page.url()).searchParams.get(`anchor.${run}`)
-        expect(anchor).toBeTruthy()
+        // A reload opens the same waterfall, from the address alone.
         await page.reload()
-        const anchored = table.locator(`[data-record-key="${anchor}"]`)
-        await anchored.waitFor()
+        await trace
+          .getByRole('link', { name: 'emission #301', exact: true })
+          .waitFor({ timeout: 15_000 })
+        // A reload with a record selected brings that record's row into view by itself,
+        // though the Run sits in a middle child window of the Task.
+        await page.goto(`${page.url()}&record=${encodeURIComponent(selected)}`)
+        await page.getByRole('dialog').waitFor()
+        // The detail covers a narrow screen; the waterfall under it still places the row.
+        const holder = trace.locator(`[data-record-key="${run}"]`)
+        await holder.waitFor({ timeout: 15_000 })
         await expect
           .poll(
             async () => {
-              const rowBox = await anchored.boundingBox()
-              const box = await table.boundingBox()
-              return rowBox && box && rowBox.y >= box.y && rowBox.y < box.y + box.height
+              const [row, port] = [await holder.boundingBox(), await trace.boundingBox()]
+              return Boolean(
+                row && port && row.y >= port.y && row.y + row.height <= port.y + port.height + 1,
+              )
             },
             { timeout: 10_000 },
           )
           .toBe(true)
+        // It stays there while the rest of the Task loads above and below it.
+        const settled = (await holder.boundingBox())!.y
+        await page.getByText(/^Loading records… \d/).waitFor({ state: 'detached', timeout: 15_000 })
+        expect(Math.abs((await holder.boundingBox())!.y - settled)).toBeLessThanOrEqual(1)
       },
     )
   })
@@ -516,20 +512,11 @@ test('Current Run and tool actions settle live while exact review stays selected
           exact: true,
           includeHidden: true,
         })
+        // The waterfall of the action's Task holds its Run, and the Run's calls under it.
         await history
-          .getByRole('rowgroup', {
-            name: `Concurrent ${scope} actions records`,
-            exact: true,
-            includeHidden: true,
-          })
           .getByRole('link', { name: 'Call one Tool', exact: true, includeHidden: true })
           .waitFor()
         await history
-          .getByRole('rowgroup', {
-            name: 'Call one Tool records',
-            exact: true,
-            includeHidden: true,
-          })
           .getByRole('link', {
             name: 'Live gate lookup',
             exact: true,
@@ -537,6 +524,16 @@ test('Current Run and tool actions settle live while exact review stays selected
           })
           .first()
           .waitFor()
+        // The call sits one level under its Run, and the Run one level under its Task.
+        const level = (name: string) =>
+          history
+            .getByRole('row', { includeHidden: true })
+            .filter({ has: page.getByRole('link', { name, exact: true, includeHidden: true }) })
+            .first()
+            .getAttribute('aria-level')
+            .then(Number)
+        expect(await level('Live gate lookup')).toBe((await level('Call one Tool')) + 1)
+        expect(await level('Call one Tool')).toBe((await level(`Concurrent ${scope} actions`)) + 1)
         expect(
           await page.getByText('Outside this workspace or page:', { exact: true }).count(),
         ).toBe(0)
@@ -696,7 +693,10 @@ test('Navigation never restores revoked workspace summaries while observation is
       try {
         await step('Read the workspace before the first observation response', async () => {
           await page.goto(`/${privateWorkspace.name}/activity`)
-          await page.getByRole('link', { name: 'Revoked private goal', exact: true }).waitFor()
+          await page
+            .getByRole('table', { name: 'Tasks and runs', exact: true })
+            .getByRole('link', { name: 'Revoked private goal', exact: true })
+            .waitFor()
           expect(
             await page.getByRole('link', { name: 'Available personal goal', exact: true }).count(),
           ).toBe(0)
@@ -710,7 +710,10 @@ test('Navigation never restores revoked workspace summaries while observation is
             etag: membership.etag,
           })
           // The stalled observation still shows the old row; navigating must not restore it.
-          await page.getByRole('link', { name: 'Revoked private goal', exact: true }).click()
+          await page
+            .getByRole('table', { name: 'Activity records', exact: true })
+            .getByRole('link', { name: 'Revoked private goal', exact: true })
+            .click()
           await page.waitForURL((url) => url.searchParams.has('record'))
           await expect
             .poll(() =>
@@ -732,7 +735,10 @@ test('Navigation never restores revoked workspace summaries while observation is
         })
         await step('Keep the other workspace available', async () => {
           await page.goto(`/${availableWorkspace.name}/activity`)
-          await page.getByRole('link', { name: 'Available personal goal', exact: true }).waitFor()
+          await page
+            .getByRole('link', { name: 'Available personal goal', exact: true })
+            .first()
+            .waitFor()
           expect(
             await page
               .getByRole('link', { name: 'Revoked private goal', exact: true, includeHidden: true })
@@ -740,7 +746,7 @@ test('Navigation never restores revoked workspace summaries while observation is
           ).toBe(0)
           expect(
             await page
-              .getByRole('table', { name: 'Activity records', includeHidden: true })
+              .getByRole('table', { name: 'Tasks and runs', includeHidden: true })
               .locator('[data-record-key]')
               .count(),
           ).toBe(1)

@@ -418,7 +418,8 @@ function review(name: string, resolved: boolean, initialRequest?: string): Activ
   }
 }
 function Reader() {
-  const reader = useActivityReader(useLoaderData<ActivityPage>())
+  // These tests count the list's own reads. The waterfall's are activity-trace's to test.
+  const reader = useActivityReader(useLoaderData<ActivityPage>(), { trace: false })
   return (
     <div role="status">
       {reader.page.detail?.kind === 'invocation' ? reader.page.detail.request?.name : 'unavailable'}
@@ -961,7 +962,10 @@ it("loads more of an Agent's history through the Agent route", async () => {
   const paths: string[] = []
   const latest = createRef<ReturnType<typeof useActivityReader>>()
   function AgentReader() {
-    const value = useActivityReader(useLoaderData<{ activity: ActivityPage }>().activity)
+    // Only the list's page load counts here, not the waterfall's reads.
+    const value = useActivityReader(useLoaderData<{ activity: ActivityPage }>().activity, {
+      trace: false,
+    })
     useLayoutEffect(() => {
       latest.current = value
     })
@@ -992,6 +996,82 @@ it("loads more of an Agent's history through the Agent route", async () => {
     await act(async () => latest.current!.list.older!.load())
     await vi.waitFor(() => expect(container.textContent).toBe('r1:succeeded r3:succeeded'))
     expect(paths).toEqual([`/${agent}`, `/${agent}`])
+  } finally {
+    await act(async () => root.unmount())
+    router.dispose()
+    container.remove()
+  }
+})
+
+// Catches: a waterfall read no one sees, a read that leaves the Agent's own route and
+// scope, or the open waterfall changing by itself when a newer record arrives.
+it.each([
+  ['the newest record on a wide screen, through the same route', true, '', 'r2'],
+  [
+    'the record the address names, whatever the width',
+    false,
+    '?tree=1&expand=workspaces/w/runs/r1',
+    'r1',
+  ],
+  ['nothing on a narrow screen until the address names a record', false, '', null],
+])('reads the waterfall of %s', async (_name, wide, search, expected) => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => new Promise(() => {})),
+  )
+  vi.stubGlobal('matchMedia', () => ({
+    matches: wide,
+    addEventListener() {},
+    removeEventListener() {},
+  }))
+  const agent = 'workspaces/w/agents/a'
+  const reads: { path: string; anchor: string | null }[] = []
+  const latest = createRef<ReturnType<typeof useActivityReader>>()
+  function AgentReader() {
+    const value = useActivityReader(useLoaderData<{ activity: ActivityPage }>().activity)
+    useLayoutEffect(() => {
+      latest.current = value
+    })
+    return <output>{value.trace?.store.root.split('/').at(-1) ?? 'none'}</output>
+  }
+  const history = { ...page, agent, listPath: `/${agent}`, rows: [listed(2), listed(1)] }
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/workspaces/:workspace/agents/:agent',
+        element: <AgentReader />,
+        loader: ({ request }) => {
+          const url = new URL(request.url)
+          if (url.searchParams.get('load') === 'page')
+            reads.push({ path: url.pathname, anchor: url.searchParams.get('anchor') })
+          return {
+            mode: 'current',
+            activity: { ...history, expanded: url.searchParams.getAll('expand') },
+          }
+        },
+      },
+    ],
+    { initialEntries: [`/${agent}${search}`] },
+  )
+  const container = document.body.appendChild(document.createElement('div'))
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<RouterProvider router={router} />))
+    expect(container.textContent).toBe(expected ?? 'none')
+    if (!expected) return expect(reads).toEqual([])
+    // Every read goes through the Agent's own route, which authorizes it in that scope.
+    await vi.waitFor(() => expect(reads.length).toBeGreaterThan(0))
+    expect(new Set(reads.map((read) => read.path))).toEqual(new Set([`/${agent}`]))
+    expect(new Set(reads.map((read) => read.anchor))).toEqual(
+      new Set([`workspaces/w/runs/${expected}`]),
+    )
+    if (search) return
+    // A newer record arrives: the waterfall you read stays the same record.
+    history.rows = [listed(3), listed(2), listed(1)]
+    await act(async () => {
+      await router.revalidate()
+    })
+    expect(container.textContent).toBe('r2')
   } finally {
     await act(async () => root.unmount())
     router.dispose()

@@ -5,7 +5,6 @@ import type { ActivityPage } from '@/views/activity/types'
  * reads that page from `before` or `after` instead of redirecting the old page link.
  */
 export const activityPageFetchKey = 'load'
-const failed = { activityPageFailed: true } as const
 
 /**
  * Runs a route's server loader for the reader. A failed page load must not replace
@@ -22,7 +21,8 @@ export async function loadActivityPage<Data>(
   } catch (error) {
     if (error instanceof Response) throw error
     // Only the reader's fetcher reads this result, and it checks for the failure.
-    return failed as Data
+    // A new object each time: a reader tells one failed load from the next by it.
+    return { activityPageFailed: true } as Data
   }
 }
 

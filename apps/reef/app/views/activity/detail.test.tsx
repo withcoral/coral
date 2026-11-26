@@ -521,6 +521,7 @@ it.each([
         .map((term) => term.textContent),
     ).toEqual([
       'Context',
+      'Duration',
       'Started',
       ...(task.endedAt ? ['Ended'] : []),
       ...(withFeedback ? ['Feedback'] : []),
@@ -536,6 +537,52 @@ it.each([
       expect(container.textContent).not.toContain(gone)
   },
 )
+
+// Catches: a Task or a task tool call with no duration in its details, or a duration counted
+// from the clock where Coral recorded no end.
+it.each<[string, 'task' | 'tool', string, string | null, string]>([
+  ['an ended Task', 'task', 'success', '2026-09-22T09:05:00Z', '5m 0s'],
+  ['an open Task', 'task', 'open', null, 'In progress'],
+  ['a Task with no recorded end', 'task', 'failure', null, 'No recorded end'],
+  ['a completed tool call', 'tool', 'succeeded', '2026-09-22T09:00:01.250Z', '1.2s'],
+  ['a tool call with no recorded completion', 'tool', 'succeeded', null, 'No recorded end'],
+])('states the duration of %s from its recorded times', (_, kind, outcome, end, text) => {
+  const startedAt = '2026-09-22T09:00:00Z'
+  const task = {
+    name: `${workspace}/tasks/invoices`,
+    workspace,
+    agent: '',
+    actor: 'opaque-principal',
+    intent: 'Find invoices',
+    outcome,
+    startedAt,
+    endedAt: end,
+  }
+  const interaction: InteractionRow = {
+    agent: '',
+    name: `${workspace}/tasks/invoices/interactions/search`,
+    tool: 'search',
+    intent: 'Find invoices',
+    outcome,
+    startedAt,
+    completedAt: end,
+    acceptedRun: '',
+  }
+  const container = document.createElement('div')
+  container.innerHTML = markup(
+    kind === 'task'
+      ? taskDetailPage(task)
+      : {
+          ...personalPage,
+          selected: interaction.name,
+          selectedRow: { ...interaction, kind: 'tool', workspace, task: task.name },
+          detail: { kind: 'tool', task: task.name, interaction, evidence: { kind: 'unknown' } },
+        },
+  )
+  const list = container.querySelector('dl')!
+  const value = within(list).getByText('Duration', { selector: 'dt' }).nextElementSibling!
+  expect(value.textContent).toBe(text)
+})
 
 // Catches: a Task detail that drops, zeroes or re-formats the context total its table row shows.
 it.each([
@@ -1006,7 +1053,7 @@ it('leads a search with what it asked, then its intent and timing, and only its 
   expect(call.closest('section')!.querySelector('h4')).toBeNull()
   // The intent is the title, so no row repeats it.
   expect(within(container).getByRole('heading', { level: 2 }).textContent).toBe(interaction.intent)
-  expect(terms(call)).toEqual(['Started', 'Completed'])
+  expect(terms(call)).toEqual(['Duration', 'Started', 'Completed'])
   expectInstant(factIn(call, 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
   expectInstant(factIn(call, 'Completed'), interaction.completedAt!, '22 Sep 2026, 09:00:00 UTC')
   for (const heading of ['Context', 'Call'])
@@ -1309,7 +1356,7 @@ it.each([
   const [asked] = lists
   expect(asked.closest('section')!.querySelector('h4')).toBeNull()
   expect(within(container).queryByRole('heading', { name: 'Describe' })).toBeNull()
-  expect(terms(asked)).toEqual([...row.asked, 'Started', 'Completed'])
+  expect(terms(asked)).toEqual([...row.asked, 'Duration', 'Started', 'Completed'])
   expect(factIn(asked, 'Call path')).toHaveTextContent(row.context.callPath)
   if (row.context.types.length)
     expect(factIn(asked, 'Types')).toHaveTextContent(row.context.types.join(''))
@@ -1477,7 +1524,7 @@ it.each<{
   expect(lists[0].closest('section')!.querySelector('h4')).toBeNull()
   const completed = row.overrides.completedAt !== null
   // The title is the intent, so no Intent row repeats it.
-  expect(terms(lists[0])).toEqual(['Started', ...(completed ? ['Completed'] : [])])
+  expect(terms(lists[0])).toEqual(['Duration', 'Started', ...(completed ? ['Completed'] : [])])
   expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
   // The header badge states the submission outcome, once; no row repeats it.
   const badge = row.overrides.outcome === 'unknown' ? 'result unknown' : row.overrides.outcome!
@@ -1611,6 +1658,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
   // The title is the intent, so no Intent row repeats it.
   expect(terms(lists[0])).toEqual([
     ...(changed ? [call.done!] : []),
+    'Duration',
     'Started',
     ...(completed ? ['Completed'] : []),
   ])
@@ -1682,7 +1730,7 @@ it.each([
   expect(within(container).getAllByText('rejected')).toHaveLength(1)
   const lists = container.querySelectorAll('dl')
   expect(lists).toHaveLength(1)
-  expect(terms(lists[0])).toEqual(['Started', 'Completed'])
+  expect(terms(lists[0])).toEqual(['Duration', 'Started', 'Completed'])
   for (const gone of ['Rejected:', code, 'Results', 'Raw response', 'Technical details'])
     expect(container.textContent).not.toContain(gone)
   expect(container.querySelector('details')).toBeNull()

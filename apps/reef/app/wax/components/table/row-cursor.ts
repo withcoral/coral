@@ -16,8 +16,14 @@ const ARROW_CONTROLS =
  * Pass the returned ref to `Table.Container`, or to an element around several
  * tables to move through their rows as one list. A table inside a `hidden`
  * element ignores the arrows.
+ *
+ * `reach: 'background'` is for a page whose other controls keep the arrows: from outside
+ * the table, the arrows then reach the rows only while nothing on the page has focus.
  */
-export function useRowCursor({ filterId }: { filterId?: string } = {}) {
+export function useRowCursor({
+  filterId,
+  reach = 'page',
+}: { filterId?: string; reach?: 'page' | 'background' } = {}) {
   const table = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -35,7 +41,12 @@ export function useRowCursor({ filterId }: { filterId?: string } = {}) {
       let next: HTMLElement | null | undefined
       if (at >= 0) next = at + step < 0 ? filter : links[at + step]
       else if (filter && target === filter) next = step > 0 ? links[0] : undefined
-      else if (!target.closest(ARROW_CONTROLS)) next = step > 0 ? links[0] : links.at(-1)
+      else if (
+        reach === 'page'
+          ? !target.closest(ARROW_CONTROLS)
+          : target === document.body || target === document.documentElement
+      )
+        next = step > 0 ? links[0] : links.at(-1)
       // At either end with nowhere to go, the key keeps its default.
       if (!next) return
       event.preventDefault()
@@ -43,6 +54,6 @@ export function useRowCursor({ filterId }: { filterId?: string } = {}) {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [filterId])
+  }, [filterId, reach])
   return table
 }

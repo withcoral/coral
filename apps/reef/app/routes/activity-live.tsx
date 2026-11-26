@@ -22,7 +22,10 @@ export function LiveActivity({
   /** The workspace's providers, which name each call by its provider's logo and tool. */
   providers?: readonly ProviderMark[]
 }) {
-  const { navigation, ...activity } = useActivityReader(initial)
+  const { navigation, ...activity } = useActivityReader(initial, {
+    // A glimpse lists roots only.
+    trace: more === undefined,
+  })
   const request =
     activity.page.detail?.kind === 'run' || activity.page.detail?.kind === 'invocation'
       ? activity.page.detail.request

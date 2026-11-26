@@ -1,6 +1,4 @@
-import { duration, ElapsedDuration } from './duration'
 import {
-  createContext,
   memo,
   useCallback,
   useContext,
@@ -16,29 +14,21 @@ import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
-import type { IconName } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import {
-  MAX_EXPANDED_RECORDS,
   type ActivityLoadControl,
-  type ActivityPage,
   type ActivityViewProps,
   type ActivityRow,
   type LiveScope,
-  type RunState,
+  type ActivityPage,
 } from './types'
 import {
-  activityStops,
-  childWindow,
-  expandable,
-  type ExpandableRow,
   liveRun,
   liveStep,
   liveTarget,
   MIN_LIVE_RECORD_STAY_MS,
   orderedRecordPosition,
-  recordParents,
   resolveStop,
   revealHref,
   selectionKeys,
@@ -46,9 +36,11 @@ import {
   stopPosition,
   useActivityNavigation,
   windowAt,
+  type ActivityStop,
   type StopPosition,
 } from './navigation'
 import { ActivityDetail, runContextOf } from './detail'
+import { TaskHeader } from './task-header'
 import { ExecutionSourceSplit } from './execution-source-split'
 import { PanelClose } from './panel'
 import {
@@ -59,146 +51,26 @@ import {
 } from './live'
 import { useCommentGuard, useDecisionOutcome, useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
-import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
+import { absorbPage, loneTrace, openTrace } from '@/lib/activity-trace'
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { dayLabel, UtcTime } from './instant'
-import { CallTool, ProviderMarksContext, type ProviderMark } from './call-tool'
-import { toolOwner } from '@/lib/call-root'
+import { ProviderMarksContext } from './call-tool'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
-import { invocationOutcomeLabels, resultUnknown } from './labels'
 import * as panelStyles from './panel.css'
+import { RecordLabel, recordIcon, rowDuration, rowStatus } from './record'
+import {
+  adjacentMark,
+  enclosingRecords,
+  openRoot,
+  waterfall,
+  waterfallStops,
+  type WaterfallRow,
+} from './trace'
+import { Waterfall } from './waterfall'
 
-export function rowLabel(row: ActivityRow): string {
-  switch (row.kind) {
-    case 'task':
-      return row.intent
-    case 'tool':
-      return row.intent
-    case 'run':
-      return row.submission?.intent || row.actor || 'exec'
-    case 'invocation':
-      return row.callPath || row.tool
-    case 'output':
-      return row.label
-  }
-}
-/** A record's name. A call names its tool as every list of calls does. */
-function RecordLabel({ row }: { row: ActivityRow }) {
-  return row.kind === 'invocation' ? <CallTool callPath={rowLabel(row)} /> : rowLabel(row)
-}
-const toolIcons = new Map<string, IconName>([
-  ['search', 'Search'],
-  ['describe', 'BookOpen'],
-  ['exec', 'Play'],
-  ['save_private_tool', 'Save'],
-  ['delete_private_tool', 'Trash'],
-])
-/** A record's kind icon. A call whose provider the workspace still has shows that provider's
- * logo in its name instead. */
-function recordIcon(row: ActivityRow, providers: readonly ProviderMark[]) {
-  return row.kind === 'invocation' && toolOwner(row.callPath, providers) ? undefined : rowIcon(row)
-}
-function rowIcon(row: ActivityRow): { name: IconName; label: string } {
-  switch (row.kind) {
-    case 'task':
-      return { name: 'Flag', label: 'task' }
-    case 'tool':
-      return {
-        name: toolIcons.get(row.tool) ?? 'CircleQuestionMark',
-        label: row.tool,
-      }
-    case 'run':
-      return { name: 'Play', label: 'exec' }
-    case 'invocation':
-      return { name: 'Zap', label: 'tool' }
-    case 'output':
-      return row.eventKind === 'program.logged'
-        ? { name: 'Terminal', label: 'log' }
-        : { name: 'Radio', label: 'output' }
-  }
-}
-type RowStatus = NonNullable<Table.RowProps['status']>
-const runTones = {
-  running: 'neutral',
-  succeeded: 'success',
-  failed: 'error',
-  timed_out: 'error',
-  canceled: 'neutral',
-  interrupted: 'warning',
-  unknown: 'warning',
-} satisfies Record<RunState, RowStatus['tone']>
-function rowStatus(row: ActivityRow): RowStatus | undefined {
-  switch (row.kind) {
-    case 'task':
-      return {
-        tone:
-          row.outcome === 'success' ? 'success' : row.outcome === 'failure' ? 'error' : 'neutral',
-        label: row.outcome,
-      }
-    case 'tool':
-      if (row.outcome === 'unknown') return { tone: 'warning', label: resultUnknown }
-      if (row.acceptedRun) return { tone: 'neutral', label: 'accepted · run unavailable' }
-      return {
-        tone:
-          row.outcome === 'succeeded'
-            ? 'success'
-            : row.outcome === 'rejected'
-              ? 'error'
-              : 'neutral',
-        label: row.outcome,
-      }
-    case 'run':
-      return {
-        tone: runTones[row.state],
-        label: row.state.replaceAll('_', ' '),
-      }
-    case 'invocation':
-      if (row.state !== 'ended')
-        return {
-          tone: row.requiresAction || row.state === 'unknown' ? 'warning' : 'neutral',
-          label: row.state,
-        }
-      // A complete response stays neutral whether the Program received it or was rejected with it
-      // as a Tool Error: the row holds no response to tell, so it says only that one came.
-      return {
-        tone:
-          row.outcome === 'coral_failure'
-            ? 'error'
-            : row.outcome === 'indeterminate' || row.outcome === 'unknown'
-              ? 'warning'
-              : 'neutral',
-        label: invocationOutcomeLabels[row.outcome],
-      }
-    case 'output':
-      // Its icon and label name it; a state would say nothing more.
-      return undefined
-  }
-}
-function rowDuration(row: ActivityRow) {
-  if ('durationNanos' in row)
-    return (
-      <ElapsedDuration
-        milliseconds={Number(row.durationNanos) / 1_000_000}
-        running={['running', 'pending', 'dispatching'].includes(row.state)}
-      />
-    )
-  const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
-  return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
-}
-function emptyBranchMessage(row: ExpandableRow) {
-  // Reef cannot tell whether a call or a Run in an unknown state has ended.
-  if (row.kind === 'invocation') {
-    if (row.state === 'unknown') return 'This tool has no recorded calls.'
-    return row.state === 'ended' ? 'This tool made no calls.' : 'This tool has not made a call yet.'
-  }
-  if (row.kind === 'task')
-    return row.endedAt ? 'This task made no calls.' : 'This task has not made a call yet.'
-  if (row.state === 'unknown') return 'This execution has no recorded tools.'
-  return row.state === 'running'
-    ? 'This execution has not called a tool yet.'
-    : 'This execution called no tools.'
-}
+export { rowLabel } from './record'
+
 function LoadRecords({
   control,
   direction,
@@ -219,41 +91,25 @@ function LoadRecords({
     </Table.LoadMore>
   )
 }
-/**
- * What every record row needs from the page beyond its own record. It changes on
- * navigation, not on scroll or live snapshots, so memoized rows skip those renders.
- */
-interface RowScope {
-  /** The record the detail shows, by its exact identity. */
-  selected: string | null
-  /** The record the keyboard cursor rests on, while focus is in the table. */
-  active: string | null
-  expanded: Set<string>
-  /** The expansion bound is reached; collapsed records cannot expand. */
-  full: boolean
+/** What every row of the root list needs from the page beyond its own record. */
+interface RootScope {
+  /** The top-level record whose waterfall shows. */
+  open: string | null
   /**
-   * The address a row's link shows: this URL with that record selected, or for a
-   * glimpse, the record on its own Activity page.
+   * Where a row leads: this list with that record's waterfall open, and a Task selected
+   * too, or for a glimpse, the record on its own Activity page.
    */
   href: (row: ActivityRow) => string
-  /** Child windows report their viewport to a live reader. */
-  observed: boolean
-  /** A glimpse lists only its roots, so it stays as short as it says. */
+  /** A glimpse opens each record at the top of its Activity page. */
   glimpse: boolean
 }
 /** Navigation that reads the reader's latest position when it runs, not when rows rendered. */
 interface RowActions {
-  /** `keyboard`: Enter in the table, which keeps focus in the table. */
+  /** `keyboard`: Enter or an arrow in the table, which keeps focus in the table. */
   select: (row: ActivityRow, keyboard?: boolean) => void
   /** From the keyboard, a collapse that also changes the selection replaces the address. */
   toggle: (name: string, keyboard?: boolean) => void
-  viewport: (parent: string, value: Table.WindowViewport) => void
 }
-const RowActionsContext = createContext<RowActions>({
-  select() {},
-  toggle() {},
-  viewport() {},
-})
 /** The rail token a navigation's state carries, if any. */
 const railToken = (state: unknown) =>
   typeof state === 'object' && state && 'activityRail' in state ? state.activityRail : undefined
@@ -309,74 +165,27 @@ function railTokens() {
     },
   }
 }
-/** A plain left click; other clicks keep the link's own behaviour, such as a new tab. */
-const plainClick = (event: React.MouseEvent) =>
-  event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
-/** Picks a record from its link on a plain click. */
-function pickFromLink(event: React.MouseEvent<HTMLAnchorElement>, pick: () => void) {
-  if (!plainClick(event)) return
-  event.preventDefault()
-  // Safari does not focus a clicked link; focus rests on the picked row everywhere.
-  event.currentTarget.focus({ preventScroll: true })
-  pick()
-}
 
-const RecordRow = memo(function RecordRow({
-  row,
-  depth,
-  branches,
-  scope,
-}: {
-  row: ActivityRow
-  depth: number
-  /** Only an expanded record gets the branches, so other rows skip branch updates. */
-  branches?: ActivityPage['branches']
-  scope: RowScope
-}) {
-  const actions = useContext(RowActionsContext)
+/** One top-level record of the list: a Task or a standalone Run. The whole row opens it. */
+const RootRow = memo(function RootRow({ row, scope }: { row: ActivityRow; scope: RootScope }) {
   const providers = useContext(ProviderMarksContext)
-  const opens = !scope.glimpse && expandable(row)
-  const branch = scope.glimpse ? undefined : branches?.[row.name]
-  const expanded = scope.expanded.has(row.name)
-  const recordRowProps = {
-    recordKey: row.name,
-    selected: row.name === scope.selected,
-    active: row.name === scope.active,
-    status: rowStatus(row),
-    onClick: (event: React.MouseEvent<HTMLElement>) => {
-      if ((event.target as HTMLElement).closest('a,button,input,select')) return
-      // Focus rests on the clicked row, as a click on its link leaves it.
-      event.currentTarget.querySelector<HTMLElement>('a[href]')?.focus({ preventScroll: true })
-      actions.select(row)
-    },
-  }
-  const cells = (
-    <>
+  const to = scope.href(row)
+  return (
+    <Table.Row
+      recordKey={row.name}
+      selected={row.name === scope.open}
+      status={rowStatus(row)}
+      to={to}
+      preventScrollReset={!scope.glimpse}
+    >
       <Table.Cell mono>
         <UtcTime value={row.startedAt} />
       </Table.Cell>
       <Table.Cell>
-        <Table.Record
-          depth={depth}
-          // The full table is one Tab stop; its keys reach the records.
-          tabbable={scope.glimpse}
-          icon={recordIcon(row, providers)}
-          expanded={expanded}
-          disabled={!expanded && scope.full}
-          onToggle={opens ? () => actions.toggle(row.name) : undefined}
-          marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
-        >
-          <Link
-            to={scope.href(row)}
-            // The table's cursor row stands for it. Only a glimpse, which takes no
-            // keys, gives each record a Tab stop.
-            data-record-link
-            tabIndex={scope.glimpse ? undefined : -1}
-            preventScrollReset
-            onClick={(event) => pickFromLink(event, () => actions.select(row))}
-          >
+        <Table.Record icon={recordIcon(row, providers)}>
+          <Table.RowLink to={to}>
             <RecordLabel row={row} />
-          </Link>
+          </Table.RowLink>
         </Table.Record>
       </Table.Cell>
       <Table.Cell mono>{rowDuration(row)}</Table.Cell>
@@ -386,59 +195,20 @@ const RecordRow = memo(function RecordRow({
           partial={row.kind === 'task' && row.contextImpactPartial}
         />
       </Table.Cell>
-    </>
-  )
-  // Only a record that holds others expands; anything else stays a plain row.
-  if (!branch || !expandable(row)) return <Table.Row {...recordRowProps}>{cells}</Table.Row>
-  const children = childWindow(branch)
-  // The expanded record heads its children and pins while they scroll.
-  return (
-    <Table.Group label={rowLabel(row)} heading={cells} headingRow={recordRowProps}>
-      {branch.unavailable ? (
-        <Table.Row>
-          <Table.Cell fullWidth>This history is unavailable.</Table.Cell>
-        </Table.Row>
-      ) : (
-        <Table.Window
-          label={`${rowLabel(row)} records`}
-          total={children.total}
-          size={ACTIVITY_CHILD_WINDOW}
-          onViewportChange={
-            scope.observed ? (value) => actions.viewport(row.name, value) : undefined
-          }
-          items={children.items.map(({ row: child, index }) => ({
-            key: activityRowIdentity(child),
-            index,
-            content: (
-              <RecordRow
-                row={child}
-                depth={depth + 1}
-                branches={branches?.[child.name] ? branches : undefined}
-                scope={scope}
-              />
-            ),
-          }))}
-        />
-      )}
-      {!branch.unavailable && !branch.rows.length && !Number(branch.total ?? 0) && (
-        <Table.Status scope="group">{emptyBranchMessage(row)}</Table.Status>
-      )}
-    </Table.Group>
+    </Table.Row>
   )
 })
-/** Every record the table shows: the loaded list and the children of expanded records. */
-function shownRecords(page: ActivityPage, roots: ActivityRow[], glimpse: boolean) {
-  const shown = new Set<string>()
-  const visit = (rows: ActivityRow[]) => {
-    for (const row of rows) {
-      shown.add(row.name)
-      const branch = page.branches[row.name]
-      if (!glimpse && branch && expandable(row)) visit(branch.rows)
-    }
-  }
-  visit(roots)
-  return shown
+/** Where the keys start from when the rail shows `row`. A Run's Event is a mark on its Run. */
+function recordPosition(row: ActivityRow, parents: string[]): StopPosition {
+  return row.kind === 'output'
+    ? { name: row.run, parents: parents.slice(1) }
+    : { name: row.name, parents }
 }
+const NO_RECORDS: ReadonlySet<string> = new Set()
+const BOUNDARY: ActivityStop = { kind: 'boundary' }
+/** A Task's name, as Coral names one: a workspace's Task, and nothing under it. */
+const TASK_NAME = /^workspaces\/[^/]+\/tasks\/[^/]+$/
+const NO_ROWS: readonly WaterfallRow[] = []
 /** This URL with `name` selected, as a link shows it. A click navigates with more state. */
 function selectionHref(listPath: string, search: string, name: string) {
   const query = new URLSearchParams(search)
@@ -446,6 +216,8 @@ function selectionHref(listPath: string, search: string, name: string) {
   query.set('record', name)
   return `${listPath}?${query}`
 }
+/** Stands for a root's name in an address built once for every root. It needs no encoding. */
+const ROOT_PLACEHOLDER = 'activity-root-placeholder'
 /** Data that marks a live toggle, so focus can return to it when the record changes. */
 const liveToggleAttribute = 'data-activity-live'
 /** Each live scope's toggle: its name, and its tooltip while off, on, or blocked. */
@@ -455,19 +227,19 @@ const liveToggles: Record<LiveScope, { label: string; off: string; on: string; b
       label: 'Follow latest record',
       off: 'Follow the latest record of this execution.',
       on: 'Stop following the latest record.',
-      blocked: 'Collapse a record before you follow this execution.',
+      blocked: 'Too many records are open. Open a task or run from the list first.',
     },
     task: {
       label: 'Follow this task',
       off: 'Follow the runs of this task in order.',
       on: 'Stop following this task.',
-      blocked: 'Collapse a record before you follow this task.',
+      blocked: 'Too many records are open. Open a task or run from the list first.',
     },
     latest: {
       label: 'Follow latest activity',
       off: 'Follow the newest task or run.',
       on: 'Stop following the latest activity.',
-      blocked: 'Collapse a record before you follow the latest activity.',
+      blocked: 'Too many records are open. Open a task or run from the list first.',
     },
   }
 /**
@@ -624,6 +396,7 @@ export function Activity({
   revealRecord,
   connect,
   more,
+  trace,
 }: ActivityViewProps) {
   const archived = useActivityArchived()
   const [lostPosition, setLostPosition] = useState<string>()
@@ -647,8 +420,11 @@ export function Activity({
   if (closing !== null && !(selected !== null && closing.includes(selected))) setClosing(null)
   // A closing rail keeps showing its record until its exit ends, even when a step
   // the close covers renders meanwhile.
+  // A Task heads its own waterfall, whose header states its details: selecting it, from
+  // the list or by a link, opens no rail.
+  const railSelected = selected !== null && TASK_NAME.test(selected) ? null : selected
   const [shown, setShown] = useState({ page, record: selected })
-  const showing = selected !== null && closing === null
+  const showing = railSelected !== null && closing === null
   if (showing && (shown.page !== page || shown.record !== selected))
     setShown({ page, record: selected })
   const detail = showing ? { page, record: selected } : shown
@@ -669,23 +445,73 @@ export function Activity({
   // The token of the rail's latest pick or close. A pending navigation with this
   // token is the rail's own and has no history entry yet.
   const [tokens] = useState(() => railTokens())
-  const listRef = useRef<HTMLDivElement>(null)
   const tableRef = useRef<HTMLDivElement>(null)
+  // ↑, ↓ and Enter reach the list's records, as in every table whose rows open a page.
+  // The waterfall, the rail and every other control keep their own arrows.
+  const rootsRef = Table.useRowCursor({ reach: 'background' })
   const popupRef = useRef<HTMLDivElement>(null)
   // Another record starts at its top, in the same rail.
   useLayoutEffect(() => {
     if (selected && popupRef.current) popupRef.current.scrollTop = 0
   }, [selected])
-  const observed = live !== undefined
   const glimpse = more !== undefined
   // A glimpse never loads more, and lists only the latest roots a live update merged in.
   const roots = useMemo(
     () => (more ? page.rows.slice(0, more.roots) : page.rows),
     [more, page.rows],
   )
-  // Where ↑ and ↓ go. A glimpse takes no keys.
-  const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
-  const open = selected !== null && closing === null
+  // The top-level record whose waterfall shows. A reader also names one the address does
+  // not, so a wide screen never opens on an empty waterfall. A glimpse lists roots only.
+  const namedRoot = glimpse ? null : openRoot(page)
+  const rootName = glimpse ? null : (trace?.store.root ?? namedRoot)
+  // Without a reader, the waterfall shows what the page itself holds.
+  const pageStore = useMemo(
+    () => (rootName && !trace ? absorbPage(openTrace(rootName), page) : null),
+    [rootName, trace, page],
+  )
+  const rooted = trace?.store ?? pageStore
+  // Coral names no top-level record for a selection outside this list's scope, such as an
+  // Agent's call you review. The waterfall then shows that record alone, with no history.
+  // Until the first read says whether Coral returns it, the record shows alone and its
+  // history loads: nothing says "unavailable" before Coral does.
+  const looking = Boolean(trace) && !rooted?.unavailable
+  const lone = page.selectedRow && page.selectedRow.kind !== 'output' ? page.selectedRow : null
+  const alone = useMemo(
+    () => (lone ? { ...loneTrace(lone, looking), failed: Boolean(rooted?.failed) } : null),
+    [lone, looking, rooted?.failed],
+  )
+  const outsideScope = Boolean(alone) && (!rooted?.rootRow || rooted.unavailable)
+  const store = outsideScope ? alone : rooted
+  // The records you collapsed in the open waterfall. Another root starts with none.
+  const [folded, setFolded] = useState<{
+    root: string | null
+    names: ReadonlySet<string>
+    selected: string | null
+  }>({ root: rootName, names: NO_RECORDS, selected })
+  let collapsed = folded.root === rootName ? folded.names : NO_RECORDS
+  // A new selection opens the records around it, so it never starts hidden. A collapse
+  // around the record the rail shows stays: the rail moves to the collapsed record.
+  const around = useMemo(
+    () => (page.selectedRow ? enclosingRecords(store, page.selectedRow) : []),
+    [store, page.selectedRow],
+  )
+  if (folded.selected !== selected && around.some((name) => collapsed.has(name)))
+    collapsed = new Set([...collapsed].filter((name) => !around.includes(name)))
+  if (folded.root !== rootName || folded.names !== collapsed || folded.selected !== selected)
+    setFolded({ root: rootName, names: collapsed, selected })
+  // The dense timeline shows every record: nothing in it collapses.
+  const layout = useMemo(() => (store ? waterfall(store, NO_RECORDS, 0) : null), [store])
+  // Where ↑ and ↓ go: the rows of the waterfall, which stop at children it does not hold.
+  // The Task heads the waterfall above its table, so the keys stop at the records under it:
+  // its stop is a boundary, which keeps every other stop at its row's index.
+  const stops = useMemo(
+    () =>
+      waterfallStops(layout?.rows ?? NO_ROWS).map((stop) =>
+        stop.kind === 'record' && stop.row.kind === 'task' ? BOUNDARY : stop,
+      ),
+    [layout],
+  )
+  const open = railSelected !== null && closing === null
   // Live mode follows the shown record's Run, the newest activity, or one Task's Runs.
   // Any other selection, and closing the rail, turns it off. A glimpse never follows.
   const liveScope = glimpse ? null : nav.liveScope
@@ -694,10 +520,9 @@ export function Activity({
   const selectedChain = liveChain(page.selectedRow)
   // With the rail open, the keys start from the record it shows, or is about to.
   const shownPosition: StopPosition | null = selected
-    ? {
-        name: selected,
-        parents: page.selectedRow ? recordParents(page.selectedRow) : [],
-      }
+    ? page.selectedRow
+      ? recordPosition(page.selectedRow, around)
+      : { name: selected, parents: [] }
     : null
   const pendingStop =
     open && pending
@@ -749,7 +574,6 @@ export function Activity({
     record: revealRecord,
   })
   if (reveal.route !== revealRecord) setReveal({ route: revealRecord, record: revealRecord })
-  const full = page.expanded.length >= MAX_EXPANDED_RECORDS
   // Rows and keys navigate with the reader's latest position, read when they act.
   const now = {
     nav,
@@ -762,14 +586,19 @@ export function Activity({
     pendingToken,
     closing,
     open,
+    roots,
     stops,
     cursor,
     position,
     activeStop,
-    full,
+    collapsed,
+    around,
+    layout,
+    store,
+    trace,
+    rootName,
     unsent,
     locationKey,
-    expanded: page.expanded,
     selectedRow: page.selectedRow,
     liveOn,
     close,
@@ -783,9 +612,39 @@ export function Activity({
       transition.state === 'idle' ? undefined : transition.location?.key,
     )
   })
-  // Whether Enter in the table, or live mode, opened the rail, which then leaves focus
-  // where it was.
-  const openedByKey = useRef(false)
+  // The record whose rail Enter in the table or the list, or live mode, is about to open.
+  // That opening leaves focus where it was. Any other selection, any pointer press, and an
+  // opening of the rail clear it, so it never reaches a later opening.
+  const keepFocus = useRef<string | null>(null)
+  const wasOpen = useRef(open)
+  useLayoutEffect(() => {
+    // A selection the open rail shows in place, or one that opens no rail, starts no opening.
+    if (keepFocus.current !== null && (wasOpen.current || keepFocus.current !== selected))
+      keepFocus.current = null
+    wasOpen.current = open
+  }, [selected, open])
+  // A Task picked in the list is an explicit selection, as a pick in the table is: it opens
+  // the Task whose rail is closing, though the address still names it until the close lands.
+  // A Run there opens its waterfall alone, so it leaves a closing rail closed.
+  useEffect(() => {
+    if (glimpse) return
+    const pick = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Element) || !rootsRef.current?.contains(target)) return
+      const name = target.closest('[data-record-key]')?.getAttribute('data-record-key')
+      const current = latest.current
+      if (!name || !current.closing?.includes(name)) return
+      if (!current.roots.some((row) => row.name === name && row.kind === 'task')) return
+      setClosing(current.closing.filter((closed) => closed !== name))
+    }
+    window.addEventListener('click', pick, true)
+    return () => window.removeEventListener('click', pick, true)
+  }, [glimpse, rootsRef])
+  useEffect(() => {
+    const press = () => void (keepFocus.current = null)
+    window.addEventListener('pointerdown', press, true)
+    return () => window.removeEventListener('pointerdown', press, true)
+  }, [])
   const [actions] = useState<RowActions>(() => ({
     select: (row, keyboard = false) => {
       const current = latest.current
@@ -805,12 +664,15 @@ export function Activity({
       else if (current.closing?.includes(row.name))
         setClosing(current.closing.filter((name) => name !== row.name))
       setKeyStep(null)
-      openedByKey.current = keyboard
+      keepFocus.current = keyboard ? row.name : null
       // Going back to the shown record cancels the rail's own pending navigation,
       // which has no history entry yet, so the address is replaced. Back or Forward
       // already moved through history, so a pick after either is a new entry.
-      const replace = row.name === current.selected && tokens.current(current.pendingToken)
-      void current.navigate(current.nav.recordHref(row.name), {
+      // A step from one mark to the next adds no entry either, as a step between rows.
+      const replace =
+        (row.name === current.selected && tokens.current(current.pendingToken)) ||
+        (keyboard && current.open && row.kind === 'output')
+      void current.navigate(current.nav.recordHref(row.name, current.rootName), {
         preventScrollReset: true,
         replace,
         state: tokens.next(),
@@ -818,74 +680,95 @@ export function Activity({
     },
     toggle: (name, keyboard = false) => {
       const current = latest.current
-      // A collapse that hides the record the rail shows opens that record instead.
-      // From the keyboard it replaces the address, as a step does.
-      const hides =
-        current.open &&
-        current.expanded.includes(name) &&
-        Boolean(current.shownPosition?.parents.includes(name))
-      // Collapsing the Run live mode follows, or its Task, stops following it.
-      const stopLive =
-        current.liveOn &&
-        current.expanded.includes(name) &&
-        liveChain(current.selectedRow).includes(name)
+      // The root heads its waterfall and never closes.
+      if (name === current.rootName) return
+      const collapsing = !current.collapsed.has(name)
+      const names = new Set(current.collapsed)
+      if (collapsing) names.add(name)
+      else names.delete(name)
+      setFolded((value) => ({ ...value, names }))
       setKeyStep(null)
-      void current.navigate(
-        hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name, stopLive),
-        {
+      if (!collapsing) return
+      const enclosing = current.around
+      // A collapse that hides the record the rail shows opens the collapsed record
+      // instead. From the keyboard it replaces the address, as a step does.
+      if (current.open && enclosing.includes(name))
+        return void current.navigate(current.nav.recordHref(name, current.rootName), {
           preventScrollReset: true,
-          replace: keyboard && hides,
-          // A switch to the collapsed record is the rail's own navigation.
-          state: hides ? tokens.next() : undefined,
-        },
-      )
+          replace: keyboard,
+          state: tokens.next(),
+        })
+      // Collapsing the Run live mode follows, or its Task, stops following it.
+      if (current.liveOn && liveChain(current.selectedRow).includes(name))
+        void current.navigate(current.nav.liveHref(null), { preventScrollReset: true })
     },
-    viewport: (parent, value) => latest.current.live?.viewport(parent, value),
   }))
   useEffect(() => {
     if (glimpse) return
     /** Moves the rail's record, or the cursor, one record up or down. */
     const move = (step: 1 | -1) => {
       const current = latest.current
-      const next = stepStop(current.stops, current.open ? current.position : current.cursor, step)
-      if (!next) return
+      const from = current.open ? current.position : current.cursor
+      const next = stepStop(current.stops, from, step)
+      if (!next) {
+        // The step stops at children the trace does not hold yet, and asks for the ones
+        // it stopped at first, so the next press goes on.
+        const beside = from ? current.layout?.rows[resolveStop(current.stops, from) + step] : null
+        if (beside?.kind === 'gap' && beside.reason === 'unloaded')
+          current.trace?.prefer([
+            { parent: beside.parent, at: step > 0 ? beside.from : beside.to - 1 },
+          ])
+        return
+      }
       const target = stopPosition(next)
       // With an unsent comment the review asks first; the table and rail stay put.
       if (!current.unsent) setReveal((value) => ({ ...value, record: next.row.name }))
       if (!current.open) return setCursor(target)
       if (!current.unsent) setKeyStep({ at: current.locationKey, to: target })
-      void current.navigate(current.nav.recordHref(next.row.name), {
+      void current.navigate(current.nav.recordHref(next.row.name, current.rootName), {
         preventScrollReset: true,
         replace: true,
         state: tokens.next(),
       })
     }
-    /** Space: whether it toggled an expandable record. */
-    const toggle = (owner: 'table' | 'rail') => {
+    /** Space: whether it toggled an expandable record. The dense timeline has none. */
+    const toggle = (_owner: 'table' | 'rail') => false
+    /**
+     * ← and →: the mark before or after the record the rail shows, or else the cursor's,
+     * in its Run's order. From the Run itself, → starts at its first mark and ← at its last.
+     */
+    const mark = (step: 1 | -1) => {
       const current = latest.current
-      const row = owner === 'rail' ? current.selectedRow : current.activeStop?.row
-      // The rail toggles only an expandable record it shows itself, never a final value.
-      if (!row || (owner === 'rail' && (!current.open || row.name !== current.selected)))
-        return false
-      if (expandable(row)) {
-        if (!current.expanded.includes(row.name) && current.full) return false
-        actions.toggle(row.name, true)
-        return true
-      }
-      // In the table, any other record collapses the closest expandable record around it.
-      const parent = owner === 'table' && current.activeStop?.parents[0]
-      if (!parent) return false
-      actions.toggle(parent, true)
+      const from = (current.open ? current.selectedRow : null) ?? current.activeStop?.row
+      const next = adjacentMark(current.store, current.layout?.rows ?? NO_ROWS, from, step)
+      if (next === null) return false
+      if (next) actions.select(next, true)
       return true
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
-      if (!['ArrowUp', 'ArrowDown', ' ', 'Enter', 'Escape'].includes(event.key)) return
+      if (
+        !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Enter', 'Escape'].includes(
+          event.key,
+        )
+      )
+        return
       const table = tableRef.current
       const rail = popupRef.current
       const target = event.target
-      if (!table || !(target instanceof Element)) return
+      if (!(target instanceof Element)) return
+      if (!table) return
+      // The list of top-level records moves its own cursor. With no waterfall open, the
+      // arrows from the page reach the list too.
+      if (rootsRef.current?.contains(target)) {
+        const current = latest.current
+        const name = target.closest('[data-record-key]')?.getAttribute('data-record-key')
+        if (event.key === 'Enter' && name && !(current.open && name === current.selected))
+          keepFocus.current = name
+        return
+      }
+      if (!latest.current.stops.length && !latest.current.open) return
       // Another dialog, such as the comment confirmation, keeps every key.
       const dialog = document.querySelector(
         '[role="dialog"][aria-modal="true"], [role="alertdialog"]',
@@ -913,7 +796,9 @@ export function Activity({
         return move(step)
       }
       if (owner === 'page' || event.repeat) return
-      if (event.key === ' ') {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        if (mark(event.key === 'ArrowRight' ? 1 : -1)) event.preventDefault()
+      } else if (event.key === ' ') {
         if (toggle(owner)) event.preventDefault()
       } else if (event.key === 'Enter') {
         if (owner !== 'table' || current.open || !current.activeStop) return
@@ -928,7 +813,7 @@ export function Activity({
     // Only elements without keys of their own own these keys, so none is overtaken.
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [glimpse, actions, tokens])
+  }, [glimpse, actions, tokens, rootsRef])
   // Where focus was when live mode last changed the record. The new record's panel
   // replaces the old one, so focus that was in it returns to the same place.
   const refocus = useRef<{
@@ -1011,7 +896,9 @@ export function Activity({
   const follow = ((): FollowStep | 'done' | 'blocked' | null => {
     if (!following || glimpse || closing !== null || guarded || inspecting || !connected)
       return null
-    if (page.unavailable || (!open && liveScope !== 'latest')) return null
+    // A Task shows in its header, as a record shows in the rail: live mode follows from it.
+    const inView = open || (selected !== null && railSelected === null)
+    if (page.unavailable || (!inView && liveScope !== 'latest')) return null
     if (transition.state !== 'idle' || decision.state !== 'idle') return null
     // In an archived workspace you cannot act, so only the newest record counts.
     return liveFollow(page, nav, {
@@ -1038,6 +925,7 @@ export function Activity({
   const followMark = advancing && step && !step.last ? advance : undefined
   // A selection that opens the rail leaves focus where it is.
   const followOpens = Boolean(step?.last) && !open
+  const followRecord = step?.record ?? null
   // In the commit itself, so a pick or close that starts after this render always
   // starts after the step and wins.
   useLayoutEffect(() => {
@@ -1093,7 +981,7 @@ export function Activity({
             on: active.closest(`[${liveToggleAttribute}]`) ? 'toggle' : 'rail',
           }
         : null
-    if (followOpens) openedByKey.current = true
+    if (followOpens) keepFocus.current = followRecord
     // Following adds no history entry.
     void navigate(followTo, { replace: true, preventScrollReset: true, state })
   }, [
@@ -1107,6 +995,7 @@ export function Activity({
     followTo,
     followMark,
     followOpens,
+    followRecord,
     followReplaces,
     rested,
     selected,
@@ -1153,6 +1042,33 @@ export function Activity({
       }
     />
   )
+  // A Task heads its own waterfall: the header above it states what a rail would of the
+  // Task, and follows it live.
+  const rootTask = !glimpse && store?.rootRow?.kind === 'task' ? store.rootRow : null
+  const taskDetail =
+    rootTask && page.detail?.kind === 'task' && page.detail.task.name === rootTask.name
+      ? page.detail
+      : null
+  const taskHeader = rootTask && (
+    <TaskHeader
+      task={taskDetail?.task ?? rootTask}
+      // The trace reads the Task's own detail once, also when a link opened a record under it.
+      feedback={store?.taskDetail?.feedback}
+      actions={
+        <LiveToggle
+          scope="task"
+          on={liveScope === 'task'}
+          blocked={
+            liveScope === 'task'
+              ? stalled
+              : // Following a Task also expands one of its Runs.
+                !nav.liveRoom([rootTask.name, `${rootTask.name}/run`], selectedChain)
+          }
+          onToggle={() => toggleLive('task', [rootTask.name], windowAt(rootTask.name, 0))}
+        />
+      }
+    />
+  )
   const railControls = (
     <span className={panelStyles.railControls}>
       {railToggle}
@@ -1161,31 +1077,27 @@ export function Activity({
   )
   // The cursor row shows while focus is in the table.
   const activeRecord = tableFocused ? (activeStop?.row.name ?? null) : null
-  const expandedKey = page.expanded.join('\n')
   const loadable = more ? undefined : list
-  const scope = useMemo<RowScope>(
+  // A root's address keeps the reading position, so a reload opens the list there. It is
+  // the same for every root but for the root's name.
+  const rootTemplate = nav.rootHref(ROOT_PLACEHOLDER)
+  // A Task's row also selects the Task, so the rail shows it beside its waterfall.
+  const taskTemplate = nav.rootHref(ROOT_PLACEHOLDER, true)
+  const scope = useMemo<RootScope>(
     () => ({
-      selected,
-      active: activeRecord,
-      expanded: new Set(expandedKey ? expandedKey.split('\n') : []),
-      full: (expandedKey ? expandedKey.split('\n').length : 0) >= MAX_EXPANDED_RECORDS,
-      href: glimpse ? revealHref : (row) => selectionHref(page.listPath, search, row.name),
-      observed,
+      open: rootName,
+      href: glimpse
+        ? revealHref
+        : (row) =>
+            (row.kind === 'task' ? taskTemplate : rootTemplate).replaceAll(
+              ROOT_PLACEHOLDER,
+              encodeURIComponent(row.name),
+            ),
       glimpse,
     }),
-    [selected, activeRecord, expandedKey, page.listPath, search, observed, glimpse],
+    [rootName, rootTemplate, taskTemplate, glimpse],
   )
-  const rows = (items: ActivityRow[]) =>
-    items.map((row) => (
-      <RecordRow
-        key={row.name}
-        row={row}
-        depth={0}
-        branches={page.branches[row.name] ? page.branches : undefined}
-        scope={scope}
-      />
-    ))
-  // Top-level records sit under the UTC day they started; children stay with their parent.
+  // Top-level records sit under the UTC day they started.
   const tableRows = activityDays(roots).map(({ day, key, rows: dayRows }) => {
     const label = dayLabel(day)
     return (
@@ -1195,261 +1107,315 @@ export function Activity({
         // The day orients; the records stay the strongest text.
         heading={
           <Table.Cell fullWidth>
-            <Typography.BodySmall color="secondary">{label}</Typography.BodySmall>
+            <Typography.BodySmall variant="secondary">{label}</Typography.BodySmall>
           </Table.Cell>
         }
       >
-        {rows(dayRows)}
+        {dayRows.map((row) => (
+          <RootRow key={row.name} row={row} scope={scope} />
+        ))}
       </Table.Group>
     )
   })
   const providers = useContext(ProviderMarksContext)
+  // The open root, when the loaded list does not hold it.
   const outside =
-    page.selectedRow && !shownRecords(page, roots, glimpse).has(page.selectedRow.name)
-      ? page.selectedRow
+    !outsideScope && store?.rootRow && !roots.some((row) => row.name === store.rootRow?.name)
+      ? store.rootRow
       : null
+  // A record's address differs from this one only in the selection. Without it, the
+  // address is the same whichever record is selected, so a step renders no link again.
+  const unselected = useMemo(() => {
+    const query = new URLSearchParams(search)
+    for (const key of selectionKeys) query.delete(key)
+    return query.toString()
+  }, [search])
+  const opener = useMemo(
+    () => ({
+      href: (row: ActivityRow) => selectionHref(page.listPath, unselected, row.name),
+      select: (row: ActivityRow) => actions.select(row),
+    }),
+    [page.listPath, unselected, actions],
+  )
+  // The waterfall brings the record a key or live mode moved to into view.
+  // Only a key's own move: the route's record is the selection, which shows already.
+  const revealed = reveal.record === reveal.route ? undefined : reveal.record
+  const shownKey =
+    selected && page.selectedRow ? recordPosition(page.selectedRow, around).name : selected
+  // The table reveals each once, when its row is there: a record that stays selected
+  // never pulls the table back, and one that loads later still comes into view.
+  const [brought, setBrought] = useState({ shown: shownKey, moved: revealed, record: shownKey })
+  if (brought.shown !== shownKey || brought.moved !== revealed)
+    setBrought({
+      shown: shownKey,
+      moved: revealed,
+      // Whichever changed last. A key's move that ends leaves the selection revealed.
+      record: (brought.moved !== revealed ? revealed : undefined) ?? shownKey,
+    })
   return (
-    <RowActionsContext value={actions}>
-      <ActivityConnectedContext value={live?.connected ?? true}>
-        <ActivityInspectContext value={inspect}>
-          <div className={styles.root}>
-            <div className={styles.main}>
-              <div className={styles.toolbar}>
-                {live && !live.connected && (
-                  <Typography.BodySmall role="status">
-                    Activity is unavailable. Reconnecting…
-                  </Typography.BodySmall>
+    <ActivityConnectedContext value={live?.connected ?? true}>
+      <ActivityInspectContext value={inspect}>
+        <div
+          className={styles.root}
+          // A narrow screen shows one pane: the list, or the waterfall the address names.
+          data-activity-view={glimpse ? 'glimpse' : namedRoot ? 'trace' : 'list'}
+          // Beside a docked rail, the list gives its room to the waterfall.
+          data-activity-rail={open ? 'open' : 'closed'}
+        >
+          <div className={styles.main}>
+            <div className={styles.toolbar}>
+              {live && !live.connected && (
+                <Typography.BodySmall role="status">
+                  Activity is unavailable. Reconnecting…
+                </Typography.BodySmall>
+              )}
+            </div>
+            <div className={styles.list}>
+              <div className={styles.listHeading}>
+                {!page.agent && (
+                  <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
                 )}
-                {page.expanded.length >= MAX_EXPANDED_RECORDS && (
-                  <Typography.BodySmall>
-                    Collapse a record before you expand another.
-                  </Typography.BodySmall>
+                {!glimpse && (
+                  <LiveToggle
+                    text
+                    scope="latest"
+                    on={liveScope === 'latest'}
+                    blocked={liveScope === 'latest' && stalled}
+                    onToggle={() => toggleLive('latest', [])}
+                  />
                 )}
               </div>
-              <div
-                className={styles.list}
-                ref={listRef}
-                onFocus={(event) => {
-                  const table = tableRef.current
-                  // A record's link is not a Tab stop of its own. Focus that lands on one,
-                  // as a click on it leaves it, rests on the table, whose cursor row shows it.
-                  if (
-                    !glimpse &&
-                    table?.contains(event.target) &&
-                    event.target.matches('[data-record-link]')
-                  )
-                    return table.focus({ preventScroll: true })
-                  setTableFocused(Boolean(table?.contains(event.target)))
-                }}
-                onBlur={(event) =>
-                  setTableFocused(Boolean(tableRef.current?.contains(event.relatedTarget)))
-                }
-              >
-                <div className={styles.listHeading}>
-                  {!page.agent && (
-                    <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
-                  )}
-                  {!glimpse && (
-                    <LiveToggle
-                      text
-                      scope="latest"
-                      on={liveScope === 'latest'}
-                      blocked={liveScope === 'latest' && stalled}
-                      onToggle={() => toggleLive('latest', [])}
-                    />
-                  )}
-                </div>
-                {page.listUnavailable && (
-                  <Typography.Body>This list is unavailable.</Typography.Body>
-                )}
-                {page.anchorUnavailable && (
-                  <Typography.Body>
-                    This page is unavailable.{' '}
-                    <Link to={nav.href({ before: null, after: null, anchor: null })}>
-                      Open the first page.
-                    </Link>
-                  </Typography.Body>
-                )}
-                {loadable && (
-                  <Typography.BodySmall aria-live="polite" className={visuallyHidden}>
-                    {loadable.count === 1
-                      ? 'The list shows 1 record.'
-                      : `The list shows ${loadable.count} records.`}
-                  </Typography.BodySmall>
-                )}
-                {windowKey && lostPosition === windowKey && (
-                  <Typography.BodySmall role="status">
-                    Some records are no longer available.
-                  </Typography.BodySmall>
-                )}
-                <Table.Container
-                  readingKey={windowKey}
-                  readingPaused={live && !live.connected}
-                  readingFollowStart={live?.followRoot}
-                  onReadingStartChange={live?.atStart}
-                  revealRecord={reveal.record}
-                  onReadingPositionLost={() => setLostPosition(windowKey)}
-                  onVisibleRecordsChange={live?.visible}
-                  ariaLabel="Activity records"
-                  ref={tableRef}
-                  focusable={!glimpse}
-                  density="compact"
-                  layout="scroll"
-                  columns={[
-                    { width: 104, label: 'TIME · UTC' },
-                    { width: 'minmax(320px, 1fr)', label: 'RECORD' },
-                    { width: 88, label: 'DUR' },
-                    {
-                      width: 150,
-                      label: 'CONTEXT',
-                      ariaLabel: 'Context impact',
-                      align: 'right',
-                    },
-                  ]}
-                >
-                  <Table.Head />
-                  <Table.Body>
-                    {loadable?.newer && <LoadRecords control={loadable.newer} direction="newer" />}
-                    {tableRows}
-                    {loadable?.older && <LoadRecords control={loadable.older} direction="older" />}
-                    {!page.rows.length && !page.listUnavailable && !page.anchorUnavailable && (
-                      <Table.Status>
-                        <EmptyPage
-                          fullSize={false}
-                          iconName="Activity"
-                          title={archived ? 'No activity' : 'No activity yet'}
-                          description={
-                            archived
-                              ? restoreFirst(archived, 'start new runs')
-                              : connect
-                                ? 'Connect an MCP client to this workspace. Its calls show here.'
-                                : page.agent
-                                  ? "The agent's calls show here."
-                                  : 'Your calls show here.'
-                          }
-                          action={connect && <CopyMcpEndpoint {...connect} />}
-                        />
-                      </Table.Status>
-                    )}
-                    {outside && (
-                      <Table.Row recordKey={outside.name} selected status={rowStatus(outside)}>
-                        <Table.Cell mono>
-                          <UtcTime value={outside.startedAt} />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Table.Record
-                            icon={recordIcon(outside, providers)}
-                            metadata={
-                              <>
-                                <span>Outside this workspace or page:</span>
-                                {/* This row sits outside every day group, so it names its own day. */}
-                                <span>{dayLabel(utcDay(outside.startedAt))}</span>
-                              </>
+              {page.listUnavailable && <Typography.Body>This list is unavailable.</Typography.Body>}
+              {page.anchorUnavailable && (
+                <Typography.Body>
+                  This page is unavailable.{' '}
+                  <Link to={nav.href({ before: null, after: null, anchor: null })}>
+                    Open the first page.
+                  </Link>
+                </Typography.Body>
+              )}
+              {loadable && (
+                <Typography.BodySmall aria-live="polite" className={visuallyHidden}>
+                  {loadable.count === 1
+                    ? 'The list shows 1 record.'
+                    : `The list shows ${loadable.count} records.`}
+                </Typography.BodySmall>
+              )}
+              {windowKey && lostPosition === windowKey && (
+                <Typography.BodySmall role="status">
+                  Some records are no longer available.
+                </Typography.BodySmall>
+              )}
+              <div className={glimpse ? styles.list : styles.panes}>
+                <div className={glimpse ? styles.list : styles.rootPane}>
+                  <Table.Container
+                    readingKey={windowKey}
+                    readingPaused={live && !live.connected}
+                    readingFollowStart={live?.followRoot}
+                    onReadingStartChange={live?.atStart}
+                    revealRecord={glimpse ? undefined : (namedRoot ?? undefined)}
+                    onReadingPositionLost={() => setLostPosition(windowKey)}
+                    onVisibleRecordsChange={live?.visible}
+                    ariaLabel={glimpse ? 'Activity records' : 'Tasks and runs'}
+                    // A glimpse shares its page with other tables, which keep the arrows.
+                    ref={glimpse ? undefined : rootsRef}
+                    density="compact"
+                    layout="scroll"
+                    columns={[
+                      { width: glimpse ? 104 : 92, label: glimpse ? 'TIME · UTC' : 'UTC' },
+                      {
+                        width: glimpse ? 'minmax(320px, 1fr)' : 'minmax(140px, 1fr)',
+                        label: 'RECORD',
+                      },
+                      { width: glimpse ? 88 : 64, label: 'DUR' },
+                      {
+                        width: glimpse ? 150 : 88,
+                        label: 'CONTEXT',
+                        ariaLabel: 'Context impact',
+                        align: 'right',
+                      },
+                    ]}
+                  >
+                    <Table.Head />
+                    <Table.Body>
+                      {loadable?.newer && (
+                        <LoadRecords control={loadable.newer} direction="newer" />
+                      )}
+                      {tableRows}
+                      {loadable?.older && (
+                        <LoadRecords control={loadable.older} direction="older" />
+                      )}
+                      {!page.rows.length && !page.listUnavailable && !page.anchorUnavailable && (
+                        <Table.Status>
+                          <EmptyPage
+                            fullSize={false}
+                            iconName="Activity"
+                            title={archived ? 'No activity' : 'No activity yet'}
+                            description={
+                              archived
+                                ? restoreFirst(archived, 'start new runs')
+                                : connect
+                                  ? 'Connect an MCP client to this workspace. Its calls show here.'
+                                  : page.agent
+                                    ? "The agent's calls show here."
+                                    : 'Your calls show here.'
                             }
-                          >
-                            <Link
-                              to={nav.recordHref(outside.name)}
-                              // The rail shows this record already. Like every record link, it
-                              // is no Tab stop, and focus on it rests on the table.
-                              data-record-link
-                              tabIndex={-1}
-                              preventScrollReset
-                              onClick={(event) =>
-                                pickFromLink(event, () => actions.select(outside))
+                            action={connect && <CopyMcpEndpoint {...connect} />}
+                          />
+                        </Table.Status>
+                      )}
+                      {outside && (
+                        <Table.Row
+                          recordKey={outside.name}
+                          selected
+                          status={rowStatus(outside)}
+                          to={scope.href(outside)}
+                          preventScrollReset
+                        >
+                          <Table.Cell mono>
+                            <UtcTime value={outside.startedAt} />
+                          </Table.Cell>
+                          <Table.Cell>
+                            <Table.Record
+                              icon={recordIcon(outside, providers)}
+                              metadata={
+                                <>
+                                  <span>Outside this workspace or page:</span>
+                                  {/* This row sits outside every day group, so it names its own day. */}
+                                  <span>{dayLabel(utcDay(outside.startedAt))}</span>
+                                </>
                               }
                             >
-                              <RecordLabel row={outside} />
-                            </Link>
-                          </Table.Record>
-                        </Table.Cell>
-                        <Table.Cell mono>{rowDuration(outside)}</Table.Cell>
-                        <Table.Cell>
-                          <ContextImpact
-                            bytes={outside.contextImpactBytes}
-                            partial={outside.kind === 'task' && outside.contextImpactPartial}
-                          />
-                        </Table.Cell>
-                      </Table.Row>
-                    )}
-                  </Table.Body>
-                </Table.Container>
-                {more && (page.hasAfter || page.rows.length > roots.length) && (
-                  <div className={styles.filters}>
-                    <Button.InternalLink to={more.to} variant="bare" size="x-small">
-                      {more.label}
-                    </Button.InternalLink>
+                              <Table.RowLink to={scope.href(outside)}>
+                                <RecordLabel row={outside} />
+                              </Table.RowLink>
+                            </Table.Record>
+                          </Table.Cell>
+                          <Table.Cell mono>{rowDuration(outside)}</Table.Cell>
+                          <Table.Cell>
+                            <ContextImpact
+                              bytes={outside.contextImpactBytes}
+                              partial={outside.kind === 'task' && outside.contextImpactPartial}
+                            />
+                          </Table.Cell>
+                        </Table.Row>
+                      )}
+                    </Table.Body>
+                  </Table.Container>
+                  {more && (page.hasAfter || page.rows.length > roots.length) && (
+                    <div className={styles.filters}>
+                      <Button.InternalLink to={more.to} variant="bare" size="x-small">
+                        {more.label}
+                      </Button.InternalLink>
+                    </div>
+                  )}
+                </div>
+                {!glimpse && (
+                  <div
+                    className={styles.tracePane}
+                    onFocus={(event) => {
+                      const table = tableRef.current
+                      // A record's link is not a Tab stop of its own. Focus that lands on one,
+                      // as a click on it leaves it, rests on the table, whose cursor row shows it.
+                      if (
+                        table?.contains(event.target) &&
+                        event.target.matches('[data-record-link], [data-timeline-mark]')
+                      )
+                        return table.focus({ preventScroll: true })
+                      setTableFocused(Boolean(table?.contains(event.target)))
+                    }}
+                    onBlur={(event) =>
+                      setTableFocused(Boolean(tableRef.current?.contains(event.relatedTarget)))
+                    }
+                  >
+                    <Waterfall
+                      store={store}
+                      // A record Coral returns no history for has nothing left to read.
+                      reader={outsideScope && !looking ? undefined : trace}
+                      rows={layout?.rows ?? NO_ROWS}
+                      selected={selected}
+                      holder={page.selectedRow?.kind === 'output' ? page.selectedRow.run : null}
+                      active={activeRecord}
+                      open={opener}
+                      toggle={actions.toggle}
+                      reveal={brought.record ?? undefined}
+                      paused={
+                        page.listUnavailable ||
+                        (live ? !live.connected : false) ||
+                        Boolean(trace?.restoring)
+                      }
+                      tableRef={tableRef}
+                      listHref={nav.listHref}
+                      header={taskHeader}
+                    />
                   </div>
                 )}
               </div>
             </div>
-            {/* One rail for every record: another selection replaces its content in place.
-              On a wide screen it docks beside the list, which shrinks to make room. */}
-            <Dialog.Rail
-              docked
-              open={selected !== null && closing === null}
-              onOpenChange={(next) => !next && close()}
-            >
-              <Dialog.Portal>
-                <Dialog.Backdrop />
-                <Dialog.Popup
-                  size="xl"
-                  placement="right"
-                  fullWidthOnMobile
-                  ref={popupRef}
-                  // Enter in the table, or live mode, opens the rail and leaves focus where it
-                  // was. Otherwise focus goes to the close control, as before the live toggle
-                  // came first, so no toggle's tooltip opens and Escape closes the rail.
-                  initialFocus={() => {
-                    const keep = openedByKey.current
-                    openedByKey.current = false
-                    if (keep) return false
-                    return (
-                      popupRef.current?.querySelector<HTMLElement>(
-                        'button[aria-label="Close details"]',
-                      ) ?? true
-                    )
-                  }}
-                  // Closing returns focus to the table, where the cursor shows the record.
-                  finalFocus={() => tableRef.current ?? true}
-                >
-                  {/* Each detail panel heads the rail with the record it names. */}
-                  {ownHeader ? (
-                    <Dialog.Title visuallyHidden>
-                      {reviewingAction ? 'Review action' : 'Activity details'}
-                    </Dialog.Title>
-                  ) : (
-                    <Dialog.Header>
-                      <Dialog.Title>Activity details</Dialog.Title>
-                      <Dialog.Close ariaLabel="Close details" />
-                    </Dialog.Header>
-                  )}
-                  {detailPage.unavailable ? (
-                    <Typography.Body>This history is unavailable.</Typography.Body>
-                  ) : runContext ? (
-                    // Records of one Run share one split, so it keeps its sizes and its
-                    // source while the selection moves.
-                    <ExecutionSourceSplit
-                      key={runContext.run.name}
-                      context={runContext}
-                      locatable={detailPage.detail?.kind === 'run'}
-                      selectedRow={detailPage.selectedRow}
-                      position={orderedRecordPosition(detailPage, detailPage.selectedRow)}
-                      close={railControls}
-                    >
-                      <ActivityDetail key={detail.record} page={detailPage} />
-                    </ExecutionSourceSplit>
-                  ) : (
-                    <PanelClose value={ownHeader ? railControls : null}>
-                      <ActivityDetail key={detail.record} page={detailPage} />
-                    </PanelClose>
-                  )}
-                </Dialog.Popup>
-              </Dialog.Portal>
-            </Dialog.Rail>
           </div>
-        </ActivityInspectContext>
-      </ActivityConnectedContext>
-    </RowActionsContext>
+          {/* One rail for every record: another selection replaces its content in place.
+              On a wide screen it docks beside the list, which shrinks to make room. */}
+          <Dialog.Rail docked open={open} onOpenChange={(next) => !next && close()}>
+            <Dialog.Portal>
+              <Dialog.Backdrop />
+              <Dialog.Popup
+                size="xl"
+                placement="right"
+                fullWidthOnMobile
+                ref={popupRef}
+                // Enter in the table or the list, or live mode, opens the rail and leaves focus
+                // where it was. Otherwise focus goes to the close control, as before the live toggle
+                // came first, so no toggle's tooltip opens and Escape closes the rail.
+                initialFocus={() => {
+                  const keep = keepFocus.current !== null && keepFocus.current === selected
+                  keepFocus.current = null
+                  if (keep) return false
+                  return (
+                    popupRef.current?.querySelector<HTMLElement>(
+                      'button[aria-label="Close details"]',
+                    ) ?? true
+                  )
+                }}
+                // Closing returns focus to the table, where the cursor shows the record.
+                finalFocus={() => tableRef.current ?? true}
+              >
+                {/* Each detail panel heads the rail with the record it names. */}
+                {ownHeader ? (
+                  <Dialog.Title visuallyHidden>
+                    {reviewingAction ? 'Review action' : 'Activity details'}
+                  </Dialog.Title>
+                ) : (
+                  <Dialog.Header>
+                    <Dialog.Title>Activity details</Dialog.Title>
+                    <Dialog.Close ariaLabel="Close details" />
+                  </Dialog.Header>
+                )}
+                {detailPage.unavailable ? (
+                  <Typography.Body>This history is unavailable.</Typography.Body>
+                ) : runContext ? (
+                  // Records of one Run share one split, so it keeps its sizes and its
+                  // source while the selection moves.
+                  <ExecutionSourceSplit
+                    key={runContext.run.name}
+                    context={runContext}
+                    locatable={detailPage.detail?.kind === 'run'}
+                    selectedRow={detailPage.selectedRow}
+                    position={orderedRecordPosition(detailPage, detailPage.selectedRow)}
+                    close={railControls}
+                  >
+                    <ActivityDetail key={detail.record} page={detailPage} />
+                  </ExecutionSourceSplit>
+                ) : (
+                  <PanelClose value={ownHeader ? railControls : null}>
+                    <ActivityDetail key={detail.record} page={detailPage} />
+                  </PanelClose>
+                )}
+              </Dialog.Popup>
+            </Dialog.Portal>
+          </Dialog.Rail>
+        </div>
+      </ActivityInspectContext>
+    </ActivityConnectedContext>
   )
 }
 

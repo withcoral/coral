@@ -12,6 +12,7 @@ import { expect, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
+import { selectedRecords } from './story-table'
 import { ActionReviewSession } from '../actions/review'
 import { recordAnimations } from '../../../.storybook/browser'
 import {
@@ -439,8 +440,7 @@ async function surface({ canvasElement, userEvent }: Play) {
     selects: (heading: string, row: string) =>
       waitFor(() => {
         expect(within(rail()).getByRole('heading', { name: heading, level: 2 })).toBeVisible()
-        const selected = [...table.querySelectorAll('[role="row"][aria-selected="true"]')]
-        expect(selected.map((item) => item.querySelector('a[href]')?.textContent)).toEqual([row])
+        expect(selectedRecords(table)).toEqual([row])
       }),
     /** Live mode is on in the address and on the toggle, or off in both. */
     following: (on: boolean) =>
@@ -537,9 +537,9 @@ export const YourSelectionStopsIt: Story = {
     await following(true)
     await selects('coral.emit #3', 'emission #3')
 
-    // A key step turns it off too.
+    // A key step turns it off too: ← selects the mark before the one the rail shows.
     rail().focus()
-    await userEvent.keyboard('{ArrowUp}')
+    await userEvent.keyboard('{ArrowLeft}')
     await following(false)
     await selects('console.info #2', 'log #2')
     await press('Add log')
@@ -769,8 +769,7 @@ async function reviews(context: Play, call: Child) {
   const label = call.kind === 'invocation' ? call.callPath : call.label
   await waitFor(() => {
     expect(within(rail()).getByRole('region', { name: `Review ${label}` })).toBeVisible()
-    const selected = [...table.querySelectorAll('[role="row"][aria-selected="true"]')]
-    expect(selected.map((item) => item.querySelector('a[href]')?.textContent)).toEqual([label])
+    expect(selectedRecords(table)).toEqual([label])
   })
   await expect(address().get('record')).toBe(call.name)
   await expect(address().get('request')).toBe(approvalOf(call.name))

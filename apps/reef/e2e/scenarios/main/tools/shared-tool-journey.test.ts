@@ -54,10 +54,12 @@ async function publishPrivateTool(page: Page, workspace: string, replaces: numbe
 const callSharedTool = (agent: ReturnType<typeof programRunner>) =>
   agent.exec(`return await ${SHARED_CALL_PATH}();`)
 
-/** Opens a record's row on the Run page, as a reader does, so its children show under it. */
-async function openRecord(row: Locator) {
-  await row.getByRole('button', { name: 'Expand record', exact: true }).click()
-  await row.getByRole('button', { name: 'Collapse record', exact: true }).waitFor()
+/** Waits until a record's row on the Run page shows open, with its children under it. */
+async function shownOpen(row: Locator) {
+  // The waterfall opens every record. A row can close once its children are read.
+  await row
+    .getByRole('button', { name: 'Collapse record', exact: true })
+    .waitFor({ timeout: 15_000 })
 }
 
 /** The open shared tool's drawer, once it shows `revision` as current, published by Alice. */
@@ -178,9 +180,9 @@ test('An owner publishes a private tool, a member’s agent finds and calls it, 
     await step('The Run page shows the call the shared tool made inside its own call', async () => {
       await page.goto(`/${run}`)
       const table = page.getByRole('table', { name: 'Activity records', exact: true })
-      // The Run page selects the Run; its calls show once it opens.
-      await openRecord(table.getByRole('row').filter({ hasText: 'Call one Tool' }))
-      await openRecord(
+      // The Run page selects the Run; its waterfall reads its calls.
+      await shownOpen(table.getByRole('row').filter({ hasText: 'Call one Tool' }))
+      await shownOpen(
         table
           .getByRole('row')
           .filter({ has: page.getByRole('link', { name: SHARED_CALL_PATH, exact: true }) }),

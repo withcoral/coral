@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { atom, useAtomValue, useStore } from 'jotai'
 import { useFetcher, useLocation, useNavigate, useNavigation, useRevalidator } from 'react-router'
 import {
@@ -23,8 +23,21 @@ import {
 } from './activity-list'
 import { activityPageFetchKey, fetchedActivityPage } from './activity-page-fetch'
 import { subscribeActivityStream } from './activity-stream'
+import { useActivityTrace } from './activity-trace-reader'
+import { SINGLE_PANE_MAX_WIDTH } from '@/views/activity/breakpoint'
+import { openRoot } from '@/views/activity/trace'
 
 const idle = () => {}
+/** At this width or more, the list and the open record's waterfall show side by side. */
+const SIDE_BY_SIDE = `(min-width: ${SINGLE_PANE_MAX_WIDTH + 1}px)`
+const subscribeWidth = (change: () => void) => {
+  if (typeof window.matchMedia !== 'function') return idle
+  const query = window.matchMedia(SIDE_BY_SIDE)
+  query.addEventListener('change', change)
+  return () => query.removeEventListener('change', change)
+}
+const sideBySide = () =>
+  typeof window.matchMedia === 'function' && window.matchMedia(SIDE_BY_SIDE).matches
 // Selection, expansion and reading position never change which list is loaded.
 const windowIndependentKeys = new Set<string>([
   ...selectionKeys,
@@ -284,7 +297,11 @@ function pageHref(page: ActivityPage, search: string, query: Record<string, stri
  * A loader replacement inside the same list joins the loaded records; any other
  * replacement opens a new list from its freshly authorized page.
  */
-export function useActivityReader(initial: ActivityPage) {
+export function useActivityReader(
+  initial: ActivityPage,
+  /** `trace` reads everything under the open top-level record, for its waterfall. */
+  { trace: traced = true }: { trace?: boolean } = {},
+) {
   const location = useLocation()
   const navigate = useNavigate()
   const transition = useNavigation()
@@ -343,6 +360,15 @@ export function useActivityReader(initial: ActivityPage) {
   }
   const state = useAtomValue(current.atom)
   const page = activityView(state)
+  // Side by side, a waterfall always shows: the newest record's, until the address names
+  // one. It stays the same record while newer ones arrive. A narrow screen shows the list
+  // alone then, and reads no waterfall.
+  const wide = useSyncExternalStore(subscribeWidth, sideBySide, () => false)
+  const namedRoot = traced ? openRoot(page) : null
+  const [first, setFirst] = useState<string | null>(null)
+  const newest = page.rows[0]?.name ?? null
+  if (traced && wide && !namedRoot && !first && newest) setFirst(newest)
+  const trace = useActivityTrace(page, namedRoot ?? (traced && wide ? first : null), state.page)
   const firstVisible = state.visible.find((name) =>
     state.list.rows.some((row) => row.name === name),
   )
@@ -419,6 +445,7 @@ export function useActivityReader(initial: ActivityPage) {
     page,
     windowKey: `${listKey}#${state.generation}`,
     revealRecord,
+    trace: trace ?? undefined,
     list: {
       count: state.list.rows.length,
       newer: control('newer', state.list.hasNewer),

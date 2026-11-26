@@ -446,7 +446,9 @@ it.each(comments)(
     screen.getByRole('button', { name: 'Discard comment' }).click()
     await pass(300)
     await pass(MIN_LIVE_RECORD_STAY_MS)
-    expect(view.records).toEqual([runName('old'), runName('older')])
+    // Your pick opened the older Run's waterfall. Live mode's step did not replace it.
+    expect(view.records).toEqual([runName('old'), null])
+    expect(view.address().getAll('expand')).toEqual([runName('older')])
     expect(view.address().has('live')).toBe(false)
   },
 )

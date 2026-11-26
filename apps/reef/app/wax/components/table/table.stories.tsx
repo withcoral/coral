@@ -641,6 +641,67 @@ export const PinnedGroupReadout: Story = {
   },
 }
 
+/**
+ * A scroll table too short to show a row under its pinned headings lets the headings
+ * scroll with their rows instead, so every row can still show in full. Taller, they pin.
+ */
+export const ShortTableUnpinsHeadings: Story = {
+  render: function Render() {
+    const [height, setHeight] = useState(300)
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <button type="button" onClick={() => setHeight((value) => (value === 300 ? 120 : 300))}>
+          Resize
+        </button>
+        <div style={{ height, display: 'flex', flexDirection: 'column' }}>
+          <Container
+            ariaLabel="Records"
+            layout="scroll"
+            columns={[
+              { label: 'Record', width: 'minmax(240px, 1fr)' },
+              { label: 'Requests', width: 120, align: 'right' },
+            ]}
+          >
+            <Head />
+            <Group label="Linear provider">
+              <Group label="Issue tools">
+                {TOOLS.map((tool, index) => (
+                  <Row key={tool}>
+                    <Cell>linear.{tool}</Cell>
+                    <Cell mono>{index}</Cell>
+                  </Row>
+                ))}
+              </Group>
+            </Group>
+          </Container>
+        </div>
+      </div>
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const table = canvas.getByRole('table', { name: 'Records' })
+    const headings = () => [...table.querySelectorAll<HTMLElement>('[data-pinned-heading]')]
+    const positions = () => headings().map((heading) => getComputedStyle(heading).position)
+    await expect(positions()).toEqual(['sticky', 'sticky'])
+    await userEvent.click(canvas.getByRole('button', { name: 'Resize' }))
+    await waitFor(() => expect(positions()).toEqual(['static', 'static']))
+    // Every row can scroll into view in full, below the column headings only.
+    const head = table.querySelector('[role="columnheader"]')!.closest('[role="rowgroup"]')!
+    for (const row of table.querySelectorAll<HTMLElement>(
+      '[role="row"]:not([data-pinned-heading])',
+    )) {
+      if (head.contains(row)) continue
+      row.scrollIntoView({ block: 'end' })
+      const box = row.getBoundingClientRect()
+      await expect(box.top).toBeGreaterThanOrEqual(head.getBoundingClientRect().bottom - 1)
+      await expect(box.bottom).toBeLessThanOrEqual(table.getBoundingClientRect().bottom + 1)
+    }
+    await userEvent.click(canvas.getByRole('button', { name: 'Resize' }))
+    await waitFor(() => expect(positions()).toEqual(['sticky', 'sticky']))
+  },
+}
+
 function NestedGroups({ depth }: { depth: number }) {
   if (depth <= 0) {
     return (
@@ -1127,6 +1188,80 @@ export const PinnedReadingAnchor: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Reveal Child 30' }))
     await waitFor(() => expect(top('Child 30')).toBeGreaterThanOrEqual(beneath()))
     await expect(top('Child 30')).toBeLessThanOrEqual(beneath() + 1)
+  },
+}
+
+function ResizedPortExample() {
+  const [height, setHeight] = useState(300)
+  const [reveal, setReveal] = useState<string>()
+  return (
+    <>
+      <Button.TextButton onClick={() => setReveal('Record 30')}>Reveal Record 30</Button.TextButton>
+      <Button.TextButton onClick={() => setHeight((value) => (value === 300 ? 140 : 300))}>
+        Resize
+      </Button.TextButton>
+      <div style={{ height, display: 'flex' }}>
+        <Container
+          ariaLabel="Resized reading"
+          columns={[{ label: 'Record', width: 'fill' }]}
+          density="compact"
+          layout="scroll"
+          readingKey="resized"
+          revealRecord={reveal}
+        >
+          <Head />
+          <Body>
+            {Array.from({ length: 60 }, (_, index) => (
+              <Row key={index} recordKey={`Record ${index + 1}`}>
+                <Cell>Record {index + 1}</Cell>
+              </Row>
+            ))}
+          </Body>
+        </Container>
+      </div>
+    </>
+  )
+}
+/**
+ * A port that changes size, as when a panel docks beside it, never cuts the record it
+ * revealed while that record is on screen. A record the reader scrolled away from stays
+ * away.
+ */
+export const RevealedSurvivesResize: Story = {
+  render: () => <ResizedPortExample />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const port = canvas.getByRole('table', { name: 'Resized reading' })
+    const row = () => within(port).getByText('Record 30').closest('[role=row]')!
+    const box = () => {
+      const [record, view] = [row().getBoundingClientRect(), port.getBoundingClientRect()]
+      return { top: record.top - view.top, bottom: record.bottom - view.top }
+    }
+    const resize = () => userEvent.click(canvas.getByRole('button', { name: 'Resize' }))
+    // How tall the port is when small.
+    await resize()
+    await waitFor(() => expect(port.clientHeight).toBeLessThan(200))
+    const small = port.clientHeight
+    await resize()
+    await waitFor(() => expect(port.clientHeight).toBeGreaterThan(200))
+    await userEvent.click(canvas.getByRole('button', { name: 'Reveal Record 30' }))
+    await waitFor(() => expect(box().bottom).toBeLessThanOrEqual(port.clientHeight + 1))
+    // The reader leaves it where the last line of the small port cuts it in two.
+    port.scrollTop += (box().top + box().bottom) / 2 - small
+    port.dispatchEvent(new Event('scroll'))
+    await resize()
+    await waitFor(() => expect(port.clientHeight).toBe(small))
+    await waitFor(() => expect(box().bottom).toBeLessThanOrEqual(small + 1))
+    await expect(box().top).toBeGreaterThan(0)
+
+    // The reader scrolls away from it. A resize then leaves the port where it is.
+    port.scrollTop = 0
+    port.dispatchEvent(new Event('scroll'))
+    await resize()
+    await waitFor(() => expect(port.clientHeight).toBeGreaterThan(200))
+    await resize()
+    await waitFor(() => expect(port.clientHeight).toBe(small))
+    await expect(port.scrollTop).toBe(0)
   },
 }
 

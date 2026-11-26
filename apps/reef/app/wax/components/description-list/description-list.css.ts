@@ -13,6 +13,14 @@ export const compactList = style({
   gridTemplateColumns: 'max-content minmax(0, 1fr)',
   rowGap: 4,
 })
+// The facts side by side, each label over its value, wrapping where the room ends.
+export const inlineList = style({
+  columnGap: 24,
+  display: 'flex',
+  flexDirection: 'row',
+  flexWrap: 'wrap',
+  rowGap: 8,
+})
 export const row = style({
   alignItems: 'start',
   display: 'grid',
@@ -46,4 +54,17 @@ export const value = style({
 export const total = style({
   borderTop: `1px solid ${theme.stroke.secondary}`,
   marginTop: 4,
+})
+
+// In an inline list, a fact is its label over its value, as wide as they need.
+export const inlineRow = style({
+  selectors: {
+    [`${inlineList} > &`]: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 2,
+      minWidth: 0,
+      paddingBlock: 0,
+    },
+  },
 })

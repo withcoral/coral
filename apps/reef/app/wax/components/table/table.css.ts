@@ -365,6 +365,10 @@ export const markedRow = style({
 // selected heading keeps its selection tint instead.
 export const prominentGroupHeadings = style({})
 
+// `Table.Container` marks a scroll table too short to pin its group headings and
+// still show a row under them. Its headings then scroll with their rows.
+export const unpinnedHeadings = style({})
+
 export const groupHeading = recipe({
   base: {
     backgroundColor: theme.surface.mainContent,
@@ -395,6 +399,9 @@ export const groupHeading = recipe({
         backgroundImage: `linear-gradient(${theme.surface.onMainContent}, ${theme.surface.onMainContent})`,
       },
       [`&${markedRow}`]: { position: 'sticky' },
+      [`${unpinnedHeadings} ${group} > &, ${unpinnedHeadings} ${group} > &${markedRow}`]: {
+        position: 'static',
+      },
     },
   },
   defaultVariants: {

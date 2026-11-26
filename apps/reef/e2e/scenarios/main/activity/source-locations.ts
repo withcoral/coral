@@ -238,5 +238,16 @@ export async function sourceLocations(context: TestContext) {
       line: 2,
     })
     await highlights('Private Tool log', { name: event(2), label: SNAPSHOT, line: 3 })
+
+    // The waterfall reads every call of the Task, also the one the private tool's body made.
+    await step('Show the call the private tool made under the tool call', async () => {
+      await page.goto(`/workspaces/${workspace}/activity?tree=1&expand=${encodeURIComponent(task)}`)
+      const table = page.getByRole('table', { name: 'Activity records', exact: true })
+      const level = async (name: string) =>
+        Number(await table.locator(`[data-record-key="${name}"]`).getAttribute('aria-level'))
+      // The call from the tool's body sits one level under the tool's own call.
+      await table.locator(`[data-record-key="${tools[4]!.name}"]`).waitFor({ timeout: 30_000 })
+      expect(await level(tools[4]!.name)).toBe((await level(tools[3]!.name)) + 1)
+    })
   })
 }

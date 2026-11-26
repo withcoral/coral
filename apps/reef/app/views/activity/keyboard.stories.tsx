@@ -6,7 +6,7 @@ import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, runRow, taskRow, toolRow } from './fixtures'
-import type { ActivityPage, ActivityRow } from './types'
+import type { ActivityPage } from './types'
 import {
   click,
   emulateReducedMotion,
@@ -19,25 +19,41 @@ import {
 // race a record load. Key ownership and traversal rules are keyboard.test.tsx's
 // and navigation.test.ts's.
 
+// One open Task, whose waterfall lists the records the keys move through: with `calls=1`,
+// thirty calls first, then three searches and a Run.
 const collect = taskRow('collect', 'Collect invoices')
 const calls = Array.from({ length: 30 }, (_, index) =>
-  toolRow(collect.name, `c${index + 1}`, { intent: `Call ${index + 1}`, position: index }),
+  toolRow(collect.name, `c${index + 1}`, { intent: `Call ${index + 1}` }),
 )
-const tasks = [1, 2, 3].map((index) => taskRow(`t${index}`, `Task ${index}`))
-const long = runRow('long', '', { actor: 'Long run', intent: 'Long run' })
-const roots: ActivityRow[] = [collect, ...tasks, long]
+const tasks = [1, 2, 3].map((index) =>
+  toolRow(collect.name, `t${index}`, { intent: `Task ${index}` }),
+)
+const long = runRow('long', collect.name, { actor: 'Long run', intent: 'Long run' })
+// A standalone Run beside the Task in the list, with `standalone=1`.
+const solo = runRow('solo', '', { actor: 'Solo run' })
 
-/** The page the loader returns for the URL: its selection and expanded records. */
+/** The page the loader returns for the URL: its selection, with the Task's waterfall open. */
 function pageFor(url: URL): ActivityPage {
   const record = url.searchParams.get('record')
-  const expanded = url.searchParams.has('tree') ? url.searchParams.getAll('expand') : []
-  const selectedRow = [...roots, ...calls].find((row) => row.name === record) ?? null
+  const children = [...(url.searchParams.has('calls') ? calls : []), ...tasks, long].map(
+    (row, position) => ({ ...row, position }),
+  )
+  const selectedRow = [collect, ...children].find((row) => row.name === record) ?? null
+  // The list alone, as the single-pane flow goes back to it, expands nothing.
+  const listed = url.searchParams.get('tree') === '1' && !url.searchParams.has('expand')
   return activityPage({
-    rows: roots,
-    expanded,
-    branches: expanded.includes(collect.name)
-      ? { [collect.name]: { rows: calls, total: '30', next: '', unavailable: false } }
-      : {},
+    rows: url.searchParams.has('standalone') ? [collect, solo] : [collect],
+    expanded: listed ? [] : [collect.name],
+    branches: listed
+      ? {}
+      : {
+          [collect.name]: {
+            rows: children,
+            total: String(children.length),
+            next: '',
+            unavailable: false,
+          },
+        },
     selected: selectedRow?.name ?? null,
     selectedRow,
     detail:
@@ -133,6 +149,9 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
+/** A record's track: a click, or a tap, anywhere on it or its bar opens the record. */
+const barOf = (row: HTMLElement) => row.querySelector<HTMLElement>('[data-timeline-track]')!
+
 async function surface(canvasElement: HTMLElement) {
   const canvas = within(canvasElement)
   const screen = within(canvasElement.ownerDocument.body)
@@ -173,11 +192,29 @@ export const FocusOrder: Story = {
     await press('{ArrowDown}')
     await expect(before).toHaveFocus()
     await expect(cursor()).toBeNull()
-    // Tab reaches the live toggle beside the list heading, then the table itself, which shows
-    // its focus until a cursor row does.
+    // Tab reaches the live toggle beside the list heading first. Past the list and the
+    // controls of the waterfall, it reaches the table itself, which shows its focus until a
+    // cursor row does.
     await press('{Tab}')
     await expect(canvas.getByRole('button', { name: 'Live' })).toHaveFocus()
-    await press('{Tab}')
+    // Each stop on the way, in order: the list's record, the time breakdown's info control,
+    // the controls of the axis, the overview, then the table.
+    const stops = [
+      canvas.getByRole('table', { name: 'Tasks and runs' }).querySelector('a[href]'),
+      await canvas.findByRole('button', { name: 'About Agent model' }),
+      canvas.getByRole('radio', { name: 'Call time' }),
+      canvas.getByRole('button', { name: 'Marks' }),
+      canvas.getByRole('button', { name: 'Zoom out' }),
+      canvas.getByRole('button', { name: 'Zoom in' }),
+      canvas.getByRole('button', { name: 'Fit the whole timeline' }),
+      canvas.getByRole('button', { name: 'Zoom to the selected record' }),
+      canvas.getByRole('slider', { name: 'Visible time range' }),
+      table,
+    ]
+    for (const stop of stops) {
+      await press('{Tab}')
+      await expect(stop).toHaveFocus()
+    }
     await expect(table).toHaveFocus()
     await expect(getComputedStyle(table).outlineStyle).not.toBe('none')
     await press('{ArrowDown}')
@@ -202,9 +239,9 @@ export const FocusOrder: Story = {
     await heading(opened, 'Task 2')
     await expect(table).toHaveFocus()
     // Tab goes from the table to the rail's first control, and Shift+Tab comes back.
-    const follow = within(opened).getByRole('button', { name: 'Follow this task' })
+    const close = within(opened).getByRole('button', { name: 'Close details' })
     await press('{Tab}')
-    await expect(follow).toHaveFocus()
+    await expect(close).toHaveFocus()
     await press('{Shift>}{Tab}{/Shift}')
     await expect(table).toHaveFocus()
 
@@ -224,22 +261,225 @@ export const FocusOrder: Story = {
     await press('{ArrowUp}')
     await expect(cursor()).toBe('Task 2')
     await expect(address()).not.toContain('record=')
+
+    // A Task's rail starts with its live toggle: Tab from the table lands on it, not past it.
+    await press('{ArrowUp}{ArrowUp}{Enter}')
+    const task = await within(document.body).findByRole('dialog', { name: 'Activity details' })
+    await heading(task, 'Collect invoices')
+    await expect(table).toHaveFocus()
+    await press('{Tab}')
+    await expect(within(task).getByRole('button', { name: 'Follow this task' })).toHaveFocus()
+    await press('{Tab}')
+    await expect(within(task).getByRole('button', { name: 'Close details' })).toHaveFocus()
+    await press('{Shift>}{Tab}{Tab}{/Shift}')
+    await expect(table).toHaveFocus()
   },
 }
 
-/** The cursor row shows in full beneath the pinned headings, and new detail starts at its top. */
+/**
+ * A Task picked in the list or in its waterfall opens its details, by pointer or by Enter.
+ * A child picked after it shows alone. Enter leaves focus where it was; a click moves it
+ * into the rail.
+ */
+export const TaskFromListOrTimeline: Story = {
+  play: async ({ canvasElement }) => {
+    loads.open()
+    if (!(await inTestBrowser())) return
+    const { canvas, table, row, rail, cursor, address, heading } = await surface(canvasElement)
+    const roots = canvas.getByRole('table', { name: 'Tasks and runs' })
+    const listed = within(roots).getByRole('link', { name: 'Collect invoices' })
+    const record = () => new URLSearchParams(address()).get('record')
+    const close = async () => {
+      await click(within(rail()!).getByRole('button', { name: 'Close details' }))
+      await waitFor(() => expect(rail()).toBeNull())
+    }
+    await expect(rail()).toBeNull()
+
+    // A click on the Task in the list.
+    await click(listed.closest('[role="row"]')!.querySelector('[role="cell"]')!)
+    const fromList = await within(document.body).findByRole('dialog', {
+      name: 'Activity details',
+    })
+    await heading(fromList, 'Collect invoices')
+    await expect(record()).toBe(collect.name)
+    await waitFor(() =>
+      expect(within(fromList).getByRole('button', { name: 'Close details' })).toHaveFocus(),
+    )
+    // A child picked in the waterfall replaces the Task, and the Task stays expanded.
+    await click(row('Task 2'))
+    await heading(fromList, 'Task 2')
+    await expect(record()).toBe(tasks[1].name)
+    await expect(address()).toContain(`expand=${encodeURIComponent(collect.name)}`)
+    // A click on the Task's row in the waterfall opens the Task again.
+    await click(row('Collect invoices'))
+    await heading(fromList, 'Collect invoices')
+    await expect(record()).toBe(collect.name)
+    await close()
+
+    // Enter on the Task in the list opens it, and focus stays on the list.
+    listed.focus()
+    await press('{Enter}')
+    const byKey = await within(document.body).findByRole('dialog', { name: 'Activity details' })
+    await heading(byKey, 'Collect invoices')
+    await expect(record()).toBe(collect.name)
+    await expect(listed).toHaveFocus()
+    await close()
+
+    // Enter on the Task's row in the waterfall opens it, and focus stays in the table.
+    // The cursor starts where it last was; the Task's row is the first.
+    table.focus()
+    for (let step = 0; step < 5 && cursor() !== 'Collect invoices'; step++) await press('{ArrowUp}')
+    await expect(cursor()).toBe('Collect invoices')
+    await press('{Enter}')
+    const fromTable = await within(document.body).findByRole('dialog', {
+      name: 'Activity details',
+    })
+    await heading(fromTable, 'Collect invoices')
+    await expect(table).toHaveFocus()
+    await close()
+
+    // One pane at a time on a narrow screen: the list, then the Task's details over its
+    // waterfall, which shows again once they close.
+    if (!(await resizeViewport(390, 800))) return
+    await click(canvas.getByRole('link', { name: 'Back to list' }))
+    await waitFor(() => expect(roots).toBeVisible())
+    await click(listed.closest('[role="row"]')!.querySelector('[role="cell"]')!)
+    const narrow = await within(document.body).findByRole('dialog', { name: 'Activity details' })
+    await heading(narrow, 'Collect invoices')
+    await expect(narrow.getBoundingClientRect().width).toBeCloseTo(window.innerWidth, 0)
+    await close()
+    await waitFor(() => expect(canvas.getByRole('link', { name: 'Back to list' })).toBeVisible())
+    await waitFor(() => expect(roots).not.toBeVisible())
+  },
+}
+
+/**
+ * Enter in the list keeps focus only for the opening it starts. Enter on a Task the open
+ * rail already moves to, or on a Run that selects nothing, leaves a later click its own focus.
+ */
+export const ListEnterThenClick: Story = {
+  parameters: { initialEntry: '/workspaces/finance/activity?standalone=1' },
+  play: async ({ canvasElement }) => {
+    loads.open()
+    if (!(await inTestBrowser())) return
+    const { canvas, row, rail, address, heading } = await surface(canvasElement)
+    const roots = canvas.getByRole('table', { name: 'Tasks and runs' })
+    const listed = (name: string) => within(roots).getByRole('link', { name })
+    const record = () => new URLSearchParams(address()).get('record')
+    /** The rail that is open: never one that still runs its exit. */
+    const openRail = () =>
+      waitFor(() => {
+        const shown = rail()
+        expect(shown).not.toBeNull()
+        expect(shown).not.toHaveAttribute('data-closed')
+        return shown!
+      })
+    /** Closes the rail from its Close control, by key, so no pointer comes between. */
+    const closeByKey = async () => {
+      within(rail()!).getByRole('button', { name: 'Close details' }).focus()
+      await press('{Enter}')
+      // Its exit ends, so the next rail found is the one a pick opens.
+      await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    }
+    /** A click on the Task in the list opens the rail and moves focus to its Close control. */
+    const clickTask = async () => {
+      await click(
+        listed('Collect invoices').closest('[role="row"]')!.querySelector('[role="cell"]')!,
+      )
+      const opened = await openRail()
+      await heading(opened, 'Collect invoices')
+      await waitFor(() =>
+        expect(within(opened).getByRole('button', { name: 'Close details' })).toHaveFocus(),
+      )
+    }
+
+    // The rail shows a child; Enter on its Task in the list moves the open rail to the Task.
+    await click(row('Task 2'))
+    const open = await within(document.body).findByRole('dialog', { name: 'Activity details' })
+    await heading(open, 'Task 2')
+    listed('Collect invoices').focus()
+    await press('{Enter}')
+    await heading(open, 'Collect invoices')
+    await expect(record()).toBe(collect.name)
+    await closeByKey()
+    await clickTask()
+    await closeByKey()
+
+    // The same with no pointer after it: Back opens the Task's rail again, and focus goes to
+    // its Close control, as for any opening Enter did not start.
+    await click(row('Task 2'))
+    await heading(await openRail(), 'Task 2')
+    listed('Collect invoices').focus()
+    await press('{Enter}')
+    await heading(await openRail(), 'Collect invoices')
+    await closeByKey()
+    canvas.getByRole('button', { name: 'History back' }).focus()
+    await press('{Enter}')
+    const back = await openRail()
+    await heading(back, 'Collect invoices')
+    await waitFor(() =>
+      expect(within(back).getByRole('button', { name: 'Close details' })).toHaveFocus(),
+    )
+    await closeByKey()
+
+    // Enter on a standalone Run opens its waterfall and selects nothing.
+    listed('Solo run').focus()
+    await press('{Enter}')
+    await waitFor(() => expect(address()).toContain(encodeURIComponent(solo.name)))
+    await expect(record()).toBeNull()
+    await clickTask()
+  },
+}
+
+/**
+ * A click on a Task in the list while its rail closes opens it again, though the address
+ * still names it until the close lands.
+ */
+export const ListClickWhileClosing: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?record=${encodeURIComponent(collect.name)}`,
+  },
+  play: async ({ canvasElement }) => {
+    loads.open()
+    if (!(await inTestBrowser())) return
+    const { canvas, rail, address, heading } = await surface(canvasElement)
+    const opened = await within(document.body).findByRole('dialog', { name: 'Activity details' })
+    await heading(opened, 'Collect invoices')
+    // The close waits on its load, so the address still names the Task.
+    loads.hold()
+    await click(within(opened).getByRole('button', { name: 'Close details' }))
+    await waitFor(() => expect(rail()).toBeNull())
+    await expect(address()).toContain('record=')
+    const roots = canvas.getByRole('table', { name: 'Tasks and runs' })
+    await click(
+      within(roots)
+        .getByRole('link', { name: 'Collect invoices' })
+        .closest('[role="row"]')!
+        .querySelector('[role="cell"]')!,
+    )
+    loads.open()
+    await waitFor(() => expect(new URLSearchParams(address()).get('record')).toBe(collect.name))
+    await waitFor(() => expect(rail()).not.toBeNull())
+    await heading(rail()!, 'Collect invoices')
+  },
+}
+
+/** The cursor row shows in full beneath the pinned heading, and new detail starts at its top. */
 export const RevealAndDetailScroll: Story = {
-  parameters: { initialEntry: `/workspaces/finance/activity?tree=1&expand=${collect.name}` },
+  parameters: { initialEntry: '/workspaces/finance/activity?calls=1' },
   play: async ({ canvasElement }) => {
     loads.open()
     if (!(await resizeViewport(1200, 420))) return
     const { table, row, cursor, rail, heading } = await surface(canvasElement)
     const visibleTop = (label: string) => {
-      // Every heading pinned above the row: the column heading, the day and its Task.
+      // What stays pinned above the row: the column headings.
       const pinned = [...table.querySelectorAll<HTMLElement>('[data-pinned-heading]')].filter(
         (pinnedRow) => !pinnedRow.contains(row(label)) && pinnedRow !== row(label),
       )
-      const head = table.querySelector('[role="columnheader"]')!.getBoundingClientRect().bottom
+      const head = table
+        .querySelector('[role="columnheader"]')!
+        .closest('[role="rowgroup"]')!
+        .getBoundingClientRect().bottom
       return Math.max(
         head,
         ...pinned
@@ -296,7 +536,7 @@ export const KeysDuringLoads: Story = {
     const { table, row, rail, cursor, address, heading } = await surface(canvasElement)
     const open = async (label: string) => {
       loads.open()
-      await userEvent.click(within(row(label)).getByRole('link'))
+      await userEvent.click(barOf(row(label)))
       const opened = await within(document.body).findByRole('dialog', {
         name: 'Activity details',
       })
@@ -304,7 +544,7 @@ export const KeysDuringLoads: Story = {
       // The rail takes focus as it opens; let that land before moving it. A click
       // on the open record's row then returns focus to the table.
       await waitFor(() => expect(opened.contains(document.activeElement)).toBe(true))
-      await userEvent.click(within(row(label)).getByRole('link'))
+      await userEvent.click(barOf(row(label)))
       await waitFor(() => expect(table.contains(document.activeElement)).toBe(true))
       return opened
     }
@@ -347,40 +587,36 @@ export const KeysDuringLoads: Story = {
         // A click during a pending step wins over the step.
         loads.hold()
         await press('{ArrowUp}')
-        await userEvent.click(within(row('Task 1')).getByRole('link'))
+        await userEvent.click(barOf(row('Task 1')))
         const clicked = loads.finished
         loads.open()
         await heading(opened, 'Task 1')
         await landed(clicked + 1)
         await heading(rail()!, 'Task 1')
 
-        // A step another navigation cancels leaves nothing behind: Space toggles the
-        // step's target in place of the step, and the next key starts from the record
-        // the rail still shows.
+        // A step another navigation cancels leaves nothing behind. Space collapses the Task
+        // around the step's target, which hides the record the rail shows: the rail moves to
+        // the Task, and the next key starts from it.
         loads.hold()
         await press('{ArrowDown}')
         await waitFor(() => expect(cursor()).toBe('Task 2'))
         await press(' ')
         loads.open()
-        await waitFor(() => expect(address()).toContain('expand='))
-        await waitFor(() => expect(cursor()).toBe('Task 1'))
-        await heading(rail()!, 'Task 1')
+        await heading(rail()!, 'Collect invoices')
+        await waitFor(() => expect(cursor()).toBe('Collect invoices'))
+        await press(' ')
         await press('{ArrowDown}')
-        await heading(rail()!, 'Task 2')
-        // The same, with ↓ and Space in one burst: Space replaces the step before
-        // the router reports it. Space toggles Task 2 back, so the next pass starts
-        // from the same list.
-        await press('{Escape}')
-        await waitFor(() => expect(rail()).toBeNull())
-        await open('Task 1')
+        await heading(rail()!, 'Task 1')
+        // The same, with ↓ and Space in one burst: Space replaces the step before the
+        // router reports it. Space opens the Task again, so the next pass starts as this one.
         loads.hold()
         await press('{ArrowDown} ')
         loads.open()
-        await waitFor(() => expect(address()).not.toContain('expand='))
-        await waitFor(() => expect(cursor()).toBe('Task 1'))
-        await heading(rail()!, 'Task 1')
+        await heading(rail()!, 'Collect invoices')
+        await waitFor(() => expect(cursor()).toBe('Collect invoices'))
+        await press(' ')
         await press('{ArrowDown}')
-        await heading(rail()!, 'Task 2')
+        await heading(rail()!, 'Task 1')
         await press('{Escape}')
         await waitFor(() => expect(rail()).toBeNull())
       } finally {
@@ -434,7 +670,7 @@ export const SingleFocusIndicator: Story = {
     loads.open()
     if (!(await inTestBrowser())) return
     const { table, row, rail, heading } = await surface(canvasElement)
-    const link = (label: string) => within(row(label)).getByRole('link')
+    const link = (label: string) => barOf(row(label))
     const indicatesOnly = async (label: string) => {
       await waitFor(() => expect(table).toHaveFocus())
       await waitFor(() => expect(table.querySelectorAll('[data-active]')).toHaveLength(1))

@@ -37,6 +37,7 @@ export function DetailHeader({
   showStatus = true,
   meta,
   provider,
+  actions,
 }: {
   title: string
   /** The exact retained state; it selects the tone and icon. */
@@ -51,6 +52,8 @@ export function DetailHeader({
   meta?: ReactNode
   /** A call's provider. Its logo leads the title in place of the state icon. */
   provider?: CallProvider | null
+  /** Controls for the record, after its state, such as following it live. */
+  actions?: ReactNode
 }) {
   const tone = tones[status] ?? 'gray'
   return (
@@ -61,7 +64,12 @@ export function DetailHeader({
       heading={heading}
       sticky={sticky}
       details={meta}
-      status={showStatus && <Pill color={tone}>{label}</Pill>}
+      status={
+        <>
+          {showStatus && <Pill color={tone}>{label}</Pill>}
+          {actions}
+        </>
+      }
     />
   )
 }
