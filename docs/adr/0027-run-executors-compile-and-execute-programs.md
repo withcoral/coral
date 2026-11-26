@@ -78,6 +78,8 @@ runtime.
 - **Compiles ride it, and take no room.** A compile runs on the Run Executor's one warm compiler, not in a Run's room.
   Coral keeps a small count of its own for each pull stream, its compile room, which bounds the compiles queued on that
   compiler. A compile holds one unit of it until it is answered. A full set of Runs therefore does not stop a compile.
+  Compiles that find no compile room wait on their Coral Instance in the order they came, and each unit that frees goes
+  to the oldest. A compile whose pull stream ended before it answered waits again at the front.
 
 ## The queue and the take
 
@@ -258,12 +260,18 @@ above it, in order. A repeat carries the same number and lands once; an Emission
 
 Each Run Executor keeps one warm Program Compiler, warmed before it says hello, with the compiler's existing limits. A
 compile travels down the pull stream and its answer comes back on it; it goes to the pull stream with the most compile
-room on the Coral Instance that needs it. A Coral Instance that holds no pull stream, or none with compile room, writes
-the call to a relay row that any Coral Instance with compile room, itself included, picks up, serves and answers
-through the database. Coral Instances keep talking only through the database. A compile that no Run Executor can serve yet waits for one: no Run
-Executor linked is a state every rollout passes through. The compile's own time limit runs once a Run Executor serves
-it; a compile that waits past a bound fails as a missing compiler fails today, and Runs already accepted wait.
-Only no Run Executor linked, or every compiler busy for the bound, reaches it: a full set of Runs never does. With
+room on the Coral Instance that needs it. A Coral Instance that holds an open pull stream, one it has not closed for
+the connection's age, the drain or shutdown, waits for its own compile room, and borrows no idle compiler from another
+Coral Instance; a retiring Run Executor's stream stays open. A unit frees when a compile answers or its pull stream
+ends. A Coral Instance that holds no open pull stream writes the call to a relay row that any Coral Instance with
+compile room picks up, serves and answers through the database. A Coral Instance whose callers wait for compile room
+holds a place in that line for each relay row waiting, up to 64, so the rows wait in order with its own callers; a row
+past the 64 takes a place as one frees. Coral Instances keep talking only through the database.
+A compile that no Run Executor can serve yet waits for one: no Run Executor linked is a state every rollout passes
+through. The compile's own time limit runs once a Run Executor serves it; a compile that waits past a bound fails as a
+missing compiler fails today, and Runs already accepted wait. Only no Run Executor linked, or every compiler busy for
+the bound, reaches it: on a Coral Instance that holds a pull stream, every compiler of its own pull streams. A full set
+of Runs never does. With
 local children on and below their limit, a compile with no child running starts one and waits for it. A compile carries no authority, and a Run Executor cannot call Coral back
 during one. The compiler has its Run Executor's release, so a global takes three release steps. A compile carries the
 names of the Workspace's Built-in Tools as admission reads them, and the compiled Program adds exactly those to
@@ -379,6 +387,9 @@ Coral exports and amends this ADR.
   bound. Reef, sign-in and every other MCP tool keep working, and Runs already accepted wait.
 - **When every Run Executor is full, a new Program compiles, and its Run is accepted and waits like any other.** Its
   compile runs beside the full set of Runs and shares their CPU.
+- **A Coral Instance compiles only on its own pull streams while it holds one.** When one Coral Instance receives most
+  of the new Programs, its compiles wait in line while Run Executors linked to another Coral Instance sit idle. The
+  wait costs the database nothing; the relay writes rows for each compile.
 - **A dead Coral Instance loses only the calls in flight on it.** The Program sees `upstream_incomplete` for each; the
   Applied cap bounds what the Run Executor holds for a resend.
 - **A lost Run Executor ends every Run it started**, within a lease and a sweep period, and its unstarted Runs wait for

@@ -1,6 +1,7 @@
 //! The relay through the database. On Postgres the rows cross Coral
-//! Instances, each with its own connection; on SQLite the one Coral
-//! Instance relays its own calls while its Run Executors are full.
+//! Instances, each with its own connection; on SQLite they share the one
+//! database handle. The requester holds no pull stream: a Coral Instance
+//! that holds one waits for its own room.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use super::CompileRelay;
 use crate::pull::tests::{
-    Sent, busy_stream as open_busy, compiled, dialed_stream as open, fill_compile, up,
+    Sent, busy_stream as open_busy, compiled, dialed_stream as open, fill_compile, in_line, up,
 };
 use crate::relay_repository::{Take, count, take_oldest};
 use crate::wire::v1::{PullResponse, pull_response};
@@ -67,7 +68,7 @@ fn relaying(
 }
 
 /// The requester, and `N` Coral Instances that serve its rows: on
-/// Postgres each one its own, on SQLite the requester itself.
+/// Postgres each with its own connection, on SQLite on the requester's.
 async fn instances<const N: usize>(database: &TestDatabase) -> (Arc<Instance>, [Arc<Instance>; N]) {
     instances_answering(database, super::ANSWER_RESERVE).await
 }
@@ -87,7 +88,7 @@ async fn instances_answering<const N: usize>(
                 let peer = database.connect_peer().await.expect("a peer connection");
                 instance(Arc::new(peer), &format!("server-{index}"))
             }
-            DatabaseSystem::Sqlite => requester.clone(),
+            DatabaseSystem::Sqlite => instance(database.database(), &format!("server-{index}")),
         });
     }
     let Ok(others) = others.try_into() else {
@@ -160,13 +161,12 @@ async fn a_compile_with_no_room_here_is_served_where_there_is_room() {
     let (stream, mut sent) = open_busy(&server.streams);
 
     // Ready waits on a probe until a Coral Instance has room. Room
-    // elsewhere holds nothing here; room that showed here is held, and
-    // freed as the held client drops.
+    // elsewhere holds nothing here.
     let ready = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
     server.streams.let_go(stream);
     let held = ready.await.unwrap().map(|held| held.is_some());
-    assert_eq!(held, Ok(Arc::ptr_eq(&requester, &server)));
+    assert_eq!(held, Ok(false));
     assert_eq!(
         count(&database.database()).await.unwrap(),
         0,
@@ -377,4 +377,60 @@ async fn a_unit_held_for_a_call_that_never_comes_readies_the_next_caller() {
     // No call comes: the promise lapses, and the unit readies the other.
     let ready = second.await.unwrap().map(|held| held.is_some());
     assert_eq!(ready, Ok(false));
+}
+
+// Catches: a Coral Instance whose Run Executors' compile room is spent
+// relaying its calls through the database, which writes rows for each
+// call, although its own room frees when a compile answers.
+#[tokio::test]
+async fn a_coral_instance_that_holds_a_stream_waits_for_its_own_room() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let streams = PullStreams::default();
+    // No pickup: only a wait here can serve the call.
+    let relay = CompileRelay::new(database.database(), "alone");
+    let compiler = PullStreamCompiler::relayed(streams.clone(), None, relay);
+    let (stream, mut sent) = open_busy(&streams);
+
+    let before = database.statements_sent();
+    let call = compiling(&compiler, Duration::from_secs(5));
+    in_line(&streams, 1).await;
+    streams.let_go(stream);
+    answer(&streams, stream, &mut sent).await;
+    assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
+    assert_eq!(
+        database.statements_sent(),
+        before,
+        "the call sent the database nothing"
+    );
+}
+
+// Catches: a row from a Coral Instance that holds no pull stream taken only
+// once no caller waits where it is served, so under load it waits until its
+// deadline.
+#[tokio::test]
+async fn a_relayed_call_waits_in_line_with_the_callers_where_it_is_served() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = open_busy(&server.streams);
+
+    let call = compiling(&requester.compiler, Duration::from_secs(10));
+    rows_reach(&database.database(), 1).await;
+    // The pickup holds a place for the row, then a caller there joins.
+    in_line(&server.streams, 1).await;
+    let local = readying(&server.compiler);
+    in_line(&server.streams, 2).await;
+
+    server.streams.let_go(stream);
+    answer(&server.streams, stream, &mut sent).await;
+    assert_eq!(
+        call.await.unwrap().as_deref(),
+        Ok("42"),
+        "the row came first"
+    );
+    let held = local.await.unwrap().map(|held| held.is_some());
+    assert_eq!(
+        held,
+        Ok(true),
+        "the answer frees the unit for the caller there"
+    );
 }

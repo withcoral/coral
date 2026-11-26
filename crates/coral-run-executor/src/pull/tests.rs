@@ -104,6 +104,27 @@ pub(crate) fn busy_stream(streams: &PullStreams) -> (StreamId, Sent) {
     (stream, sent)
 }
 
+/// Waits until `callers` callers wait in line for compile room, looking
+/// again each time one joins, for up to 5 s.
+pub(crate) async fn in_line(streams: &PullStreams, callers: usize) {
+    let joins = streams.line_joins();
+    let joined = async {
+        loop {
+            let joined = joins.notified();
+            tokio::pin!(joined);
+            // Registered before the look, so a join after it is not missed.
+            joined.as_mut().enable();
+            if streams.waiting_for_compile_room() == callers {
+                return;
+            }
+            joined.await;
+        }
+    };
+    timeout(Duration::from_secs(5), joined)
+        .await
+        .unwrap_or_else(|_elapsed| panic!("{callers} callers in line within 5 s"));
+}
+
 /// Holds every unit of `stream`'s compile room still free, as callers that
 /// wait for a compiler do. The stream must take sends.
 pub(crate) fn fill_compile(streams: &PullStreams, stream: StreamId) {
@@ -437,6 +458,84 @@ fn a_take_sends_on_the_units_it_held_and_frees_the_rest() {
         assert_eq!(free, Some(room));
         let message = sent.try_recv().ok().and_then(Result::ok);
         assert_eq!(message.is_some(), sends, "{held} held, {runs} sent");
+    }
+}
+
+/// A place in line, where `compile_turn` puts a caller with no room free.
+fn in_line_at(streams: &PullStreams, at_front: bool) -> CompileTurn {
+    let Err(turn) = streams.compile_turn(at_front) else {
+        panic!("no room is free");
+    };
+    turn
+}
+
+// Catches: a unit that frees going to a caller other than the oldest in
+// line, or to one that comes as it frees; a caller whose stream went
+// before its call was answered that waits behind the others; or a unit
+// handed to a caller that left without reading it, which nobody takes.
+#[test]
+fn each_unit_that_frees_goes_to_the_oldest_caller_in_line() {
+    let streams = PullStreams::default();
+    let (stream, _sent) = busy_stream(&streams);
+    let mut first = in_line_at(&streams, false);
+    let mut second = in_line_at(&streams, false);
+    let mut again = in_line_at(&streams, true);
+    let left = in_line_at(&streams, false);
+    let mut last = in_line_at(&streams, false);
+
+    streams.let_go(stream);
+    assert!(
+        streams.compile_turn(false).is_err(),
+        "a caller that comes as the unit frees waits behind the line"
+    );
+    assert_eq!(again.handed_now(), Ok(Some(stream)), "at the front");
+    assert_eq!(first.handed_now(), Ok(None));
+    streams.let_go(stream);
+    assert_eq!(first.handed_now(), Ok(Some(stream)));
+    assert_eq!(second.handed_now(), Ok(None));
+    streams.let_go(stream);
+    assert_eq!(second.handed_now(), Ok(Some(stream)));
+    streams.let_go(stream);
+    drop(left);
+    assert_eq!(
+        last.handed_now(),
+        Ok(Some(stream)),
+        "the unit `left` never read"
+    );
+    assert_eq!(
+        streams.compile_room(stream),
+        0,
+        "each unit held for its caller"
+    );
+}
+
+// Catches: callers left in line after the last stream that takes sends
+// went, which relay only at their next look; or a line that ends while a
+// stream still takes sends.
+#[test]
+fn the_line_ends_with_the_last_stream_that_takes_sends() {
+    type Goes = fn(&PullStreams, StreamId);
+    let cases: [(&str, Goes); 3] = [
+        ("closes", |streams, stream| {
+            streams.close(stream);
+        }),
+        ("ends", |streams, stream| streams.end(stream, None)),
+        ("drains", |streams, _stream| streams.drain()),
+    ];
+    for (goes, go) in cases {
+        let streams = PullStreams::default();
+        let (first, _sent) = busy_stream(&streams);
+        let (second, _also_sent) = busy_stream(&streams);
+        let mut waiting = in_line_at(&streams, false);
+
+        streams.close(first);
+        assert_eq!(waiting.handed_now(), Ok(None), "a stream still takes sends");
+        go(&streams, second);
+        assert_eq!(
+            waiting.handed_now(),
+            Err(LineEnded),
+            "the last stream {goes}"
+        );
     }
 }
 
