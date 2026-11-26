@@ -594,9 +594,9 @@ fn provider_choice(
 }
 
 /// The refusal of a key of `[auth.provider]` that the mode `mode` does not
-/// read, or `None` when `error` is about another setting or names no key.
+/// read, or `None` when `error` is about another setting.
 fn not_a_setting(mode: &str, error: &SettingError) -> Option<AuthServerError> {
-    (error.is_unknown() && !error.field().is_empty()).then(|| {
+    error.is_unknown().then(|| {
         invalid_provider(format!(
             "{}: not a setting of sign-in mode `{mode}`",
             error.field()
@@ -1345,21 +1345,60 @@ mod tests {
         )
     }
 
+    /// The fixture with `mode = 'oidc'`.
+    fn valid_with_oidc_mode() -> String {
+        valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n")
+    }
+
     fn test_modes() -> SignInModes {
         SignInModes::default().with(Arc::new(TestModeFactory))
     }
 
-    /// A file of today has no `mode`, and means `oidc`.
+    /// A mode that a launcher registers as `oidc`. Its `build` fails, so a
+    /// start that builds it is refused.
+    struct Impostor;
+
+    impl coral_sign_in::SignInModeFactory for Impostor {
+        fn name(&self) -> ModeName {
+            ModeName::new(OIDC_MODE).expect("a mode's name")
+        }
+
+        fn feature(&self) -> Option<coral_edition::EnterpriseFeature> {
+            None
+        }
+
+        fn build(
+            &self,
+            _settings: &ModeSettings,
+            _environment: &ModeEnvironment,
+        ) -> Result<Arc<dyn SignInMode>, SettingError> {
+            Err(SettingError::new("", "a mode registered as `oidc` built"))
+        }
+    }
+
+    fn impostor_modes() -> SignInModes {
+        SignInModes::default().with(Arc::new(Impostor))
+    }
+
+    /// A file of today has no `mode`, and means `oidc`. `oidc` is the
+    /// build's own: a mode that a launcher registers under that name never
+    /// builds.
     #[test]
     fn a_file_with_no_mode_or_mode_oidc_signs_in_by_oidc() {
         let today = format!("{:?}", resolved(&valid("")).provider());
-        let explicit = valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n");
-        assert_eq!(format!("{:?}", resolved(&explicit).provider()), today);
+        assert_eq!(
+            format!("{:?}", resolved(&valid_with_oidc_mode()).provider()),
+            today
+        );
         // A build with other modes reads such a file the same way.
-        assert!(matches!(
-            auth_settings_with(&valid(""), &test_modes()),
-            Ok(Some(_))
-        ));
+        for modes in [test_modes(), impostor_modes()] {
+            for raw in [valid(""), valid_with_oidc_mode()] {
+                assert!(
+                    matches!(auth_settings_with(&raw, &modes), Ok(Some(_))),
+                    "{raw}"
+                );
+            }
+        }
     }
 
     /// One message serves every `mode` the build lacks. It lists the modes
@@ -1378,6 +1417,11 @@ mod tests {
                 "'nope'",
                 test_modes(),
                 "this build has no sign-in mode `nope`. The modes of this build: `oidc`, `test`",
+            ),
+            (
+                "'nope'",
+                impostor_modes(),
+                "this build has no sign-in mode `nope`. The modes of this build: `oidc`",
             ),
             (
                 &format!("'{SECRET}'"),
@@ -1403,7 +1447,6 @@ mod tests {
     #[test]
     fn an_unknown_setting_names_the_mode() {
         const SECRET: &str = "Sk_Live_0123456789abcdef";
-        let oidc = valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n");
         for (raw, modes, expected) in [
             (
                 valid("") + &format!("unknown = '{SECRET}'\n"),
@@ -1411,7 +1454,7 @@ mod tests {
                 "unknown: not a setting of sign-in mode `oidc`",
             ),
             (
-                oidc + "sign_in_url = 'https://idp.example.test/start'\n",
+                valid_with_oidc_mode() + "sign_in_url = 'https://idp.example.test/start'\n",
                 test_modes(),
                 "sign_in_url: not a setting of sign-in mode `oidc`",
             ),
@@ -1433,49 +1476,6 @@ mod tests {
                 "{raw}"
             );
         }
-    }
-
-    /// `oidc` is the build's own: a mode a launcher registers under that
-    /// name never builds, and the modes of the build list `oidc` once.
-    #[test]
-    fn a_mode_registered_as_oidc_never_builds() {
-        struct Impostor;
-        impl coral_sign_in::SignInModeFactory for Impostor {
-            fn name(&self) -> ModeName {
-                ModeName::new(OIDC_MODE).expect("a mode's name")
-            }
-            fn feature(&self) -> Option<coral_edition::EnterpriseFeature> {
-                None
-            }
-            fn build(
-                &self,
-                _settings: &ModeSettings,
-                _environment: &ModeEnvironment,
-            ) -> Result<Arc<dyn SignInMode>, SettingError> {
-                // A build would refuse the start.
-                Err(SettingError::new("", "a mode registered as `oidc` built"))
-            }
-        }
-        let modes = SignInModes::default().with(Arc::new(Impostor));
-        let today = format!("{:?}", resolved(&valid("")).provider());
-        let explicit = valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n");
-        let temp = signing_key_dir();
-        for raw in [valid(""), explicit] {
-            let (settings, _issuer) = auth_settings_with(&raw, &modes)
-                .expect("valid config")
-                .expect("auth settings")
-                .resolve_runtime_dependencies(&temp.path().join("config.toml"), &|_| Ok(None))
-                .expect("resolved runtime dependencies");
-            assert_eq!(format!("{:?}", settings.provider()), today, "{raw}");
-        }
-        assert_eq!(
-            auth_settings_with(&with_mode("'nope'", ""), &modes).err(),
-            Some(
-                "invalid auth configuration: auth.provider.mode: this build has no sign-in mode \
-                 `nope`. The modes of this build: `oidc`"
-                    .to_owned()
-            )
-        );
     }
 
     /// The mode gets the rest of `[auth.provider]`, without `mode`, and

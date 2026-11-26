@@ -107,18 +107,9 @@ impl SettingError {
         }
     }
 
-    /// `field` is not a setting of the mode. The reason names no mode, so
-    /// that the caller can.
-    #[must_use]
-    pub fn unknown(field: impl Into<String>) -> Self {
-        Self {
-            field: field.into(),
-            reason: Cow::Borrowed("not a setting of this sign-in mode"),
-            unknown: true,
-        }
-    }
-
-    /// Whether the field is not a setting of the mode.
+    /// Whether [`ModeSettings::decode`] found a key that the mode's settings
+    /// do not read. The reason then names no mode, so that the caller can
+    /// name it.
     #[must_use]
     pub const fn is_unknown(&self) -> bool {
         self.unknown
@@ -172,10 +163,14 @@ impl ModeSettings {
     /// `toml::Value` hands a datetime over as a string.
     ///
     /// A message that serde writes with the value it rejects becomes
-    /// "unsupported value", and a key that `T` does not read becomes
-    /// [`SettingError::unknown`]. Any other message is kept, so a mode's own
-    /// `Deserialize` must never quote what it rejects, as for every setting
-    /// of `config.toml`.
+    /// "unsupported value". When `T` has `#[serde(deny_unknown_fields)]`, a
+    /// key that it does not read gives an error for which
+    /// [`SettingError::is_unknown`] holds. Without that attribute, or with a
+    /// `#[serde(flatten)]` field, serde accepts such a key in silence, so a
+    /// mode's settings deny unknown fields. Any other message is kept, so a
+    /// mode's own `Deserialize` must never quote what it rejects, as for
+    /// every setting of `config.toml`, nor start a message with "unknown
+    /// field".
     ///
     /// # Errors
     /// Returns the field and reason a value is rejected, never the value.
@@ -192,10 +187,10 @@ impl ModeSettings {
                     error.path().to_string()
                 };
                 let message = error.inner().message();
-                if message.starts_with(UNKNOWN_FIELD_MESSAGE) {
-                    return SettingError::unknown(field);
-                }
-                let reason = if VALUE_BEARING_MESSAGES
+                let unknown = message.starts_with(UNKNOWN_FIELD_MESSAGE);
+                let reason = if unknown {
+                    Cow::Borrowed("not a setting of this sign-in mode")
+                } else if VALUE_BEARING_MESSAGES
                     .iter()
                     .any(|prefix| message.starts_with(prefix))
                 {
@@ -206,7 +201,7 @@ impl ModeSettings {
                 SettingError {
                     field,
                     reason,
-                    unknown: false,
+                    unknown,
                 }
             },
         )
