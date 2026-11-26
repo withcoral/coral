@@ -68,7 +68,7 @@ In that window:
   for a Workspace, a Workspace Membership, an Agent or an Agent Registration that a release which stopped writing it
   created, and reports corrupt data for the list that holds it.
 - **A save can be refused with a misleading message.** A release before 1.9.0 rejects a version as a malformed etag,
-  which Reef shows as a problem with the form's fields.
+  which Reef shows as a problem with the form's fields. 1.9.0 and 1.10.0 read a version and check it against the row.
 - **An Agent that a release before 1.9.0 creates has no times on its row.** That release does not know the new
   columns. A later release reads a missing time as absent, and the release that drops the table fills the time from
   it first.

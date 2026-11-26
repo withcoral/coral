@@ -1,4 +1,5 @@
--- Coral no longer reads or writes `workspace_resource_metadata`. A Workspace,
+-- No change and no read of a resource uses `workspace_resource_metadata` any
+-- more; only step 0085 still reads it, once, when it is applied. A Workspace,
 -- a Workspace Membership, an Agent and an Agent Registration each keep their
 -- version and their times on their own row, and nothing ever read what a
 -- Secret Store grant wrote there. An Agent or an Agent Registration row that
