@@ -1628,11 +1628,7 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
     }
 
     coral_test_support::drop_resource_version_columns(&fixture).await;
-    fixture
-        .database()
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the backfill");
+    fixture.upgrade().await.expect("apply the backfill");
 
     let expected = [
         (none, LifecycleAction::MembershipCreated),

@@ -292,10 +292,7 @@ async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
     );
 
     coral_test_support::drop_resource_version_columns(&fixture).await;
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     for (setup, deadline) in [(&without, 10 + HOUR), (&moved, 5_000)] {
         let inspected = providers

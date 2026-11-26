@@ -99,10 +99,7 @@ async fn upgrade_renames_what_named_operations_and_keeps_every_row() {
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin().await.unwrap();
     assert_each_row(
@@ -255,10 +252,7 @@ async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert_each_row(
@@ -467,10 +461,7 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert_each_row(
@@ -813,10 +804,7 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let agents = [
         ["agent:current", "3", "10:30"],
