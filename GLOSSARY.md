@@ -1152,11 +1152,29 @@ consumption and audit. It describes Run execution, including cancellation and re
 control-plane, authoring, or approval decisions recorded as Administrative Lifecycle Events. Run Events are not replay
 checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
 
-**Coral Instance**: One running Coral server process, identified by a random id it generates each time it starts. Any
-Coral Instance admits Run Executors, takes waiting Runs for them, serves a Run's stream and commits its chunks, and
-receives an outside Run Request for any Run. The Run row records the Coral Instance that holds the Run's stream, so a
-wake-up for the Run reaches it. Any Coral Instance also serves any MCP request, since Coral keeps no MCP session.
-_Avoid_: replica, node, worker, pod, process
+**Coral Instance**: One running Coral server process, identified by a random id it generates each time it starts. It
+performs one or more of the core, MCP and auth Instance Roles. Any Coral Instance with the core role admits Run
+Executors, takes waiting Runs for them, and serves a Run's stream and commits its chunks. The Run row records the Coral
+Instance that holds the Run's stream, so a wake-up for the Run reaches it. Any Coral Instance with the core role or the
+MCP role receives an outside Run Request for any Run. Any Coral Instance with the MCP role serves any MCP request, since
+Coral keeps no MCP session. _Avoid_: replica, node, worker, pod, process
+
+**Instance Role**: What an operator starts a Coral process to do. There are four: the core role, the MCP role, the auth
+role and the Run Executor role. A Coral Instance performs the core, MCP and auth roles, any of them or all three, each
+through its own listeners. The core role serves the Coral gRPC API, admits Run Executors, does Coral's part of every
+Run, and does the work that no request starts. The MCP role serves MCP requests. The auth role is the authorization
+server. The Run Executor role compiles and executes Programs, and Run Executors perform it, each in a process of its
+own: a Coral Instance that has the core role and the Run Executor role starts them as its local children, and a process
+with the Run Executor role alone is a Run Executor that dials Coral. The Run Executor role is selected with the core
+role or alone. A process started with no role named has all four. In local mode or on SQLite a Coral Instance always
+performs the core, MCP and auth roles together. _Avoid_: role alone (an Organization Membership has a role), service,
+component, target, mode, tier, Run Executor link role
+
+**Shutdown Drain**: What a Coral Instance does from its stop signal to its exit. It reports not ready, finishes the
+dispatches in flight of its Runs and the requests in flight on its listeners, and closes. It finishes dispatches, not
+Runs: each Run goes on at another Coral Instance. The Runs of its own local Run Executors cannot move, so it keeps
+dispatching for them, and at its length they end Interrupted. A setting limits its length, and a Shutdown Drain with no
+work takes no time. _Avoid_: graceful shutdown, lame duck, drain timeout
 
 **Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages, each in a fresh
 V8 isolate, and compiles Programs with the Program Compiler. It dials Coral at one address and presents a credential:
@@ -1167,9 +1185,9 @@ On one pull stream it reports its room, a count of the Runs it is willing to hol
 count. Coral sends it compiles against its compile room, a small count Coral keeps for its one Program Compiler, so a
 full set of Runs does not stop a compile. It opens one stream per Run it holds. A Run starts when Coral records that the Run
 Executor loaded it, and its deadline runs from its start. The Run Executor numbers its Program's requests, keeps the
-ones Coral has not yet committed, and reconnects a Run to any Coral Instance after a lost link. A lost link or a lapsed
-lease never ends a Program. The Program runs until it finishes, exceeds a limit of its own, reaches the Run's deadline,
-or Coral terminates it or answers that the Run ended.
+ones Coral has not yet committed, and reconnects a Run to any Coral Instance that has the core role after a lost link. A
+lost link or a lapsed lease never ends a Program. The Program runs until it finishes, exceeds a limit of its own,
+reaches the Run's deadline, or Coral terminates it or answers that the Run ended.
 
 The Run Executor holds no other secret and no database connection. Its only connections are the ones it opens to Coral,
 and any connection to a remote runtime that it drives. Its isolates run in its own process, or on a remote runtime that

@@ -104,8 +104,10 @@ summary. Codex wrote the link as text before its first wait. Making the link the
 
 ## Consequences
 
-- **Any Coral Instance serves any MCP request.** A load balancer needs no affinity, and a rolling deploy breaks no
-  client's connection to Coral, since no client holds a session that one instance owned.
+- **Any Coral Instance that has the MCP role serves any MCP request**
+  ([ADR 0043](0043-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md) has the
+  roles). A load balancer needs no affinity, and a rolling deploy breaks no client's connection to Coral, since no
+  client holds a session that one instance owned.
 - **No standalone stream.** The MCP endpoints serve only requests, never a stream a client opens on its own or a
   request to end a session. Nothing is announced to a client outside the response to its own request: the progress
   message rides the waiting call's response, and the next Run Update shows a decision made elsewhere.
