@@ -23,6 +23,7 @@ use coral_db::{ChangeSubscription, Database, UnixNanos};
 use coral_telemetry::{metric, safe};
 use tokio::time::Instant;
 
+use crate::compile_trace;
 use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::compiler::STOPPED;
 use crate::pull::{CompileTurn, LineEnded};
@@ -148,18 +149,28 @@ impl CompileRelay {
         children: Option<&LocalRunExecutors>,
         until: Instant,
     ) -> Result<Read, CompileError> {
-        match self.wait(Some(call), children, until).await {
+        compile_trace::call_sent(true);
+        let waited = self.wait(Some(call), children, until).await;
+        if let Waited::Answered {
+            answer:
+                Ok(Answered::Call {
+                    served_by: Some(served_by),
+                    ..
+                }),
+            ..
+        } = &waited
+        {
+            compile_trace::call_answered(served_by.clone());
+        }
+        match waited {
             Waited::Unanswered { taken: false } => {
                 Err(CompileError::Unavailable(Unavailable::NoCompiler))
             }
             Waited::Unanswered { taken: true } => Err(STOPPED),
             Waited::Answered {
-                answer: Ok(Answered::Call { answer, served_by }),
+                answer: Ok(Answered::Call { answer, .. }),
                 ..
             } => {
-                if let Some(served_by) = served_by {
-                    served_by.record(true);
-                }
                 let read = Read::answer(*answer)?;
                 if !read.answers(Takes::of(call)) {
                     return Err(ProtocolError.into());
@@ -442,10 +453,11 @@ impl CompileRelay {
                 let relay = self.clone();
                 let served_by = streams.served_by(stream);
                 tokio::spawn(async move {
-                    let read = match tokio::time::timeout(left, answered).await {
-                        Ok(Ok(read)) => read,
-                        Ok(Err(_closed)) => Read::Failure(STOPPED),
-                        Err(_elapsed) => Read::Failure(CompileError::TimedOut),
+                    // Only the Run Executor's own answer names it.
+                    let (read, served_by) = match tokio::time::timeout(left, answered).await {
+                        Ok(Ok(read)) => (read, served_by),
+                        Ok(Err(_closed)) => (Read::Failure(STOPPED), None),
+                        Err(_elapsed) => (Read::Failure(CompileError::TimedOut), None),
                     };
                     let answered = Answered::Call {
                         answer: Box::new(read.into_answer()),

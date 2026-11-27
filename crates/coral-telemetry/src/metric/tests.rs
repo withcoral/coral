@@ -58,7 +58,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "{request}",
         &["compiler.role"],
     ),
-    ("coral.compile.relayed", "counter", "{compile}", &[]),
+    ("coral.compile.relayed", "counter", "{call}", &[]),
     (
         "coral.persistence.acquisition.duration",
         "histogram",

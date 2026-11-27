@@ -10,6 +10,7 @@ use coral_v8::{
     LinkedToolSource, SourceReferences,
 };
 
+use crate::compile_trace::{self, ServedBy};
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::compiler::STOPPED;
 use crate::pull::LineEnded;
@@ -108,10 +109,10 @@ enum Route<'a> {
     Relay(&'a CompileRelay, Option<&'a LocalRunExecutors>),
 }
 
-/// Where a call went: to a stream, whose answer is to come, or through the
-/// relay, which answered.
+/// Where a call went: to a stream, whose answer is to come, with its Run
+/// Executor, or through the relay, which answered.
 enum Routed {
-    Stream(oneshot::Receiver<Read>),
+    Stream(oneshot::Receiver<Read>, Option<ServedBy>),
     Relayed(Read),
 }
 
@@ -234,6 +235,7 @@ impl PullStreamCompiler {
         time_left: Duration,
         call: &Call,
     ) -> Result<Read, CompileError> {
+        compile_trace::call_started();
         let until = called + time_left;
         let left = || until.saturating_duration_since(Instant::now());
         if left().is_zero() {
@@ -253,8 +255,9 @@ impl PullStreamCompiler {
         let mut on_held = held_for_it.and_then(|stream| {
             self.streams
                 .compile_held(stream, millis(left()), call.clone())
-                .inspect(|_| self.sent_on(stream))
+                .inspect(|_| compile_trace::call_sent(false))
                 .ok()
+                .map(|answer| (answer, self.streams.served_by(stream)))
         });
         let lost_its_unit = held_for_it.is_some() && on_held.is_none();
         let room_until = called + time_left.saturating_sub(ROOM_WAIT_RESERVE);
@@ -262,13 +265,13 @@ impl PullStreamCompiler {
         // was routed once more.
         let mut routed_again = false;
         loop {
-            let answer = match on_held.take() {
-                Some(answer) => answer,
+            let (answer, served_by) = match on_held.take() {
+                Some(sent) => sent,
                 None => match self
                     .send(call, until, room_until, lost_its_unit || routed_again)
                     .await
                 {
-                    Ok(Routed::Stream(answer)) => answer,
+                    Ok(Routed::Stream(answer, served_by)) => (answer, served_by),
                     Ok(Routed::Relayed(read)) => return Ok(read),
                     // No other stream took it: it fails as the one that ended.
                     Err(CompileError::Unavailable(Unavailable::NoCompiler)) if routed_again => {
@@ -277,22 +280,28 @@ impl PullStreamCompiler {
                     Err(error) => return Err(error),
                 },
             };
-            match tokio::time::timeout(left(), answer).await {
+            let answered = tokio::time::timeout(left(), answer).await;
+            // The stream ended first: it is routed once more. A call that
+            // ends each stream it reaches ends no more than two.
+            if matches!(answered, Ok(Err(_)))
+                && !routed_again
+                && matches!(self.target, Target::MostRoom { .. })
+                && Instant::now() < room_until
+            {
+                routed_again = true;
+                continue;
+            }
+            // Only the Run Executor's own answer names it.
+            if let (Ok(Ok(_)), Some(served_by)) = (&answered, served_by) {
+                compile_trace::call_answered(served_by);
+            }
+            match answered {
                 // Routed again, it had less than its time: no judgement of
                 // the source.
                 Err(_) | Ok(Ok(Read::Failure(CompileError::TimedOut))) if routed_again => {
                     return Err(STOPPED);
                 }
                 Err(_elapsed) => return Err(CompileError::TimedOut),
-                // The stream ended first: it is routed once more. A call that
-                // ends each stream it reaches ends no more than two.
-                Ok(Err(_closed))
-                    if !routed_again
-                        && matches!(self.target, Target::MostRoom { .. })
-                        && Instant::now() < room_until =>
-                {
-                    routed_again = true;
-                }
                 Ok(Err(_closed)) => return Err(STOPPED),
                 Ok(Ok(Read::Failure(error))) => return Err(error),
                 Ok(Ok(answer)) => return Ok(answer),
@@ -340,8 +349,8 @@ impl PullStreamCompiler {
             };
             match sent {
                 Ok(answer) => {
-                    self.sent_on(stream);
-                    return Ok(Routed::Stream(answer));
+                    compile_trace::call_sent(false);
+                    return Ok(Routed::Stream(answer, self.streams.served_by(stream)));
                 }
                 // Its stream is ending: look again, at the front.
                 Err(Refused::NoRoom | Refused::Closed)
@@ -361,14 +370,6 @@ impl PullStreamCompiler {
 }
 
 impl PullStreamCompiler {
-    /// Names the Run Executor of `stream`, which took a call, on the
-    /// compile's span.
-    fn sent_on(&self, stream: StreamId) {
-        if let Some(served) = self.streams.served_by(stream) {
-            served.record(false);
-        }
-    }
-
     /// A client whose first call spends the unit of `stream`'s compile room
     /// held for it.
     fn holding(&self, stream: StreamId) -> Arc<dyn CompilerClient> {

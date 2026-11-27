@@ -301,9 +301,9 @@ impl RunModule {
         Ok(update)
     }
 
-    /// [`Self::compile_package`] after the wait for a compiler, traced as
-    /// one `coral.compile` span and timed as `coral.program.compile.duration`
-    /// by how it ended.
+    /// The wait for a compiler, then [`Self::compile_package`]: both in one
+    /// `coral.compile` span, and timed together as
+    /// `coral.program.compile.duration` by how they ended.
     async fn compile_submission(
         &self,
         actor: &AuthenticatedPrincipal,

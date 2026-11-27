@@ -415,8 +415,8 @@ impl Metrics {
             ),
             compile_relayed: counter(
                 "coral.compile.relayed",
-                "{compile}",
-                "Compiler calls this Coral Instance relayed through the database, one for each row it wrote. A wait for room is not counted.",
+                "{call}",
+                "Compiler calls this Coral Instance relayed through the database: one for each row with a call that it wrote. A wait for room writes a row with no call, and is not counted.",
             ),
             program_execution_cpu_duration: seconds(
                 "coral.program.execution.cpu.duration",

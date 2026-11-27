@@ -3,7 +3,7 @@
 use super::*;
 
 use coral_telemetry::metric::Metrics;
-use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
+use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute, children};
 use opentelemetry::trace::{SpanId, TraceContextExt as _};
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::metrics::data::{ResourceMetrics, ScopeMetrics};
@@ -219,10 +219,11 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
         .iter()
         .find(|span| span.name == "request" && span.span_context.trace_id() == request_trace)
         .expect("request span");
-    let compiles = finished.iter().filter(|span| {
-        span.name == "coral.compile" && span.parent_span_id == request.span_context.span_id()
-    });
-    assert_eq!(compiles.count(), 1, "one compile span under the request");
+    assert_eq!(
+        children(&finished, request, "coral.compile").len(),
+        1,
+        "one compile span under the request"
+    );
     let spans = of_run(accepted.run_id());
     let accept = only(&spans, "coral.run.accept");
     let run_trace = accept.span_context.trace_id();

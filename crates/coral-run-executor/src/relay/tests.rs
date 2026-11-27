@@ -16,6 +16,7 @@ use tracing::Instrument as _;
 
 use super::CompileRelay;
 use crate::compile_trace::tests::{RUN_EXECUTOR, compile_span_under, run_executor_fields, traced};
+use crate::compile_trace::traced_compile;
 use crate::pull::tests::{
     answer, busy_stream as open_busy, compile_42, compiled, dialed_stream as open, fill_compile,
     in_line, next_compile, up,
@@ -105,6 +106,17 @@ fn compiling(
 ) -> JoinHandle<Result<String, CompileError>> {
     let compiler = compiler.clone();
     tokio::spawn(async move { compile_42(&compiler, time_left).await })
+}
+
+/// [`compiling`] as one traced compile under `request`.
+fn compiling_under(
+    request: tracing::Span,
+    compiler: &PullStreamCompiler,
+    time_left: Duration,
+) -> JoinHandle<Result<String, CompileError>> {
+    let compiler = compiler.clone();
+    let compile = async move { compile_42(&compiler, time_left).await };
+    tokio::spawn(traced_compile(compile, CompileError::code).instrument(request))
 }
 
 /// Waits until `rows` rows are waiting, looking again on each change
@@ -197,13 +209,17 @@ async fn two_coral_instances_with_room_serve_two_rows_once_each() {
     assert_eq!(count(&database.database()).await.unwrap(), 0);
 }
 
+// Catches also: a relayed compile that nobody took left without
+// `coral.compile.relayed`, or naming a Run Executor.
 #[tokio::test]
 async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
+    process_spans();
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let (requester, [server]) = instances(&database).await;
     let (_stream, mut sent) = open_busy(&server.streams);
 
-    let call = compiling(&requester.compiler, Duration::from_secs(2));
+    let request = tracing::info_span!("a request whose row nobody serves");
+    let call = compiling_under(request, &requester.compiler, Duration::from_secs(2));
     rows_reach(&database.database(), 1).await;
     assert_eq!(
         call.await.unwrap(),
@@ -215,17 +231,28 @@ async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
         "the row is gone"
     );
     assert!(sent.try_recv().is_err(), "nothing was sent");
+    let span = compile_span_under("a request whose row nobody serves").await;
+    assert_eq!(
+        run_executor_fields(&span),
+        [None, None, Some("true".into())]
+    );
 }
 
+// Catches also: a span that names the Run Executor of a call that the
+// Coral Instance serving it timed out on, which never answered.
 #[tokio::test]
 async fn a_row_served_whose_compile_runs_out_of_time_fails_as_timed_out_and_is_gone() {
+    process_spans();
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     // The served compile ends a second early, so its timed-out answer is
     // read well before the requester gives up on the taker.
     let (requester, [server]) = instances_answering(&database, Duration::from_secs(1)).await;
-    let (stream, mut sent) = open_busy(&server.streams);
+    // A Run Executor that a span could name, busy until the row waits.
+    let (stream, mut sent) = server.streams.scripted(RUN_EXECUTOR, 0);
+    fill_compile(&server.streams, stream);
 
-    let call = compiling(&requester.compiler, Duration::from_secs(3));
+    let request = tracing::info_span!("a request whose served row runs out of time");
+    let call = compiling_under(request, &requester.compiler, Duration::from_secs(3));
     rows_reach(&database.database(), 1).await;
     server.streams.let_go(stream);
     let sent = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
@@ -238,6 +265,11 @@ async fn a_row_served_whose_compile_runs_out_of_time_fails_as_timed_out_and_is_g
         count(&database.database()).await.unwrap(),
         0,
         "the row is gone"
+    );
+    let span = compile_span_under("a request whose served row runs out of time").await;
+    assert_eq!(
+        run_executor_fields(&span),
+        [None, None, Some("true".into())]
     );
 }
 
@@ -301,7 +333,7 @@ async fn a_relayed_compile_is_one_span_that_names_the_run_executor_that_took_it(
     answer(&server.streams, stream, &mut sent).await;
     assert_eq!(compiling.await.unwrap().as_deref(), Ok("42"));
 
-    let span = compile_span_under("a request that compiles through the relay");
+    let span = compile_span_under("a request that compiles through the relay").await;
     assert_eq!(
         run_executor_fields(&span),
         [

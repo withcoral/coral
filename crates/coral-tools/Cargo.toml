@@ -37,3 +37,4 @@ uuid.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 coral-run-executor = { workspace = true, features = ["test-support"] }
+coral-telemetry = { workspace = true, features = ["test-support"] }
