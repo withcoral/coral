@@ -649,6 +649,17 @@
         "valueFrom": {
           "type": "object"
         }
+      },
+      "not": {
+        "required": [
+          "value",
+          "valueFrom"
+        ],
+        "properties": {
+          "value": {
+            "minLength": 1
+          }
+        }
       }
     },
     "plainEnvVar": {

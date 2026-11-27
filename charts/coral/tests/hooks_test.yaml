@@ -280,3 +280,18 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "/coral/extraEnv/0/value"
+
+  # Kubernetes refuses an env var with both, so the render does too.
+  - it: refuses an env var with both a value and valueFrom
+    template: templates/coral.yaml
+    set:
+      coral.extraEnv:
+        - name: REGION
+          value: eu-west-2
+          valueFrom:
+            configMapKeyRef:
+              name: aws-settings
+              key: region
+    asserts:
+      - failedTemplate:
+          errorPattern: "/coral/extraEnv/0"
