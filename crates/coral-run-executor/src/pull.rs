@@ -85,7 +85,8 @@ pub enum Kind {
 
 impl Kind {
     /// The kind as `run_executor.kind` reports it.
-    const fn metric(self) -> metric::RunExecutorKind {
+    #[must_use]
+    pub const fn metric(self) -> metric::RunExecutorKind {
         match self {
             Self::Local => metric::RunExecutorKind::Local,
             Self::Dialed => metric::RunExecutorKind::Dialed,

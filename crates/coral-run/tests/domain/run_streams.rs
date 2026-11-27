@@ -156,15 +156,15 @@ pub(super) async fn take_for(
 
 /// [`take`], or `None` when no Run waits.
 pub(super) async fn take_any(runs: &RunModule) -> Option<String> {
-    try_take_for(
-        runs,
-        &Taker {
-            run_executor_id: "6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21",
-            run_executor_kind: Kind::Dialed,
-        },
-        1,
-    )
-    .await
+    try_take_for(runs, &taker(Kind::Dialed), 1).await
+}
+
+/// A Run Executor of `kind` that takes Runs.
+pub(super) const fn taker(kind: Kind) -> Taker<'static> {
+    Taker {
+        run_executor_id: "6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21",
+        run_executor_kind: kind,
+    }
 }
 
 async fn try_take_for(

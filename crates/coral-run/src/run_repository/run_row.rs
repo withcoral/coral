@@ -42,6 +42,7 @@ pub(super) struct RunRow {
     chunk_sequence: i64,
     time_limit_nanos: Option<i64>,
     run_executor_kind: Option<String>,
+    taken_at_unix_nanos: Option<i64>,
     committed_request_number: Option<i64>,
     last_commit_at_unix_nanos: Option<i64>,
     /// Read beside the row; absent under retention's hold of a terminal Run.
@@ -233,6 +234,7 @@ impl RunRow {
             value_limits,
             trace: decode_trace(self.trace_parent.as_deref()),
             time_limit_nanos: self.time_limit_nanos,
+            taken_at_unix_nanos: self.taken_at_unix_nanos,
             on_run_executor: self.run_executor_kind.is_some(),
             on_local_child: self.run_executor_kind.as_deref()
                 == Some(coral_run_executor::Kind::Local.as_storage_str()),

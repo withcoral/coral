@@ -464,6 +464,8 @@ impl RunModule {
             let deadline_at_unix_nanos = run
                 .deadline_at_unix_nanos
                 .ok_or_else(|| Error::CorruptData("started Run has no deadline".into()))?;
+            // Its commit went unanswered, so its wait is recorded now.
+            crate::trace::record_start(&run, started_at.load(Ordering::SeqCst));
             return Ok(Start::Started(Box::new((
                 actor,
                 StartedExecution {
@@ -487,6 +489,7 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
+        crate::trace::record_start(&run, now);
         Ok(Start::Started(Box::new((
             actor,
             StartedExecution {

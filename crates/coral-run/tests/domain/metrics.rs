@@ -4,7 +4,7 @@
 //! current-thread runtime, and every thread a loop starts, inherits.
 use super::*;
 
-use super::run_streams::{Scripted, finish_terminated, take};
+use super::run_streams::{Scripted, finish_terminated, take, take_for, taker};
 use coral_telemetry::testing::{MetricCapture, MetricPoint};
 
 /// A capture every Run in the calling test records to, until the guard drops.
@@ -277,6 +277,64 @@ async fn a_canceled_run_records_its_program_termination() {
         counts(&metrics, "coral.run.ended"),
         owned(&[("run.status=canceled", 1)])
     );
+}
+
+/// Catches: a start whose wait is not measured or is measured under the
+/// wrong kind, or a reopen of a started Run that measures it again.
+#[tokio::test]
+async fn each_started_run_measures_its_wait_once_and_a_reopen_none() {
+    use coral_run_executor::Kind;
+    use coral_run_executor::wire::v1::run_response;
+    let (metrics, _guard) = measured();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:start-wait", "Measure a Run's wait")
+        .await;
+    let mut started = Vec::new();
+    for kind in [Kind::Dialed, Kind::Local] {
+        let accepted = fixture
+            .runs
+            .start(&principal, &workspace_id, submission("return 1;"))
+            .await
+            .expect("accept a Run");
+        let taken_at = fixture.clock.next.load(Ordering::SeqCst);
+        let claim = take_for(&fixture.runs, &taker(kind), taken_at).await;
+        let mut stream = Scripted::open(&fixture.runs, &accepted.run_id().to_string(), &claim);
+        stream.start().await;
+        started.push((kind, accepted.run_id().clone(), claim, stream));
+    }
+    // Each kind's one point, and its sum: the Run's wait in seconds.
+    let waits = || {
+        let mut waits = metrics
+            .named("coral.run.start.wait")
+            .into_iter()
+            .map(|point| {
+                let kind = point.attributes.get("run_executor.kind").cloned();
+                (kind.expect("a kind"), point.count, point.value)
+            })
+            .collect::<Vec<_>>();
+        waits.sort_by(|left, right| left.0.cmp(&right.0));
+        waits
+    };
+    let mut measured = Vec::new();
+    for (kind, run_id, ..) in &started {
+        let run = fixture.run_record(&workspace_id, run_id).await;
+        let wait =
+            run.execution_started_at_unix_nanos.expect("a start mark") - run.accepted_at_unix_nanos;
+        let wait = Duration::from_nanos(u64::try_from(wait).expect("a wait"));
+        measured.push((kind.as_storage_str().to_string(), 1, wait.as_secs_f64()));
+    }
+    assert_eq!(waits(), measured);
+
+    let (_, run_id, claim, stream) = started.swap_remove(0);
+    drop(stream);
+    wait_until(|| !fixture.runs.has_loop(&run_id)).await;
+    let mut reopened = Scripted::open(&fixture.runs, &run_id.to_string(), &claim);
+    assert!(matches!(
+        reopened.next().await,
+        run_response::Message::Committed(_)
+    ));
+    assert_eq!(waits(), measured, "a reopen measures no wait");
 }
 
 /// Catches: outputs a Run Executor rejected that Coral does not count by

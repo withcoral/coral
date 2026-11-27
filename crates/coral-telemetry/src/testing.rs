@@ -6,15 +6,14 @@ use opentelemetry_sdk::logs::{
     InMemoryLogExporter, LogExporter, LoggerProviderBuilder, SdkLoggerProvider, SimpleLogProcessor,
 };
 use opentelemetry_sdk::trace::{
-    InMemorySpanExporter, SdkTracer, SdkTracerProvider, SimpleSpanProcessor, SpanData,
+    InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor, SpanData,
 };
-use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::{OtlpLogFilter, OtlpSpanFilter};
+use crate::{OtlpLogFilter, OtlpSpanFilter, PastSpanLayer};
 
 /// Records every finished span in memory.
 ///
@@ -76,15 +75,18 @@ impl SpanCapture {
         tracing_subscriber::Registry::default().with(self.layer())
     }
 
-    /// A layer that gives every span it sees trace context and captures it.
+    /// A layer that gives every span it sees trace context and captures it,
+    /// with the spans [`crate::RunTrace::record_past`] records.
     #[must_use]
-    pub fn layer<S>(&self) -> OpenTelemetryLayer<S, SdkTracer>
+    pub fn layer<S>(&self) -> impl Layer<S> + use<S>
     where
         S: tracing::Subscriber + for<'span> LookupSpan<'span>,
     {
+        let tracer = self.provider.tracer("coral-test");
         tracing_opentelemetry::layer()
-            .with_tracer(self.provider.tracer("coral-test"))
+            .with_tracer(tracer.clone())
             .with_level(true)
+            .and_then(PastSpanLayer::new(tracer))
     }
 
     /// Every span that has finished so far.

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use coral_telemetry::metric::Metrics;
 use coral_telemetry::safe;
-use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter};
+use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter, PastSpanLayer};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{
     ExporterBuildError, LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter,
@@ -423,6 +423,9 @@ fn try_init_tracing(
     }
     let (provider, otel_trace_layer, trace_filter_error) =
         trace_pipeline(config, &resource, metrics.as_ref())?;
+    // A Run's past spans, such as its wait in the queue, reach the same
+    // processors as every other span. Without an endpoint none would leave.
+    let past_spans = endpoint.map(|_| PastSpanLayer::new(provider.tracer("coral")));
     if let Ok(mut guard) = PROVIDER.lock() {
         *guard = Some(provider);
     }
@@ -436,6 +439,7 @@ fn try_init_tracing(
 
     if Registry::default()
         .with(otel_trace_layer)
+        .with(past_spans)
         .with(otel_log_layer)
         .with(metrics.as_ref().map(Metrics::layer))
         .try_init()

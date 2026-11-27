@@ -101,6 +101,7 @@ struct Catalog {
     run_ended: Counter<u64>,
     run_duration: Histogram<f64>,
     run_phase_duration: Histogram<f64>,
+    run_start_wait: Histogram<f64>,
     run_active: Level,
     run_queue: RunQueueGauges,
     run_executor_linked: LabeledLevel<RunExecutorKind>,
@@ -433,6 +434,10 @@ impl Metrics {
             run_phase_duration: seconds(
                 "coral.run.phase.duration",
                 "How long one phase of a Program Run took.",
+            ),
+            run_start_wait: seconds(
+                "coral.run.start.wait",
+                "How long a Program Run waited from its acceptance to its start.",
             ),
             run_active: Level::new(
                 &meter,
@@ -1030,6 +1035,17 @@ pub fn run_ended(status: RunStatus, code: Option<&'static str>, elapsed: Duratio
         catalog
             .run_duration
             .record(elapsed.as_secs_f64(), &[status]);
+    });
+}
+
+/// Records how long a Program Run waited from its acceptance to its start,
+/// on a Run Executor of `kind`.
+pub fn run_start_wait(kind: RunExecutorKind, wait: Duration) {
+    with(|catalog| {
+        catalog.run_start_wait.record(
+            wait.as_secs_f64(),
+            &[KeyValue::new("run_executor.kind", kind.as_str())],
+        );
     });
 }
 
