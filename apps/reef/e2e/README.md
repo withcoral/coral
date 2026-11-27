@@ -416,7 +416,9 @@ kind's network, and the host runs the docs' own `crane copy` loop, read from
 `apps/docs/getting-started/self-host/kubernetes.mdx`, to fill it. Reel loads
 no image into the cluster. Once Envoy Gateway and Postgres run, the node's iptables let
 it and its pods reach only kind's network, the cluster's subnets and loopback;
-setup checks that neither the node nor a pod reaches `ghcr.io`. Then the chart
+setup checks that the node can't reach `ghcr.io` and a pod can't reach
+`1.1.1.1:443`. The pod dials an address, so a failed lookup can't pass for a
+block. Then the chart
 installs with `values-airgapped.yaml`, from that registry. The rehearsal needs
 `crane` on PATH. A killed run can leave a container named
 `reel-<8 hex>-registry`.
