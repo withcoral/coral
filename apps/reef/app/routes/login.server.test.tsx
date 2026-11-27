@@ -4,6 +4,7 @@ import { localRuntimeConfig, publicRouteTestArgs } from '@/auth/server-context.t
 import {
   commitCoralWebSession,
   oauthCookieName,
+  readOAuthTransaction,
   signOutCoralWebSession,
 } from '@/auth/session.server'
 import { hostedRuntimeConfig, requiredAuthConfig } from '@/auth/test-config'
@@ -73,6 +74,40 @@ describe('login route', () => {
       `${started.endpoint}/token`,
     ])
   })
+
+  // With the mark, a sign-in starts over a session. With no session, it is the
+  // sign-in that starts without the mark. Either way the mark drops
+  // `returnTo`, and the sign-in lands on `/`.
+  it.each([true, false])(
+    'starts a sign-in with the fresh mark when the browser holds a session: %s',
+    async (holdsSession) => {
+      const cookie = holdsSession
+        ? (await commitCoralWebSession(started, requiredAuthConfig)).split(';', 1)[0]
+        : ''
+
+      const response = await runLoader(
+        'https://coral-web.example.test/login?fresh=1&returnTo=%2Fworkspaces',
+        { cookie },
+      )
+
+      expect(response.status).toBe(302)
+      expect(new URL(response.headers.get('location')!).origin).toBe(issuer)
+      expect(discovery.mock.calls.map(([url]) => url.toString())).not.toContain(
+        `${started.endpoint}/token`,
+      )
+      const transaction = response.headers
+        .getSetCookie()
+        .find((setCookie) => setCookie.startsWith(`${oauthCookieName(requiredAuthConfig)}=`))!
+      await expect(
+        readOAuthTransaction(
+          new Request('https://coral-web.example.test/', {
+            headers: { cookie: transaction.split(';', 1)[0] },
+          }),
+          requiredAuthConfig,
+        ),
+      ).resolves.toMatchObject({ returnTo: '/' })
+    },
+  )
 
   it.each([
     [200, false],

@@ -222,6 +222,23 @@ export async function signOutCoralWebSession(
 }
 
 /**
+ * Ends, at Coral, the web session that a completed sign-in replaces, as a
+ * sign-out ends it. A session Coral does not answer for joins the browser's
+ * pending sign-outs. The caller writes the new session cookie over the old one.
+ *
+ * Returns the pending sign-out cookie, or `null` when the browser held no session.
+ */
+export async function endReplacedWebSession(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<string | null> {
+  const replaced = await readStoredSession(request, config)
+  if (!replaced) return null
+  const unanswered = (await endAtCoral(replaced, config)) ? [] : [replaced]
+  return (await retryPendingSignOuts(request, config, unanswered)).setCookie
+}
+
+/**
  * Retries the sign-outs this browser kept because Coral did not answer, and
  * only those: the browser's current session, if any, is left alone.
  *
@@ -270,16 +287,28 @@ async function retryPendingSignOuts(
   }
 }
 
-/** Whether Coral answered that the session is ended. */
+/**
+ * How long Reef waits for Coral to end a session. A later answer counts as
+ * none, so the session joins the pending sign-outs. Coral answers a repeated
+ * end as it answers the first.
+ */
+const END_AT_CORAL_TIMEOUT_MS = 2000
+
+/** Whether Coral answered in time that the session is ended. */
 async function endAtCoral(session: StoredWebSession, config: RequiredAuthConfig): Promise<boolean> {
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(), END_AT_CORAL_TIMEOUT_MS)
   try {
-    const response = await postSessionForm(`${session.endpoint}/end`, {
-      client_id: authClientId(config),
-      session: session.handle,
-    })
+    const response = await postSessionForm(
+      `${session.endpoint}/end`,
+      { client_id: authClientId(config), session: session.handle },
+      timeout.signal,
+    )
     return response.status === 200
   } catch {
     return false
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -289,13 +318,18 @@ interface SessionTokenResponse {
   session_expires_in?: unknown
 }
 
-async function postSessionForm(url: string, form: Record<string, string>): Promise<Response> {
+async function postSessionForm(
+  url: string,
+  form: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<Response> {
   try {
     return await fetch(url, {
       body: new URLSearchParams(form),
       headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
       method: 'POST',
       redirect: 'manual',
+      signal,
     })
   } catch {
     throw sessionUnavailable()
