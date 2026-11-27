@@ -1,0 +1,65 @@
+suite: sizes
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+  - templates/run-executor.yaml
+tests:
+  # CPU limits throttle a pod even when the node has CPU to spare.
+  - it: sets no CPU limit on any container
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[*].resources.limits.cpu
+
+  # Sized for small production. Memory requests equal limits, so under memory
+  # pressure the node evicts these pods after pods that use more than they ask.
+  - it: sizes coral for small production
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 2Gi
+
+  - it: sizes coral-web for small production
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              memory: 768Mi
+
+  # 8 Runs × (128 MiB + 64 MiB V8 termination headroom) + 512 MiB + 64 MiB for
+  # the compiler + 512 MiB for the process: 2,624 MiB.
+  - it: gives each Run Executor room for its default Runs
+    template: templates/run-executor.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 250m
+              memory: 3Gi
+            limits:
+              memory: 3Gi

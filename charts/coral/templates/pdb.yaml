@@ -1,0 +1,28 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $fullname := include "coral.fullname" . -}}
+{{- /*
+One pod of each component may be away at once, so a node drain moves the pods
+one by one. A component with one replica gets none: a budget would either let
+a drain take its only pod or block the drain.
+*/ -}}
+{{- range $component := list
+  (dict "name" $fullname "component" "coral" "replicas" $.Values.coral.replicas)
+  (dict "name" (printf "%s-web" $fullname) "component" "web" "replicas" $.Values.web.replicas)
+  (dict "name" (printf "%s-run-executor" $fullname) "component" "run-executor" "replicas" $.Values.runExecutors.replicas) }}
+{{- if ge (int $component.replicas) 2 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $component.name }}
+  labels:
+    {{- include "coral.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component.component }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "coral.selectorLabels" (list $ $component.component) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -34,6 +34,9 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}
       automountServiceAccountToken: false
+      {{- with include "coral.placement" (list $ .Values.coral) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

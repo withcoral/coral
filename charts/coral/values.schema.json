@@ -269,6 +269,18 @@
         }
       }
     },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
     "coral": {
       "type": "object",
       "additionalProperties": false,
@@ -282,7 +294,12 @@
         "extraEnv",
         "extraEnvFrom",
         "extraVolumes",
-        "extraVolumeMounts"
+        "extraVolumeMounts",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "priorityClassName",
+        "topologySpreadConstraints"
       ],
       "properties": {
         "image": {
@@ -353,6 +370,21 @@
           "items": {
             "$ref": "#/definitions/volumeMount"
           }
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/nodeSelector"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "$ref": "#/definitions/affinity"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "topologySpreadConstraints": {
+          "$ref": "#/definitions/topologySpreadConstraints"
         }
       }
     },
@@ -369,7 +401,12 @@
         "extraEnv",
         "extraEnvFrom",
         "extraVolumes",
-        "extraVolumeMounts"
+        "extraVolumeMounts",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "priorityClassName",
+        "topologySpreadConstraints"
       ],
       "properties": {
         "image": {
@@ -446,6 +483,21 @@
           "items": {
             "$ref": "#/definitions/volumeMount"
           }
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/nodeSelector"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "$ref": "#/definitions/affinity"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "topologySpreadConstraints": {
+          "$ref": "#/definitions/topologySpreadConstraints"
         }
       }
     },
@@ -460,7 +512,12 @@
         "previousToken",
         "resources",
         "probes",
-        "extraEnv"
+        "extraEnv",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "priorityClassName",
+        "topologySpreadConstraints"
       ],
       "properties": {
         "replicas": {
@@ -506,6 +563,21 @@
           "items": {
             "$ref": "#/definitions/plainEnvVar"
           }
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/nodeSelector"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "$ref": "#/definitions/affinity"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "topologySpreadConstraints": {
+          "$ref": "#/definitions/topologySpreadConstraints"
         }
       }
     }
@@ -707,6 +779,33 @@
           "minLength": 1
         }
       }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "maxSkew",
+          "topologyKey",
+          "whenUnsatisfiable"
+        ]
+      },
+      "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
     }
   }
 }

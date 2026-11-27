@@ -97,6 +97,11 @@ usageReports:
 # auth.provider.issuer and auth.provider.client_id.
 config: {}
 
+# A PodDisruptionBudget for each component with 2 or more replicas, so a node
+# drain takes its pods one at a time.
+podDisruptionBudget:
+  enabled: true
+
 coral:
   image:
     registry: ghcr.io
@@ -142,6 +147,34 @@ coral:
   extraVolumes: []
   extraVolumeMounts: []
 
+  # Spreads the pods across nodes and zones when it can. ScheduleAnyway keeps
+  # a cluster with one node or one zone working. Replace the list to change
+  # it, or set [] to turn it off. The chart fills in {{ .Release.Name }}.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: coral
+          app.kubernetes.io/instance: "{{ .Release.Name }}"
+          app.kubernetes.io/component: coral
+      matchLabelKeys: [pod-template-hash]
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: coral
+          app.kubernetes.io/instance: "{{ .Release.Name }}"
+          app.kubernetes.io/component: coral
+      matchLabelKeys: [pod-template-hash]
+  # Where the pods run, as Kubernetes writes these. Empty by default.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
 web:
   image:
     registry: ghcr.io
@@ -183,6 +216,34 @@ web:
   extraVolumes: []
   extraVolumeMounts: []
 
+  # Spreads the pods across nodes and zones when it can. ScheduleAnyway keeps
+  # a cluster with one node or one zone working. Replace the list to change
+  # it, or set [] to turn it off. The chart fills in {{ .Release.Name }}.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: coral
+          app.kubernetes.io/instance: "{{ .Release.Name }}"
+          app.kubernetes.io/component: web
+      matchLabelKeys: [pod-template-hash]
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: coral
+          app.kubernetes.io/instance: "{{ .Release.Name }}"
+          app.kubernetes.io/component: web
+      matchLabelKeys: [pod-template-hash]
+  # Where the pods run, as Kubernetes writes these. Empty by default.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
 # Run Executors run programs in their own pods, from the coral image. Their
 # pods are always locked down, and no value loosens them.
 runExecutors:
@@ -204,12 +265,17 @@ runExecutors:
   previousToken:
     secretName: ""
     key: ""
+  # Memory must cover maxRunsHeld × (Run heap + 64 MiB) + compiler heap +
+  # 64 MiB + 512 MiB for the process: V8 adds 64 MiB to each heap to end it.
+  # With the defaults (128 MiB and 512 MiB), 8 × 192 + 576 + 512 = 2,624 MiB.
+  # Raise it with maxRunsHeld, or with the heaps, which extraEnv sets as
+  # CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES and _COMPILER_HEAP_BYTES.
   resources:
     requests:
       cpu: 250m
-      memory: 2Gi
+      memory: 3Gi
     limits:
-      memory: 2Gi
+      memory: 3Gi
   probes:
     readiness:
       periodSeconds: 10
@@ -219,3 +285,30 @@ runExecutors:
       periodSeconds: 10
       timeoutSeconds: 5
       failureThreshold: 6
+  # Spreads the pods across nodes and zones when it can. ScheduleAnyway keeps
+  # a cluster with one node or one zone working. Replace the list to change
+  # it, or set [] to turn it off. The chart fills in {{ .Release.Name }}.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: coral
+          app.kubernetes.io/instance: "{{ .Release.Name }}"
+          app.kubernetes.io/component: run-executor
+      matchLabelKeys: [pod-template-hash]
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: coral
+          app.kubernetes.io/instance: "{{ .Release.Name }}"
+          app.kubernetes.io/component: run-executor
+      matchLabelKeys: [pod-template-hash]
+  # Where the pods run, as Kubernetes writes these. Empty by default.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
