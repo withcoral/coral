@@ -156,6 +156,7 @@ coral:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
+          app.kubernetes.io/name: coral
           app.kubernetes.io/instance: "{{ .Release.Name }}"
           app.kubernetes.io/component: coral
       matchLabelKeys: [pod-template-hash]
@@ -164,6 +165,7 @@ coral:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
+          app.kubernetes.io/name: coral
           app.kubernetes.io/instance: "{{ .Release.Name }}"
           app.kubernetes.io/component: coral
       matchLabelKeys: [pod-template-hash]
@@ -223,6 +225,7 @@ web:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
+          app.kubernetes.io/name: coral
           app.kubernetes.io/instance: "{{ .Release.Name }}"
           app.kubernetes.io/component: web
       matchLabelKeys: [pod-template-hash]
@@ -231,6 +234,7 @@ web:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
+          app.kubernetes.io/name: coral
           app.kubernetes.io/instance: "{{ .Release.Name }}"
           app.kubernetes.io/component: web
       matchLabelKeys: [pod-template-hash]
@@ -261,10 +265,11 @@ runExecutors:
   previousToken:
     secretName: ""
     key: ""
-  # Memory must cover maxRunsHeld × (execution_heap_bytes + 64 MiB) +
-  # compiler_heap_bytes + 64 MiB + 512 MiB for the process: V8 adds 64 MiB to
-  # each heap to end it. With the defaults, 8 × 192 + 576 + 512 = 2,624 MiB.
-  # Raise it with maxRunsHeld or the heap budgets.
+  # Memory must cover maxRunsHeld × (Run heap + 64 MiB) + compiler heap +
+  # 64 MiB + 512 MiB for the process: V8 adds 64 MiB to each heap to end it.
+  # With the defaults (128 MiB and 512 MiB), 8 × 192 + 576 + 512 = 2,624 MiB.
+  # Raise it with maxRunsHeld, or with the heaps, which extraEnv sets as
+  # CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES and _COMPILER_HEAP_BYTES.
   resources:
     requests:
       cpu: 250m
@@ -289,6 +294,7 @@ runExecutors:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
+          app.kubernetes.io/name: coral
           app.kubernetes.io/instance: "{{ .Release.Name }}"
           app.kubernetes.io/component: run-executor
       matchLabelKeys: [pod-template-hash]
@@ -297,6 +303,7 @@ runExecutors:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
+          app.kubernetes.io/name: coral
           app.kubernetes.io/instance: "{{ .Release.Name }}"
           app.kubernetes.io/component: run-executor
       matchLabelKeys: [pod-template-hash]

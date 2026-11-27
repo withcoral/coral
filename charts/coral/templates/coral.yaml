@@ -34,11 +34,7 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}
       automountServiceAccountToken: false
-      {{- with .Values.coral.topologySpreadConstraints }}
-      topologySpreadConstraints:
-        {{- tpl (toYaml .) $ | nindent 8 }}
-      {{- end }}
-      {{- with include "coral.placement" .Values.coral }}
+      {{- with include "coral.placement" (list $ .Values.coral) }}
       {{- . | nindent 6 }}
       {{- end }}
       {{- with .Values.imagePullSecrets }}

@@ -289,21 +289,30 @@ last one, and silently replace the chart's. Call with
 {{- end -}}
 {{- end -}}
 
-{{/* Where a component's pods run. Call with the component's values. */}}
+{{/*
+Where a component's pods run, and how they spread. Call with
+(list $ .Values.component). The spread may name {{ .Release.Name }}.
+*/}}
 {{- define "coral.placement" -}}
-{{- with .nodeSelector }}
+{{- $root := index . 0 -}}
+{{- $values := index . 1 -}}
+{{- with $values.topologySpreadConstraints }}
+topologySpreadConstraints:
+  {{- tpl (toYaml .) $root | nindent 2 }}
+{{- end }}
+{{- with $values.nodeSelector }}
 nodeSelector:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with .tolerations }}
+{{- with $values.tolerations }}
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with .affinity }}
+{{- with $values.affinity }}
 affinity:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with .priorityClassName }}
+{{- with $values.priorityClassName }}
 priorityClassName: {{ . | quote }}
 {{- end }}
 {{- end -}}

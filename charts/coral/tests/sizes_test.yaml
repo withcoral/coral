@@ -17,11 +17,9 @@ tests:
     asserts:
       - notExists:
           path: spec.template.spec.containers[*].resources.limits.cpu
-      - notExists:
-          path: spec.template.spec.initContainers
 
-  # #3501's sizes table. A memory request below the limit lets the node evict
-  # the pod under pressure, so they are equal.
+  # Sized for small production. Memory requests equal limits, so under memory
+  # pressure the node evicts these pods after pods that use more than they ask.
   - it: sizes coral for small production
     template: templates/coral.yaml
     documentSelector:

@@ -372,29 +372,19 @@
           }
         },
         "nodeSelector": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
+          "$ref": "#/definitions/nodeSelector"
         },
         "tolerations": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
+          "$ref": "#/definitions/tolerations"
         },
         "affinity": {
-          "type": "object"
+          "$ref": "#/definitions/affinity"
         },
         "priorityClassName": {
           "type": "string"
         },
         "topologySpreadConstraints": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
+          "$ref": "#/definitions/topologySpreadConstraints"
         }
       }
     },
@@ -495,29 +485,19 @@
           }
         },
         "nodeSelector": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
+          "$ref": "#/definitions/nodeSelector"
         },
         "tolerations": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
+          "$ref": "#/definitions/tolerations"
         },
         "affinity": {
-          "type": "object"
+          "$ref": "#/definitions/affinity"
         },
         "priorityClassName": {
           "type": "string"
         },
         "topologySpreadConstraints": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
+          "$ref": "#/definitions/topologySpreadConstraints"
         }
       }
     },
@@ -585,29 +565,19 @@
           }
         },
         "nodeSelector": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
+          "$ref": "#/definitions/nodeSelector"
         },
         "tolerations": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
+          "$ref": "#/definitions/tolerations"
         },
         "affinity": {
-          "type": "object"
+          "$ref": "#/definitions/affinity"
         },
         "priorityClassName": {
           "type": "string"
         },
         "topologySpreadConstraints": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
+          "$ref": "#/definitions/topologySpreadConstraints"
         }
       }
     }
@@ -809,6 +779,28 @@
           "minLength": 1
         }
       }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
     }
   }
 }
