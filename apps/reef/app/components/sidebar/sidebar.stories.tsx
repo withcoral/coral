@@ -1,12 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { userEvent, within } from 'storybook/test'
-import { ContentContainer } from '@/components/content-container'
-import { NavigationRoot } from '@/wax/components/navigation-frame/navigation-frame'
+import { AppFrame } from '@/wax/components/app-frame'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Typography } from '@/wax/components/typography'
 import { Sidebar } from './sidebar'
-import * as shell from './sidebar.stories.css'
 
 const meta = {
   component: Sidebar,
@@ -18,16 +16,11 @@ const meta = {
   ],
   parameters: { layout: 'fullscreen' },
   render: (args) => (
-    <NavigationRoot>
-      <div className={shell.layout}>
-        <Sidebar {...args} />
-        <ContentContainer>
-          <PageLayout breadcrumbs={[{ id: 'overview', type: 'text', text: 'Overview' }]}>
-            <Typography.Body>Workspace overview</Typography.Body>
-          </PageLayout>
-        </ContentContainer>
-      </div>
-    </NavigationRoot>
+    <AppFrame navigation={<Sidebar {...args} />}>
+      <PageLayout breadcrumbs={[{ id: 'overview', type: 'text', text: 'Overview' }]}>
+        <Typography.Body>Workspace overview</Typography.Body>
+      </PageLayout>
+    </AppFrame>
   ),
   args: {
     auth: { mode: 'required', csrfToken: 'storybook' },
