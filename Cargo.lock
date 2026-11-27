@@ -1621,6 +1621,8 @@ dependencies = [
  "coral-v8",
  "coral-value",
  "hyper-util",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "prost",
  "ring",
  "rustix 1.1.6",

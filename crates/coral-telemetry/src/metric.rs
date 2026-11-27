@@ -88,6 +88,7 @@ struct Catalog {
     request_duration: Histogram<f64>,
     request_cpu_duration: Histogram<f64>,
     program_compile_duration: Histogram<f64>,
+    compile_relayed: Counter<u64>,
     compiler_request_duration: Histogram<f64>,
     compiler_queue_duration: Histogram<f64>,
     compiler_work_duration: Histogram<f64>,
@@ -411,6 +412,11 @@ impl Metrics {
             program_compile_duration: seconds(
                 "coral.program.compile.duration",
                 "How long compiling a submitted Program took.",
+            ),
+            compile_relayed: counter(
+                "coral.compile.relayed",
+                "{call}",
+                "Compiler calls this Coral Instance relayed through the database: one for each row with a call that it wrote. A wait for room writes a row with no call, and is not counted.",
             ),
             program_execution_cpu_duration: seconds(
                 "coral.program.execution.cpu.duration",
@@ -988,6 +994,12 @@ pub fn program_compiled(outcome: CompileOutcome, elapsed: Duration) {
             &[KeyValue::new("outcome", outcome.as_str())],
         );
     });
+}
+
+/// Counts one compiler call that this Coral Instance relayed through the
+/// database: a row it wrote.
+pub fn compile_relayed() {
+    with(|catalog| catalog.compile_relayed.add(1, &[]));
 }
 
 /// Records what one Program execution used: the CPU time of the thread that

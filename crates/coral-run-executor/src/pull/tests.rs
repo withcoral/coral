@@ -96,6 +96,38 @@ pub(crate) fn dialed_stream(streams: &PullStreams, free: u32) -> (StreamId, Sent
     streams.scripted("a-run-executor", free)
 }
 
+/// The number of the next `Compile` sent on a stream, within 5 s.
+pub(crate) async fn next_compile(sent: &mut Sent) -> u64 {
+    let next = timeout(Duration::from_secs(5), sent.recv()).await;
+    let Ok(Some(Ok(PullResponse {
+        message: Some(Down::Compile(compile)),
+    }))) = next
+    else {
+        panic!("a Compile within 5 s");
+    };
+    compile.number
+}
+
+/// Answers the next `Compile` sent on `stream` with the package `42`.
+pub(crate) async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent) {
+    let number = next_compile(sent).await;
+    streams
+        .receive(stream, up(compiled(number)))
+        .expect("the answer");
+}
+
+/// Compiles `return 42;` on `client` within `time_left`, to its JavaScript.
+pub(crate) async fn compile_42(
+    client: &dyn crate::CompilerClient,
+    time_left: Duration,
+) -> Result<String, CompileError> {
+    let builtin_tools = crate::BuiltinTools::default();
+    let program = client
+        .compile(time_left, "return 42;", &[], &builtin_tools, None)
+        .await?;
+    Ok(program.javascript().to_owned())
+}
+
 /// A dialed stream with room for no Run whose compiler is busy, as
 /// [`fill_compile`] leaves it. `let_go` frees a unit.
 pub(crate) fn busy_stream(streams: &PullStreams) -> (StreamId, Sent) {

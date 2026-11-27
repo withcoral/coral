@@ -1,13 +1,16 @@
 //! The relayed compile rows: `compile_requests(id, requester, call,
-//! created_at, deadline, taken_by, answer)`. Times are Unix nanoseconds. A
-//! row's call is an encoded `Compile` and its answer an encoded `Compiled`;
-//! a probe has no call, and its answer is empty. Writes join the caller's
-//! transaction.
+//! created_at, deadline, taken_by, answer, run_executor_id,
+//! run_executor_kind)`. Times are Unix nanoseconds. A row's call is an
+//! encoded `Compile` and its answer an encoded `Compiled`, with the Run
+//! Executor that took the call when one did; a probe has no call, and its
+//! answer is empty. Writes join the caller's transaction.
 
 use coral_db::{Database, RowLock, Transaction, UnixNanos};
 use prost::Message as _;
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 
+use crate::Kind;
+use crate::compile_trace::ServedBy;
 use crate::compile_wire::ProtocolError;
 use crate::wire::v1::compile::Call;
 use crate::wire::v1::compiled::Answer;
@@ -23,6 +26,8 @@ enum CompileRequests {
     Deadline,
     TakenBy,
     Answer,
+    RunExecutorId,
+    RunExecutorKind,
 }
 
 /// A row a requester writes.
@@ -59,7 +64,11 @@ pub(crate) struct Taken {
 pub(crate) enum Answered {
     /// A probe's: the Coral Instance that took it had room.
     Room,
-    Call(Answer),
+    /// A call's, with the Run Executor that took it, if one did.
+    Call {
+        answer: Box<Answer>,
+        served_by: Option<ServedBy>,
+    },
 }
 
 /// Where a requester's row stands.
@@ -255,17 +264,29 @@ pub(crate) async fn answer(
     id: &str,
     answered: Answered,
 ) -> Result<(), coral_db::Error> {
-    let answer = match answered {
-        Answered::Room => Vec::new(),
-        Answered::Call(answer) => Compiled {
-            number: 0,
-            answer: Some(answer),
+    let (answer, served) = match answered {
+        Answered::Room => (Vec::new(), None),
+        Answered::Call { answer, served_by } => {
+            let answer = Compiled {
+                number: 0,
+                answer: Some(*answer),
+            };
+            (answer.encode_to_vec(), served_by)
         }
-        .encode_to_vec(),
     };
+    let (run_executor_id, kind) = served
+        .map(|served| {
+            (
+                served.run_executor_id.to_string(),
+                served.kind.as_storage_str(),
+            )
+        })
+        .unzip();
     let write = Query::update()
         .table(CompileRequests::Table)
         .value(CompileRequests::Answer, answer)
+        .value(CompileRequests::RunExecutorId, run_executor_id)
+        .value(CompileRequests::RunExecutorKind, kind)
         .and_where(Expr::col(CompileRequests::Id).eq(id))
         .to_owned();
     transaction.execute_change(write).await.map(drop)
@@ -274,30 +295,54 @@ pub(crate) async fn answer(
 /// Reads where row `id` stands. One read.
 pub(crate) async fn status(database: &Database, id: &str) -> Result<Status, coral_db::Error> {
     let read = Query::select()
-        .columns([CompileRequests::Answer, CompileRequests::TakenBy])
+        .columns([
+            CompileRequests::Answer,
+            CompileRequests::TakenBy,
+            CompileRequests::RunExecutorId,
+            CompileRequests::RunExecutorKind,
+        ])
         .from(CompileRequests::Table)
         .and_where(Expr::col(CompileRequests::Id).eq(id))
         .to_owned();
     let row = database
-        .fetch_optional::<(Option<Vec<u8>>, Option<String>)>(read)
+        .fetch_optional::<(
+            Option<Vec<u8>>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>(read)
         .await?;
     Ok(match row {
         None => Status::Gone,
-        Some((None, taken_by)) => Status::Waiting {
+        Some((None, taken_by, ..)) => Status::Waiting {
             taken: taken_by.is_some(),
         },
-        Some((Some(answer), by)) => Status::Answered {
-            answer: if answer.is_empty() {
-                Ok(Answered::Room)
-            } else {
-                Compiled::decode(answer.as_slice())
-                    .ok()
-                    .and_then(|compiled| compiled.answer)
-                    .map(Answered::Call)
-                    .ok_or(ProtocolError)
-            },
-            by,
-        },
+        Some((Some(answer), by, run_executor_id, kind)) => {
+            // An id or a kind no release writes leaves the Run Executor off,
+            // not the answer.
+            let served_by = run_executor_id
+                .and_then(|id| uuid::Uuid::try_parse(&id).ok())
+                .zip(kind.as_deref().and_then(Kind::from_storage_str))
+                .map(|(run_executor_id, kind)| ServedBy {
+                    run_executor_id,
+                    kind,
+                });
+            Status::Answered {
+                answer: if answer.is_empty() {
+                    Ok(Answered::Room)
+                } else {
+                    Compiled::decode(answer.as_slice())
+                        .ok()
+                        .and_then(|compiled| compiled.answer)
+                        .map(|answer| Answered::Call {
+                            answer: Box::new(answer),
+                            served_by,
+                        })
+                        .ok_or(ProtocolError)
+                },
+                by,
+            }
+        }
     })
 }
 

@@ -3,7 +3,7 @@
 use super::*;
 
 use coral_telemetry::metric::Metrics;
-use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
+use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute, children};
 use opentelemetry::trace::{SpanId, TraceContextExt as _};
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::metrics::data::{ResourceMetrics, ScopeMetrics};
@@ -174,10 +174,11 @@ fn span_names(spans: &[SpanData]) -> Vec<String> {
     spans.iter().map(|span| span.name.to_string()).collect()
 }
 
-/// A Run accepted under a request gets its own trace. Its accept span is a
-/// root, it and the request link to each other once, even when the request
-/// goes on to observe the Run, its phases are the accept span's children,
-/// and the Run row stores the accept span's context.
+/// A Run accepted under a request gets its own trace. Its compile is one
+/// span under the request. Its accept span is a root, it and the request
+/// link to each other once, even when the request goes on to observe the
+/// Run, its phases are the accept span's children, and the Run row stores
+/// the accept span's context.
 #[tokio::test]
 async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
     let capture = capture();
@@ -213,12 +214,16 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
     assert_eq!(run.state, RunState::Succeeded);
     wait_until(|| !named(&of_run(accepted.run_id()), "coral.run.complete").is_empty()).await;
 
-    let request = capture
-        .finished()
-        .into_iter()
-        .find(|span| span.span_context.trace_id() == request_trace)
+    let finished = capture.finished();
+    let request = finished
+        .iter()
+        .find(|span| span.name == "request" && span.span_context.trace_id() == request_trace)
         .expect("request span");
-    let request = &request;
+    assert_eq!(
+        children(&finished, request, "coral.compile").len(),
+        1,
+        "one compile span under the request"
+    );
     let spans = of_run(accepted.run_id());
     let accept = only(&spans, "coral.run.accept");
     let run_trace = accept.span_context.trace_id();

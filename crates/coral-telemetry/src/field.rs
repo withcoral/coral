@@ -73,6 +73,10 @@ const CORAL: &[&str] = &[
     "coral.run_executor.id",
     "coral.run_executor.exit_code",
     "coral.run_executor.local_limit",
+    // The kind of credential that admitted the Run Executor that served a
+    // compile, and whether Coral relayed the compile through the database.
+    "coral.run_executor.kind",
+    "coral.compile.relayed",
     // A search index write: the Provider Generation it covers, what started
     // it, why it was skipped, how long it waited for the writer and took, in
     // milliseconds, how many rows a statistics refresh wrote, and the code of

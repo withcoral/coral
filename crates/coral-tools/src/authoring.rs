@@ -224,7 +224,8 @@ impl Authoring {
     ///
     /// Typing is advisory and stops by its own deadline, so a compile always
     /// keeps its reserve: a source that cannot be analyzed or typed in time
-    /// is prepared untyped, and preparation reports its own failure.
+    /// is prepared untyped, and preparation reports its own failure. The
+    /// wait for a compiler and the preparation are one `coral.compile` span.
     ///
     /// # Errors
     ///
@@ -238,24 +239,27 @@ impl Authoring {
         typing: Typing<'_>,
     ) -> Result<PreparedAuthoredTool, Error> {
         let kind = path.kind();
-        let compiler = self
-            .compiler
-            .ready()
-            .await
-            .map_err(|_none| Error::NoCompiler)?
-            .unwrap_or_else(|| self.compiler.clone());
-        // The wait for a compiler takes none of the compile's time.
-        let deadline = Instant::now() + self.compilation_timeout;
-        let preparation = async {
-            let declarations = self
-                .declarations(&compiler, workspace_id, path, source, typing, deadline)
-                .await?;
-            self.compile(&compiler, deadline, path, source, declarations)
+        let prepare = async {
+            let compiler = self
+                .compiler
+                .ready()
                 .await
+                .map_err(|_none| Error::NoCompiler)?
+                .unwrap_or_else(|| self.compiler.clone());
+            // The wait for a compiler takes none of the compile's time.
+            let deadline = Instant::now() + self.compilation_timeout;
+            let preparation = async {
+                let declarations = self
+                    .declarations(&compiler, workspace_id, path, source, typing, deadline)
+                    .await?;
+                self.compile(&compiler, deadline, path, source, declarations)
+                    .await
+            };
+            timeout_at(deadline.into(), preparation)
+                .await
+                .map_err(|_elapsed| Error::CompilationTimedOut(kind))?
         };
-        timeout_at(deadline.into(), preparation)
-            .await
-            .map_err(|_elapsed| Error::CompilationTimedOut(kind))?
+        coral_run_executor::traced_compile(prepare, Error::code).await
     }
 
     /// The declarations that type `source`: the current ones of the Shared

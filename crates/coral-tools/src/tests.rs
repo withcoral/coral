@@ -140,6 +140,43 @@ async fn private_tool_save_publishes_exact_authoring_record_and_event() {
     ));
 }
 
+// Catches: a Tool save whose compile is not one `coral.compile` span under
+// the request that saves.
+#[tokio::test]
+async fn a_private_tool_save_compiles_in_one_span_under_its_request() {
+    use tracing::Instrument as _;
+    let spans = coral_telemetry::testing::process_spans();
+    let fixture = PrivateToolTestModules::new().await;
+    let (workspace_id, principal) = fixture.user_workspace("user:tool-trace").await;
+
+    let request = tracing::info_span!("a request that saves a Private Tool");
+    fixture
+        .private_tools
+        .save(
+            &private_tool_change(principal, 20, 'a'),
+            &workspace_id,
+            PrivateToolSave::new(
+                PrivateToolPath::parse("finance.total").expect("Private Tool Path"),
+                AuthoredToolDescription::parse("Total a finance value").expect("description"),
+                AuthoredToolSource::parse("export default function total(): number { return 1; }")
+                    .expect("source"),
+            ),
+        )
+        .instrument(request)
+        .await
+        .expect("save tool");
+
+    let finished = spans
+        .finished_with("a request that saves a Private Tool")
+        .await;
+    let request = finished
+        .iter()
+        .find(|span| span.name == "a request that saves a Private Tool")
+        .expect("request span");
+    let compiles = coral_telemetry::testing::children(&finished, request, "coral.compile");
+    assert_eq!(compiles.len(), 1, "one compile span under the request");
+}
+
 // Catches: a save that loses the default its author declared, an update
 // without a policy that resets it, or a change to it that its lifecycle
 // Event does not name.

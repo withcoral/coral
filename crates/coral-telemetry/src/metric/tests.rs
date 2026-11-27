@@ -58,6 +58,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "{request}",
         &["compiler.role"],
     ),
+    ("coral.compile.relayed", "counter", "{call}", &[]),
     (
         "coral.persistence.acquisition.duration",
         "histogram",
@@ -304,6 +305,7 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         Duration::from_millis(1),
     );
     program_compiled(CompileOutcome::Ok, Duration::from_millis(30));
+    compile_relayed();
     program_executed(Some(Duration::from_millis(12)), 4096);
     program_terminated(TerminationReason::Canceled);
     run_accepted(PrincipalKind::Agent);

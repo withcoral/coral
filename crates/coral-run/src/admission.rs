@@ -301,8 +301,9 @@ impl RunModule {
         Ok(update)
     }
 
-    /// [`Self::compile_package`], timed as `coral.program.compile.duration`
-    /// by how it ended.
+    /// The wait for a compiler, then [`Self::compile_package`]: both in one
+    /// `coral.compile` span, and timed together as
+    /// `coral.program.compile.duration` by how they ended.
     async fn compile_submission(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -311,20 +312,19 @@ impl RunModule {
     ) -> Result<(ProgramPackage, Vec<LinkedToolSelection>), Error> {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
-        let compiled = match self.ready().await {
+        let compile = async {
+            let engine = self.ready().await?;
             // The wait for a compiler takes none of the compile's time.
-            Ok(engine) => {
-                self.compile_package(
-                    &engine,
-                    actor,
-                    workspace_id,
-                    submitted_source,
-                    Instant::now() + self.compilation_timeout,
-                )
-                .await
-            }
-            Err(error) => Err(error),
+            self.compile_package(
+                &engine,
+                actor,
+                workspace_id,
+                submitted_source,
+                Instant::now() + self.compilation_timeout,
+            )
+            .await
         };
+        let compiled = coral_run_executor::traced_compile(compile, Error::code).await;
         let outcome = match &compiled {
             Ok(_) => CompileOutcome::Ok,
             Err(Error::CompilationTimedOut) => CompileOutcome::TimedOut,
