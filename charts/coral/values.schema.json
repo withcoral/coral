@@ -369,7 +369,8 @@
         "extraEnv",
         "extraEnvFrom",
         "extraVolumes",
-        "extraVolumeMounts"
+        "extraVolumeMounts",
+        "envoy"
       ],
       "properties": {
         "image": {
@@ -406,6 +407,26 @@
             "description": "A client name, as coral-web accepts it.",
             "pattern": "^[A-Za-z0-9]+([ ._-][A-Za-z0-9]+)*$",
             "maxLength": 32
+          }
+        },
+        "envoy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "image",
+            "resources"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "$ref": "#/definitions/image"
+            },
+            "resources": {
+              "$ref": "#/definitions/resources"
+            }
           }
         },
         "podAnnotations": {

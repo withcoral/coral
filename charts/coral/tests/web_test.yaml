@@ -75,11 +75,6 @@ tests:
           content:
             name: CORAL_WEB_AUTH_ISSUER
             value: https://login.example.org
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: CORAL_ENDPOINT
-            value: http://prod:14555
 
   - it: serves the UI on the Service's http port
     documentSelector:

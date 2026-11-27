@@ -7,7 +7,7 @@ description: "Deploy Coral in your Kubernetes cluster, with SQLite or Postgres a
 Install Coral in your Kubernetes cluster with Coral's Helm chart. The chart runs three components:
 
 - `coral`, the server.
-- `coral-web`, the Coral UI.
+- `coral-web`, the Coral UI, with an Envoy sidecar.
 - Run Executors, which run programs in their own pods.
 
 The chart never creates a database or a Secret. You give it both.
@@ -388,6 +388,14 @@ To rotate the token without downtime:
 2. Set `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW`, and run `helm upgrade --wait`. Coral then accepts both tokens.
 3. Set `runExecutors.token.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW` and `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN`, and run `helm upgrade --wait`. The Run Executors then use the new token. Do not start step 4 until the upgrade finishes.
 4. Set `runExecutors.previousToken.key` to `""`, and run `helm upgrade`. Then remove the old key from the Secret.
+
+## The Envoy sidecar
+
+Each `coral-web` pod runs an Envoy sidecar. Envoy sends each of the pod's gRPC requests to the next `coral` pod in turn. It finds the pods through the `coral-headless` Service. Without Envoy, a `coral-web` pod keeps one connection to the `coral` Service, so one `coral` pod takes all of that pod's load.
+
+The sidecar uses the upstream `envoyproxy/envoy` image, pinned by digest. To pull it from your own registry, set `global.imageRegistry` or `web.envoy.image`. To size it, set `web.envoy.resources`.
+
+If your service mesh spreads gRPC requests, turn the sidecar off with `web.envoy.enabled: false`. `coral-web` then calls the `coral` Service directly.
 
 ## Upgrade
 

@@ -1,0 +1,11 @@
+# The Envoy sidecar off, as with a service mesh. CI renders and validates the
+# chart with it.
+host: coral.example.com
+config:
+  auth:
+    provider:
+      issuer: https://idp.example.com
+      client_id: coral
+web:
+  envoy:
+    enabled: false

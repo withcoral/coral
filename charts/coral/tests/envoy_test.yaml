@@ -1,0 +1,152 @@
+suite: envoy
+release:
+  name: prod
+  namespace: coral
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/web.yaml
+  - templates/coral.yaml
+  - templates/envoy.yaml
+tests:
+  - it: sends coral-web's gRPC through the sidecar
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_ENDPOINT
+            value: http://127.0.0.1:14559
+
+  # A native sidecar starts before coral-web and stops after it.
+  - it: runs Envoy as a native sidecar, sized and locked down
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: envoy
+      - equal:
+          path: spec.template.spec.initContainers[0].restartPolicy
+          value: Always
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: docker.io/envoyproxy/envoy@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
+      - equal:
+          path: spec.template.spec.initContainers[0].resources
+          value:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 64Mi
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      - equal:
+          path: spec.template.spec.initContainers[0].startupProbe.httpGet
+          value:
+            path: /ready
+            port: envoy-health
+
+  - it: takes the Envoy image from the global registry
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global.imageRegistry: registry.internal
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: registry.internal/envoyproxy/envoy@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
+
+  - it: rolls coral-web when the Envoy config changes
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/envoy"]
+
+  - it: spreads requests across coral pods found through the headless Service
+    template: templates/envoy.yaml
+    asserts:
+      - matchRegex:
+          path: data["envoy.yaml"]
+          pattern: "type.googleapis.com/envoy.extensions.clusters.dns.v3.DnsCluster"
+      - matchRegex:
+          path: data["envoy.yaml"]
+          pattern: "lb_policy: ROUND_ROBIN"
+      - matchRegex:
+          path: data["envoy.yaml"]
+          pattern: "address: prod-headless.coral.svc\n"
+      - matchRegex:
+          path: data["envoy.yaml"]
+          pattern: "port_value: 14555\n"
+
+  - it: renders a headless Service for coral's gRPC
+    template: templates/coral.yaml
+    documentSelector:
+      path: metadata.name
+      value: prod-headless
+    asserts:
+      - equal:
+          path: spec.clusterIP
+          value: None
+      - equal:
+          path: spec.ports
+          value:
+            - name: grpc
+              port: 14555
+              targetPort: grpc
+              appProtocol: kubernetes.io/h2c
+
+  - it: calls coral's ClusterIP Service directly with the sidecar off
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      web.envoy.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.initContainers
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/envoy"]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_ENDPOINT
+            value: http://prod:14555
+
+  - it: renders no Envoy config with the sidecar off
+    template: templates/envoy.yaml
+    set:
+      web.envoy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no headless Service with the sidecar off
+    template: templates/coral.yaml
+    set:
+      web.envoy.enabled: false
+    documentSelector:
+      path: spec.clusterIP
+      value: None
+      skipEmptyTemplates: true
+    asserts:
+      - hasDocuments:
+          count: 0

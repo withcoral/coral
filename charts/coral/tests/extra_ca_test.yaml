@@ -13,8 +13,11 @@ tests:
       value: Deployment
       matchMany: true
     asserts:
-      - notExists:
-          path: spec.template.spec.initContainers
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: extra-ca
+          any: true
       - notContains:
           path: spec.template.spec.containers[0].env
           content:

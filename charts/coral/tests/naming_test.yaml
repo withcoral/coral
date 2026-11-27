@@ -9,12 +9,13 @@ templates:
   - templates/web.yaml
   - templates/run-executor.yaml
   - templates/serviceaccount.yaml
+  - templates/envoy.yaml
 tests:
   - it: names every object after the release
     asserts:
       - matchRegex:
           path: metadata.name
-          pattern: ^prod(-(auth|mcp|web|run-executor))?$
+          pattern: ^prod(-(auth|mcp|web|run-executor|headless|envoy))?$
 
   - it: fails on a release name that cannot name a Service
     release:
