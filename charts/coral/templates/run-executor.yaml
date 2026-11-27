@@ -30,6 +30,13 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}-run-executor
       automountServiceAccountToken: false
+      {{- with .Values.runExecutors.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with include "coral.placement" .Values.runExecutors }}
+      {{- . | nindent 6 }}
+      {{- end }}
       enableServiceLinks: false
       terminationGracePeriodSeconds: {{ .Values.runExecutors.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}

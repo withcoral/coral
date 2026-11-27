@@ -1,0 +1,48 @@
+suite: pod disruption budgets
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/pdb.yaml
+tests:
+  - it: lets a drain take one pod at a time from each component
+    asserts:
+      - hasDocuments:
+          count: 3
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+
+  - it: covers exactly one component's pods
+    documentSelector:
+      path: metadata.name
+      value: prod-run-executor
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: coral
+            app.kubernetes.io/instance: prod
+            app.kubernetes.io/component: run-executor
+
+  # With one replica, maxUnavailable 1 would allow a drain to take every pod,
+  # and anything stricter would block the drain.
+  - it: has none for a component with one replica
+    set:
+      web.replicas: 1
+    asserts:
+      - hasDocuments:
+          count: 2
+      - notEqual:
+          path: metadata.name
+          value: prod-web
+
+  - it: has none when turned off
+    set:
+      podDisruptionBudget.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

@@ -269,6 +269,18 @@
         }
       }
     },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
     "coral": {
       "type": "object",
       "additionalProperties": false,
@@ -282,7 +294,12 @@
         "extraEnv",
         "extraEnvFrom",
         "extraVolumes",
-        "extraVolumeMounts"
+        "extraVolumeMounts",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "priorityClassName",
+        "topologySpreadConstraints"
       ],
       "properties": {
         "image": {
@@ -353,6 +370,31 @@
           "items": {
             "$ref": "#/definitions/volumeMount"
           }
+        },
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
         }
       }
     },
@@ -369,7 +411,12 @@
         "extraEnv",
         "extraEnvFrom",
         "extraVolumes",
-        "extraVolumeMounts"
+        "extraVolumeMounts",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "priorityClassName",
+        "topologySpreadConstraints"
       ],
       "properties": {
         "image": {
@@ -446,6 +493,31 @@
           "items": {
             "$ref": "#/definitions/volumeMount"
           }
+        },
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
         }
       }
     },
@@ -460,7 +532,12 @@
         "previousToken",
         "resources",
         "probes",
-        "extraEnv"
+        "extraEnv",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "priorityClassName",
+        "topologySpreadConstraints"
       ],
       "properties": {
         "replicas": {
@@ -506,6 +583,31 @@
           "items": {
             "$ref": "#/definitions/plainEnvVar"
           }
+        },
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
         }
       }
     }

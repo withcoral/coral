@@ -288,3 +288,22 @@ last one, and silently replace the chart's. Call with
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Where a component's pods run. Call with the component's values. */}}
+{{- define "coral.placement" -}}
+{{- with .nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .priorityClassName }}
+priorityClassName: {{ . | quote }}
+{{- end }}
+{{- end -}}

@@ -1,0 +1,126 @@
+suite: spread
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+  - templates/run-executor.yaml
+tests:
+
+  # Soft, so a cluster with one node or one zone still schedules every pod.
+  - it: spreads coral's pods across nodes and zones when it can
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints
+          value:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: prod
+                  app.kubernetes.io/component: coral
+              matchLabelKeys: [pod-template-hash]
+            - maxSkew: 1
+              topologyKey: topology.kubernetes.io/zone
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: prod
+                  app.kubernetes.io/component: coral
+              matchLabelKeys: [pod-template-hash]
+
+  # Soft, so a cluster with one node or one zone still schedules every pod.
+  - it: spreads web's pods across nodes and zones when it can
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints
+          value:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: prod
+                  app.kubernetes.io/component: web
+              matchLabelKeys: [pod-template-hash]
+            - maxSkew: 1
+              topologyKey: topology.kubernetes.io/zone
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: prod
+                  app.kubernetes.io/component: web
+              matchLabelKeys: [pod-template-hash]
+
+  # Soft, so a cluster with one node or one zone still schedules every pod.
+  - it: spreads runExecutors's pods across nodes and zones when it can
+    template: templates/run-executor.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints
+          value:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: prod
+                  app.kubernetes.io/component: run-executor
+              matchLabelKeys: [pod-template-hash]
+            - maxSkew: 1
+              topologyKey: topology.kubernetes.io/zone
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: prod
+                  app.kubernetes.io/component: run-executor
+              matchLabelKeys: [pod-template-hash]
+
+  - it: replaces the spread with the one in values
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      coral.topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: coral
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints
+          value:
+            - maxSkew: 1
+              topologyKey: topology.kubernetes.io/zone
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: coral
+
+  - it: spreads nothing when the spread is empty
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      web.topologySpreadConstraints: []
+    asserts:
+      - notExists:
+          path: spec.template.spec.topologySpreadConstraints

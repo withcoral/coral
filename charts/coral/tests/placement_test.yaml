@@ -1,0 +1,147 @@
+suite: placement
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+  - templates/run-executor.yaml
+tests:
+  - it: places no pod by default
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.tolerations
+      - notExists:
+          path: spec.template.spec.affinity
+      - notExists:
+          path: spec.template.spec.priorityClassName
+
+  - it: places coral's pods where its values say
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      coral.nodeSelector:
+        pool: coral
+      coral.tolerations:
+        - key: dedicated
+          operator: Equal
+          value: coral
+          effect: NoSchedule
+      coral.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: [amd64]
+      coral.priorityClassName: coral-high
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            pool: coral
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: coral
+              effect: NoSchedule
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: kubernetes.io/arch
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: coral-high
+
+  - it: places web's pods where its values say
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      web.nodeSelector:
+        pool: coral
+      web.tolerations:
+        - key: dedicated
+          operator: Equal
+          value: coral
+          effect: NoSchedule
+      web.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: [amd64]
+      web.priorityClassName: coral-high
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            pool: coral
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: coral
+              effect: NoSchedule
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: kubernetes.io/arch
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: coral-high
+
+  - it: places runExecutors's pods where its values say
+    template: templates/run-executor.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      runExecutors.nodeSelector:
+        pool: coral
+      runExecutors.tolerations:
+        - key: dedicated
+          operator: Equal
+          value: coral
+          effect: NoSchedule
+      runExecutors.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: [amd64]
+      runExecutors.priorityClassName: coral-high
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            pool: coral
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: coral
+              effect: NoSchedule
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: kubernetes.io/arch
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: coral-high

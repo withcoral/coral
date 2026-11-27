@@ -31,6 +31,13 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}-web
       automountServiceAccountToken: false
+      {{- with .Values.web.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with include "coral.placement" .Values.web }}
+      {{- . | nindent 6 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
