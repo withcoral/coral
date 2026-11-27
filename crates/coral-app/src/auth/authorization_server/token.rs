@@ -515,12 +515,7 @@ pub(super) mod tests {
                 )
                 .await
                 .unwrap();
-            let server = super::super::start_listener(
-                "127.0.0.1:0".parse().unwrap(),
-                super::super::auth_router(state),
-            )
-            .await
-            .unwrap();
+            let server = super::super::test_state::serve(state).await;
             let body = set_field(
                 &set_field(
                     &form("code", CLIENT, REDIRECT, VERIFIER),

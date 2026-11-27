@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use coral_db::{Clock, UnixNanos};
 use coral_sign_in::{
-    ModeRequest, Named, PersonIdentifier, ProvenPerson, Refusal, SignInMode, SignInValue,
+    ModeRequest, ModeUrl, Named, PersonIdentifier, ProvenPerson, Refusal, SignInMode, SignInValue,
 };
 use coral_telemetry::safe;
 use url::Url;
@@ -46,6 +46,10 @@ impl OidcMode {
 
 #[async_trait::async_trait]
 impl SignInMode for OidcMode {
+    fn urls(&self) -> Vec<ModeUrl> {
+        vec![super::CALLBACK]
+    }
+
     async fn begin(&self, sign_in: &SignInValue, _now: UnixNanos) -> Result<Url, Refusal> {
         self.client
             .authorization_request(&self.provider, &self.keys, sign_in.as_str())

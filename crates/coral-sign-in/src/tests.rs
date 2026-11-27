@@ -288,6 +288,75 @@ fn debug_prints_no_value() {
     }
 }
 
+/// A mode's URLs stay below `/auth/{name}/`, and each segment answers each
+/// method once.
+#[test]
+fn a_modes_urls_stay_below_its_name() {
+    let name = ModeName::new("test").expect("name");
+    assert_eq!(ModeUrl::get("answer").path(name), "/auth/test/answer");
+    for (urls, checked) in [
+        (vec![], Ok(())),
+        (
+            vec![ModeUrl::get("answer"), ModeUrl::post("answer", 1)],
+            Ok(()),
+        ),
+        (
+            vec![ModeUrl::post("a-b_9", 0), ModeUrl::get("metadata")],
+            Ok(()),
+        ),
+        (vec![ModeUrl::get("")], Err(InvalidUrl::Segment)),
+        (vec![ModeUrl::get("a/b")], Err(InvalidUrl::Segment)),
+        (vec![ModeUrl::get("..")], Err(InvalidUrl::Segment)),
+        (vec![ModeUrl::post("Answer", 1)], Err(InvalidUrl::Segment)),
+        (
+            vec![ModeUrl::get("answer"), ModeUrl::get("answer")],
+            Err(InvalidUrl::Repeated),
+        ),
+        (
+            vec![ModeUrl::post("answer", 1), ModeUrl::post("answer", 2)],
+            Err(InvalidUrl::Repeated),
+        ),
+    ] {
+        assert_eq!(ModeUrl::check_all(&urls), checked, "{urls:?}");
+    }
+}
+
+/// The test mode serves what core's tests need of it: a GET and a limited
+/// POST, a cookie of either `SameSite`, and an answer in a form body.
+#[tokio::test]
+async fn the_test_mode_declares_its_urls_and_cookie() {
+    let clock = At(UnixNanos::new(0));
+    let lax = super::testing::mode("sign_in_url = 'https://idp.example.test/start'");
+    assert_eq!(
+        lax.urls(),
+        [
+            ModeUrl::get("answer"),
+            ModeUrl::post("answer", super::testing::BODY_LIMIT)
+        ]
+    );
+    assert_eq!(lax.same_site(), SameSite::Lax);
+    let none =
+        super::testing::mode("sign_in_url = 'https://idp.example.test/start'\nsame_site = 'none'");
+    assert_eq!(none.same_site(), SameSite::None);
+    assert_eq!(
+        [SameSite::Lax, SameSite::None].map(SameSite::as_str),
+        ["Lax", "None"]
+    );
+
+    let posted = ModeRequest {
+        query: "",
+        body: b"sign_in=value-1&person=00u2",
+    };
+    let Named::SignIn(sign_in) = none.names(&posted, clock.0) else {
+        panic!("a form body names its sign-in");
+    };
+    let person = none
+        .check(&posted, &sign_in, &clock)
+        .await
+        .expect("a person");
+    assert_eq!(person.identifier(), PersonIdentifier::NameId("00u2"));
+}
+
 /// A clock that always reads one instant.
 #[derive(Debug)]
 struct At(UnixNanos);

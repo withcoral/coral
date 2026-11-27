@@ -2,10 +2,12 @@
 //! core.
 //!
 //! Its settings are `sign_in_url`, which must be `https`; `refuse`, which
-//! refuses every check with `test_refused`; and `first_owner`, the `NameID`
-//! of the first Owner. Its begin URL is `sign_in_url` with the sign-in's
-//! value as `sign_in` and Coral's URL as `return_to`. A request names its
-//! sign-in by `sign_in` in the query, and its person by `person`.
+//! refuses every check with `test_refused`; `first_owner`, the `NameID` of
+//! the first Owner; and `same_site`, `"lax"` (the default) or `"none"`. Its
+//! begin URL is `sign_in_url` with the sign-in's value as `sign_in` and
+//! Coral's URL as `return_to`. It answers a GET and a POST at `answer`, the
+//! POST's body at most [`BODY_LIMIT`] bytes. A request names its sign-in by
+//! `sign_in` and its person by `person`, in the query or a form body.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -16,9 +18,12 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::{
-    ModeEnvironment, ModeName, ModeRequest, ModeSettings, Named, PersonIdentifier, ProvenPerson,
-    Refusal, SettingError, SignInMode, SignInModeFactory, SignInValue,
+    ModeEnvironment, ModeName, ModeRequest, ModeSettings, ModeUrl, Named, PersonIdentifier,
+    ProvenPerson, Refusal, SameSite, SettingError, SignInMode, SignInModeFactory, SignInValue,
 };
+
+/// The most bytes of body the test mode's POST reads.
+pub const BODY_LIMIT: usize = 1024;
 
 /// Builds the test mode, named `test`.
 pub struct TestModeFactory;
@@ -46,12 +51,23 @@ struct Settings {
     refuse: bool,
     #[serde(default)]
     first_owner: Option<String>,
+    #[serde(default)]
+    same_site: TestSameSite,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TestSameSite {
+    #[default]
+    Lax,
+    None,
 }
 
 struct TestMode {
     sign_in_url: Url,
     refuse: bool,
     first_owner: Option<String>,
+    same_site: SameSite,
     coral_url: Url,
 }
 
@@ -79,6 +95,10 @@ impl SignInModeFactory for TestModeFactory {
             sign_in_url,
             refuse: settings.refuse,
             first_owner: settings.first_owner,
+            same_site: match settings.same_site {
+                TestSameSite::Lax => SameSite::Lax,
+                TestSameSite::None => SameSite::None,
+            },
             coral_url: environment.coral_url.clone(),
         }))
     }
@@ -86,6 +106,14 @@ impl SignInModeFactory for TestModeFactory {
 
 #[async_trait::async_trait]
 impl SignInMode for TestMode {
+    fn urls(&self) -> Vec<ModeUrl> {
+        vec![ModeUrl::get("answer"), ModeUrl::post("answer", BODY_LIMIT)]
+    }
+
+    fn same_site(&self) -> SameSite {
+        self.same_site
+    }
+
     async fn begin(&self, sign_in: &SignInValue, _now: UnixNanos) -> Result<Url, Refusal> {
         let mut url = self.sign_in_url.clone();
         url.query_pairs_mut()
@@ -131,9 +159,10 @@ impl SignInMode for TestMode {
     }
 }
 
-/// Each value of `name` in the request's query.
+/// Each value of `name` in the request's query, then in its form body.
 fn values<'a>(request: &ModeRequest<'a>, name: &'a str) -> impl Iterator<Item = Cow<'a, str>> {
     url::form_urlencoded::parse(request.query.as_bytes())
+        .chain(url::form_urlencoded::parse(request.body))
         .filter(move |(key, _)| key == name)
         .map(|(_, value)| value)
 }
