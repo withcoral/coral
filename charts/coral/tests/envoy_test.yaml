@@ -96,6 +96,15 @@ tests:
           path: data["envoy.yaml"]
           pattern: "port_value: 14555\n"
 
+  # The health listener is open to the cluster: a flood of connections must
+  # not take Envoy past its memory limit.
+  - it: caps the connections Envoy accepts
+    template: templates/envoy.yaml
+    asserts:
+      - matchRegex:
+          path: data["envoy.yaml"]
+          pattern: "max_active_downstream_connections: 1000\n"
+
   - it: renders a headless Service for coral's gRPC
     template: templates/coral.yaml
     documentSelector:

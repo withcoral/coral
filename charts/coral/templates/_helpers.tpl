@@ -298,6 +298,15 @@ each request to the next coral pod in turn. It finds the pods through the
 headless Service, whose DNS name resolves to every ready pod.
 */}}
 {{- define "coral.envoyConfig" -}}
+# Every listener together. coral-web needs a few connections, and the
+# kubelet's probes one each. The health listener is open to the cluster, so
+# without a cap a flood of connections could take Envoy past its memory limit.
+overload_manager:
+  resource_monitors:
+    - name: envoy.resource_monitors.global_downstream_max_connections
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig
+        max_active_downstream_connections: 1000
 static_resources:
   listeners:
     - name: coral
