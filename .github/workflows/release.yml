@@ -82,7 +82,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG_NAME }}
           fetch-depth: 0
@@ -131,7 +131,7 @@ jobs:
       TAG_NAME: ${{ needs.validate.outputs.tag-name }}
       CORAL_RELEASE_DATE: ${{ needs.validate.outputs.release-date }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
@@ -141,7 +141,7 @@ jobs:
           rustup show
           rustup target add aarch64-apple-darwin
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/desktop/.node-version
           package-manager-cache: false
@@ -178,7 +178,7 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/coral-desktop-signing/coral-signing.keychain-db" || true
           rm -rf "$RUNNER_TEMP/coral-desktop-signing"
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-macos
           path: release-assets/
@@ -197,7 +197,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
@@ -205,7 +205,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/desktop/.node-version
           package-manager-cache: false
@@ -236,7 +236,7 @@ jobs:
             --tag $env:TAG_NAME --feed-repo "$env:DESKTOP_FEED_OWNER/$env:DESKTOP_FEED_NAME" `
             --out release-assets
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-windows
           path: release-assets/
@@ -252,7 +252,7 @@ jobs:
       TAG_NAME: ${{ needs.validate.outputs.tag-name }}
       CORAL_RELEASE_DATE: ${{ needs.validate.outputs.release-date }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
@@ -260,7 +260,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/desktop/.node-version
           package-manager-cache: false
@@ -281,7 +281,7 @@ jobs:
             --tag "$TAG_NAME" --feed-repo "$DESKTOP_FEED_OWNER/$DESKTOP_FEED_NAME" \
             --out release-assets
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-linux
           path: release-assets/
@@ -299,12 +299,12 @@ jobs:
     env:
       TAG_NAME: ${{ needs.validate.outputs.tag-name }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: desktop-*
           path: release-assets
@@ -317,7 +317,7 @@ jobs:
 
       - name: Create a GitHub App token for the feed
         id: token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -369,18 +369,18 @@ jobs:
       # Helm adds the chart's name: the chart is ghcr.io/withcoral/charts/coral.
       CHART_REPOSITORY: oci://ghcr.io/withcoral/charts
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: desktop-*
           path: release-assets
           merge-multiple: true
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: chart
           path: chart
@@ -393,9 +393,9 @@ jobs:
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v4.3.2
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -492,7 +492,7 @@ jobs:
 
       - name: Create a GitHub App token for the feed
         id: token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -537,14 +537,14 @@ jobs:
       TAG_NAME: ${{ needs.validate.outputs.tag-name }}
       RELEASE_COMMIT_SHA: ${{ needs.validate.outputs.commit-sha }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
 
       - name: Create a GitHub App token for the feed
         id: feed-token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -596,7 +596,7 @@ jobs:
       - name: Create a GitHub App token for the docs branch
         if: ${{ steps.decide.outputs.push == 'true' }}
         id: docs-token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -636,7 +636,7 @@ jobs:
       CORAL_DIGEST: ${{ needs.images.outputs.coral }}
       CORAL_WEB_DIGEST: ${{ needs.images.outputs.coral-web }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
@@ -669,7 +669,7 @@ jobs:
           grep -qxF "${CORAL_REF}@${CORAL_DIGEST}" chart/images.txt
           grep -qxF "${CORAL_WEB_REF}@${CORAL_WEB_DIGEST}" chart/images.txt
 
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       # Each of Coral's images must carry the signature of this workflow on
       # this tag. The images are public, so this needs no sign-in.
@@ -684,7 +684,7 @@ jobs:
             echo "Verified ${image}"
           done
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: chart
           path: chart/
@@ -716,26 +716,26 @@ jobs:
       CORAL_IMAGE: ghcr.io/withcoral/coral
       CORAL_WEB_IMAGE: ghcr.io/withcoral/coral-web
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
 
       # The source-only checks of the Reef Dockerfile, before anything builds.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/reef/.node-version
           package-manager-cache: false
       - run: make reef-image-checks
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # A new builder per run, so the Dockerfile's cache mounts start empty.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           cache-binary: false
 
@@ -788,7 +788,7 @@ jobs:
             CORAL_WEB_IMAGE="${CORAL_WEB_IMAGE}@${CORAL_WEB_DIGEST}" \
             docker/image-test.sh
 
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       # The signature covers the digest, so the tags promote adds later point
       # at signed content without signing again.

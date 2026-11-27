@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Create GitHub App token
         id: token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ vars.SANDBOX_DEPLOY_APP_ID }}
           private-key: ${{ secrets.SANDBOX_DEPLOY_APP_PRIVATE_KEY }}
