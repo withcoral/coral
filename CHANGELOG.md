@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.12.0](https://github.com/withcoral/coral/compare/v1.11.0...v1.12.0) (2026-11-27)
+
+
+### Features
+
+* **chart:** add a core Helm chart that installs Coral end to end ([#3537](https://github.com/withcoral/coral/issues/3537)) ([d84da73](https://github.com/withcoral/coral/commit/d84da733a8a625de1f0674f38ece7b8781781f09))
+* **chart:** default sizes, PodDisruptionBudgets and spread across nodes ([#3571](https://github.com/withcoral/coral/issues/3571)) ([79c928d](https://github.com/withcoral/coral/commit/79c928d2e3ed5fd1d385c493f860a4b945608e7e))
+* **chart:** publish a signed chart and images.txt with every release ([#3576](https://github.com/withcoral/coral/issues/3576)) ([015249b](https://github.com/withcoral/coral/commit/015249b7ebe8cf3e560beaf49a1a86a7565e3f02))
+* **chart:** pull every image from a mirror registry ([#3575](https://github.com/withcoral/coral/issues/3575)) ([76a39eb](https://github.com/withcoral/coral/commit/76a39eb1d47cb579180e080abd3b1842319bfa69))
+* **chart:** render an Ingress or an HTTPRoute ([#3561](https://github.com/withcoral/coral/issues/3561)) ([435ed19](https://github.com/withcoral/coral/commit/435ed1904d2e0062ccfbb6520b18be6b080d18f7))
+* **chart:** spread Reef's gRPC calls with an Envoy sidecar ([#3573](https://github.com/withcoral/coral/issues/3573)) ([5848112](https://github.com/withcoral/coral/commit/5848112ae69d09c5828a8b2da8ad66ba40ffddbf))
+* **chart:** wire cloud access, a private database CA and Usage Reports ([#3563](https://github.com/withcoral/coral/issues/3563)) ([407ee83](https://github.com/withcoral/coral/commit/407ee83735a9fd71f11ee1be14446d31353ae843))
+* **run:** export a Run Executor's own telemetry over OTLP ([#3552](https://github.com/withcoral/coral/issues/3552)) ([cb36a62](https://github.com/withcoral/coral/commit/cb36a625ea626804052b73f7fa0550b81adf347c))
+* **run:** report the Run queue and the linked Run Executors ([#3555](https://github.com/withcoral/coral/issues/3555)) ([5da2c90](https://github.com/withcoral/coral/commit/5da2c908ed09539ffe2bc162bc6e0786abcad460))
+* **run:** trace each compile ([#3572](https://github.com/withcoral/coral/issues/3572)) ([fe753bc](https://github.com/withcoral/coral/commit/fe753bc6607f0b39de244c7531da21447c6857c5))
+* **sub-agent:** include time and weekday in the brief header ([#3569](https://github.com/withcoral/coral/issues/3569)) ([afbd784](https://github.com/withcoral/coral/commit/afbd7842671c47cb795fada44bd75dee9906380e))
+* **ui:** start a sign-in over a session and show a failed sign-in's code ([#3534](https://github.com/withcoral/coral/issues/3534)) ([abbf6b3](https://github.com/withcoral/coral/commit/abbf6b358ecfb62a83ec7f92ad9e77a5c99ce3f1))
+
+
+### Bug Fixes
+
+* **ui:** show setup's default servers in a scrolling box ([#3557](https://github.com/withcoral/coral/issues/3557)) ([743f0d1](https://github.com/withcoral/coral/commit/743f0d14d94514302fa4faaa2e546468b091f5ec))
+
 ## [1.11.0](https://github.com/withcoral/coral/compare/v1.10.0...v1.11.0) (2026-11-26)
 
 
