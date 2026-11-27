@@ -472,8 +472,9 @@ impl PreparedServerBuilder {
             usage,
         })
         .await?;
-        let authorization_server =
-            authorization_server.map(|server| Box::new(server.with_providers(engine.providers())));
+        let authorization_server = authorization_server.map(|server| {
+            serve_authorization_server(*server, engine.providers(), &launcher.extensions)
+        });
         Ok(Composition {
             engine,
             private_listeners: PrivateListeners {
@@ -665,6 +666,20 @@ fn build_authorization_server(
             .into_authorization_server(policy, Arc::clone(coral_db), Arc::clone(clock))?
             .with_readiness(readiness.clone()),
     ))
+}
+
+/// The authorization server, given the booted Engine's `providers` and the
+/// launching binary's `extensions`.
+fn serve_authorization_server(
+    server: CoralAuthorizationServer,
+    providers: coral_provider::ProviderModule,
+    extensions: &super::runtime::Extensions,
+) -> Box<CoralAuthorizationServer> {
+    Box::new(
+        server
+            .with_providers(providers)
+            .with_edition(extensions.edition.clone()),
+    )
 }
 
 /// Hands the configured License to the launching binary's Edition source,

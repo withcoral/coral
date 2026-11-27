@@ -166,7 +166,15 @@ impl AuthSettings {
             SignIn::Oidc(provider) => SignIn::Oidc(Box::new(
                 provider.resolve(&self.authorization_server.issuer, get_var)?,
             )),
-            SignIn::Mode(name, mode) => SignIn::Mode(name, mode),
+            SignIn::Mode {
+                name,
+                mode,
+                feature,
+            } => SignIn::Mode {
+                name,
+                mode,
+                feature,
+            },
         };
         let key = self.auth.session.load_signing_key(config_path, get_var)?;
         let access_token_ttl = Duration::from_secs(self.auth.session.access_token_ttl_seconds);
@@ -235,7 +243,7 @@ impl ResolvedAuthSettings {
     ) -> Result<(ModeName, Arc<dyn SignInMode>), AuthServerError> {
         let provider = match &self.sign_in {
             SignIn::Oidc(provider) => provider,
-            SignIn::Mode(name, mode) => return Ok((*name, Arc::clone(mode))),
+            SignIn::Mode { name, mode, .. } => return Ok((*name, Arc::clone(mode))),
         };
         let mode = OidcMode::new(
             (**provider).clone(),
@@ -244,6 +252,15 @@ impl ResolvedAuthSettings {
         )
         .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?;
         Ok((oidc_mode::NAME, Arc::new(mode)))
+    }
+
+    /// The Enterprise Feature that the configured sign-in mode is, or `None`
+    /// for a mode of every Edition, as OIDC is.
+    pub(super) fn sign_in_feature(&self) -> Option<&coral_edition::EnterpriseFeature> {
+        match &self.sign_in {
+            SignIn::Oidc(_) => None,
+            SignIn::Mode { feature, .. } => feature.as_ref(),
+        }
     }
 
     pub(super) fn handshake_keys(&self) -> &Arc<HandshakeKeys> {
@@ -571,11 +588,16 @@ const FRESH_SIGN_IN_PATH: &str = "/login?fresh=1";
 
 /// The sign-in mode that `[auth.provider]` selects, with its settings
 /// checked: OIDC with its provider `P`, which the server builds into a mode
-/// when it starts, or a mode the build registered, built already.
+/// when it starts, or a mode the build registered, built already, with the
+/// Enterprise Feature its factory names.
 #[derive(Clone)]
 enum SignIn<P> {
     Oidc(Box<P>),
-    Mode(ModeName, Arc<dyn SignInMode>),
+    Mode {
+        name: ModeName,
+        mode: Arc<dyn SignInMode>,
+        feature: Option<coral_edition::EnterpriseFeature>,
+    },
 }
 
 /// Reads `mode` from `[auth.provider]` and gives the rest of the table to
@@ -621,7 +643,11 @@ fn provider_choice(
         .map_err(|error| {
             not_a_setting(name, &error).unwrap_or_else(|| config_error(at_provider(&error)))
         })?;
-    Ok(SignIn::Mode(factory.name(), mode))
+    Ok(SignIn::Mode {
+        name: factory.name(),
+        mode,
+        feature: factory.feature(),
+    })
 }
 
 /// The refusal of a key of `[auth.provider]` that the mode `mode` does not
@@ -771,7 +797,7 @@ mod tests {
         pub(in crate::auth) fn provider(&self) -> &ResolvedOidcProvider {
             match &self.sign_in {
                 SignIn::Oidc(provider) => provider,
-                SignIn::Mode(..) => panic!("the settings configure another sign-in mode"),
+                SignIn::Mode { .. } => panic!("the settings configure another sign-in mode"),
             }
         }
     }
@@ -1542,7 +1568,7 @@ mod tests {
         );
 
         let table = toml::from_str(&format!("mode = 'test'\n{start}")).expect("TOML");
-        let Ok(SignIn::Mode(name, mode)) =
+        let Ok(SignIn::Mode { name, mode, .. }) =
             provider_choice(table, "http://localhost:9080", &test_modes())
         else {
             panic!("the test mode builds");
@@ -1621,6 +1647,41 @@ mod tests {
                 reject(&raw).contains(expected),
                 "expected `{expected}` for {raw}"
             );
+        }
+    }
+
+    /// Coral's URL is `https`, or `http` on a loopback host only, whatever
+    /// the sign-in mode.
+    #[test]
+    fn refuses_an_http_public_url_off_loopback() {
+        let at = |public_url: &str| {
+            valid("").replace(
+                "public_url = 'http://localhost:9080/'",
+                &format!("public_url = '{public_url}'"),
+            )
+        };
+        let refusal = "invalid auth configuration: listeners.auth.public_url is invalid: \
+                       configured endpoint must use HTTPS or explicit loopback HTTP";
+        assert_eq!(reject(&at("http://auth.example.test/")), refusal);
+        // A registered mode gets no say: core refuses before it builds one.
+        let registered = at("http://auth.example.test/").replace(
+            "issuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\n\
+             client_secret = 'provider-secret'\n",
+            "mode = 'test'\nsign_in_url = 'https://idp.example.test/start'\n",
+        );
+        assert!(registered.contains("mode = 'test'"), "{registered}");
+        let Err(error) = auth_settings_with(&registered, &test_modes()) else {
+            panic!("the test mode starts behind an http public URL");
+        };
+        assert_eq!(error, refusal);
+        for public_url in [
+            "https://auth.example.test/",
+            "http://127.0.0.1:9080/",
+            "http://[::1]:9080/",
+        ] {
+            if let Err(error) = auth_settings(&at(public_url)) {
+                panic!("{public_url}: {error}");
+            }
         }
     }
 

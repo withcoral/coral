@@ -288,36 +288,76 @@ fn debug_prints_no_value() {
     }
 }
 
-/// A mode's URLs stay below `/auth/{name}/`, and each segment answers each
-/// method once.
+/// A mode's URLs and documents stay below `/auth/{name}/`, and each segment
+/// answers each method once; a document is a GET.
 #[test]
 fn a_modes_urls_stay_below_its_name() {
     let name = ModeName::new("test").expect("name");
     assert_eq!(ModeUrl::get("answer").path(name), "/auth/test/answer");
-    for (urls, checked) in [
-        (vec![], Ok(())),
+    let document = |segment| ModeDocument::new(segment, "text/plain", String::new());
+    assert_eq!(document("about").path(name), "/auth/test/about");
+    for (urls, documents, checked) in [
+        (vec![], vec![], Ok(())),
         (
             vec![ModeUrl::get("answer"), ModeUrl::post("answer", 1)],
+            vec![],
             Ok(()),
         ),
         (
             vec![ModeUrl::post("a-b_9", 0), ModeUrl::get("metadata")],
+            vec![],
             Ok(()),
         ),
-        (vec![ModeUrl::get("")], Err(InvalidUrl::Segment)),
-        (vec![ModeUrl::get("a/b")], Err(InvalidUrl::Segment)),
-        (vec![ModeUrl::get("..")], Err(InvalidUrl::Segment)),
-        (vec![ModeUrl::post("Answer", 1)], Err(InvalidUrl::Segment)),
+        (
+            vec![ModeUrl::post("answer", 1)],
+            vec![document("answer"), document("about")],
+            Ok(()),
+        ),
+        (vec![ModeUrl::get("")], vec![], Err(InvalidUrl::Segment)),
+        (vec![ModeUrl::get("a/b")], vec![], Err(InvalidUrl::Segment)),
+        (vec![ModeUrl::get("..")], vec![], Err(InvalidUrl::Segment)),
+        (
+            vec![ModeUrl::post("Answer", 1)],
+            vec![],
+            Err(InvalidUrl::Segment),
+        ),
+        (vec![], vec![document("a/b")], Err(InvalidUrl::Segment)),
         (
             vec![ModeUrl::get("answer"), ModeUrl::get("answer")],
+            vec![],
             Err(InvalidUrl::Repeated),
         ),
         (
             vec![ModeUrl::post("answer", 1), ModeUrl::post("answer", 2)],
+            vec![],
             Err(InvalidUrl::Repeated),
         ),
+        (
+            vec![ModeUrl::get("answer")],
+            vec![document("answer")],
+            Err(InvalidUrl::Repeated),
+        ),
+        (
+            vec![],
+            vec![document("about"), document("about")],
+            Err(InvalidUrl::Repeated),
+        ),
+        (
+            vec![],
+            vec![ModeDocument::new("about", "", String::new())],
+            Err(InvalidUrl::MediaType),
+        ),
+        (
+            vec![],
+            vec![ModeDocument::new("about", "text/plain\n", String::new())],
+            Err(InvalidUrl::MediaType),
+        ),
     ] {
-        assert_eq!(ModeUrl::check_all(&urls), checked, "{urls:?}");
+        assert_eq!(
+            ModeUrl::check_all(&urls, &documents),
+            checked,
+            "{urls:?} {documents:?}"
+        );
     }
 }
 
@@ -335,6 +375,14 @@ async fn the_test_mode_declares_its_urls_and_cookie() {
         ]
     );
     assert_eq!(lax.same_site(), SameSite::Lax);
+    assert_eq!(
+        lax.documents(),
+        [ModeDocument::new(
+            "about",
+            super::testing::ABOUT_MEDIA_TYPE,
+            "the test sign-in mode of https://coral.example.test/".to_owned()
+        )]
+    );
     let none =
         super::testing::mode("sign_in_url = 'https://idp.example.test/start'\nsame_site = 'none'");
     assert_eq!(none.same_site(), SameSite::None);
