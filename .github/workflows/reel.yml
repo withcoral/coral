@@ -156,6 +156,7 @@ jobs:
           path: ${{ runner.temp }}/release-chart
       # The packaged chart, and its images: pulled by the digests images.txt
       # pins, or, air-gapped, mirrored from images.txt by the suite itself.
+      # make chart-checks tests the script on every change.
       - name: Take the chart and images from the release
         if: ${{ inputs.release-artifact != '' }}
         env:
@@ -163,24 +164,9 @@ jobs:
           AIR_GAPPED: ${{ inputs.air-gapped }}
         run: |
           set -euo pipefail
-          charts=("$RELEASE"/coral-*.tgz)
-          if [ "${#charts[@]}" -ne 1 ] || [ ! -f "${charts[0]}" ]; then
-            echo "Expected one packaged chart in the release artifact" >&2
-            exit 1
-          fi
-          echo "REEL_INSTALL_CHART=${charts[0]}" >> "$GITHUB_ENV"
-          if [ "$AIR_GAPPED" = true ]; then
-            echo "REEL_INSTALL_IMAGES_TXT=$RELEASE/images.txt" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          for name in coral coral-web; do
-            line="$(grep -E "^ghcr\.io/withcoral/${name}:[^@]+@sha256:[0-9a-f]{64}$" "$RELEASE/images.txt")"
-            image="${line%:*@*}@${line##*@}"
-            docker pull --quiet "$image"
-            docker tag "$image" "${name}:release"
-          done
-          echo "REEL_INSTALL_CORAL_IMAGE=coral:release" >> "$GITHUB_ENV"
-          echo "REEL_INSTALL_WEB_IMAGE=coral-web:release" >> "$GITHUB_ENV"
+          args=("$RELEASE")
+          if [ "$AIR_GAPPED" = true ]; then args+=(--air-gapped); fi
+          scripts/release-install-inputs.sh "${args[@]}" >> "$GITHUB_ENV"
       # Keeps the Reel image's layers and cache mounts between runs.
       - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
         with:
