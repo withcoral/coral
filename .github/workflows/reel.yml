@@ -27,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: Product journeys, focused local-mode checks, the packaged Desktop app, two Coral Instances, or the Helm chart on kind (install needs a run that saved its images)
+        description: Product journeys, focused local-mode checks, the packaged Desktop app, or two Coral Instances. The install suite runs from ci.yml, which builds its images.
         type: choice
-        options: [main, local-mode, desktop, multi-instance, install]
+        options: [main, local-mode, desktop, multi-instance]
         default: main
       database:
         description: Main suite database (multi-instance always uses postgres; local-mode and desktop require sqlite)

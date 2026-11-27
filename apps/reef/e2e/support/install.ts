@@ -20,12 +20,19 @@ export const INSTALL_HOSTS = {
  */
 export const INSTALL_TLS_DIRECTORY = '/run/reel-install'
 
-/** The per-run facts the host passes into the container. */
-export interface InstallSettings {
+/** The files in that folder: the CA, and the identity provider's certificate and key. */
+export const INSTALL_TLS_FILES = { ca: 'ca.pem', cert: 'idp.pem', key: 'idp.key' } as const
+
+/** The per-run secrets the host makes, before the chart is installed. */
+export interface InstallSecrets {
   /** The owner's OIDC subject, which the chart names as `bootstrap_owner_subject`. */
   ownerSubject: string
   /** The client secret, which the chart reads from its Secret. */
   clientSecret: string
+}
+
+/** The secrets, and where the container finds the TLS files. */
+export interface InstallSettings extends InstallSecrets {
   /** The CA that signs the Gateway's, the identity provider's and Postgres's certificates. */
   caFile: string
   certFile: string
@@ -43,8 +50,8 @@ export function installSettings(env: NodeJS.ProcessEnv): InstallSettings {
   return {
     ownerSubject,
     clientSecret,
-    caFile: `${INSTALL_TLS_DIRECTORY}/ca.pem`,
-    certFile: `${INSTALL_TLS_DIRECTORY}/idp.pem`,
-    keyFile: `${INSTALL_TLS_DIRECTORY}/idp.key`,
+    caFile: `${INSTALL_TLS_DIRECTORY}/${INSTALL_TLS_FILES.ca}`,
+    certFile: `${INSTALL_TLS_DIRECTORY}/${INSTALL_TLS_FILES.cert}`,
+    keyFile: `${INSTALL_TLS_DIRECTORY}/${INSTALL_TLS_FILES.key}`,
   }
 }

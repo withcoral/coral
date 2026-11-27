@@ -78,15 +78,16 @@ jobs:
               - '!apps/docs/**'
               - '!apps/desktop/**'
               - '!apps/reef/e2e/**'
-            # Desktop's macOS and Windows jobs cost the most, so they are the
-            # only ones that name their inputs. desktop.yml also runs nightly.
+            # Desktop's macOS and Windows jobs and the install suite cost the
+            # most, so they are the only ones that name their inputs.
+            # desktop.yml also runs nightly.
             desktop-app:
               - '{.github/**,apps/desktop/**}'
-            # The install suite builds a kind cluster, so it also names its
-            # inputs: the chart, what an upgrade or a client relies on
-            # (migrations and .proto files), and the suite itself.
+            # The install suite: the chart, migrations, .proto files, and Reel,
+            # whose harness it runs on, but not the other suites' scenarios.
             install:
-              - '{.github/**,charts/**,crates/coral-db/migrations/**,**/*.proto,apps/reef/e2e/install/**,apps/reef/e2e/scenarios/install/**,apps/reef/e2e/support/install.ts,apps/reef/e2e/support/oidc-fixture.ts,apps/reef/e2e/container/**}'
+              - '{.github/**,charts/**,crates/coral-db/migrations/**,**/*.proto,apps/reef/e2e/**}'
+              - '!apps/reef/e2e/scenarios/!(install)/**'
 
   rust:
     name: Rust / Checks

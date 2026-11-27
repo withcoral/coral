@@ -12,10 +12,16 @@ import { promisify } from 'node:util'
 
 import { repoRoot } from '../support/config.ts'
 import { FIXTURE_CLIENT_ID } from '../support/oidc-fixture.ts'
-import { INSTALL_HOSTS, INSTALL_TLS_DIRECTORY, type InstallSettings } from '../support/install.ts'
+import {
+  INSTALL_HOSTS,
+  INSTALL_TLS_DIRECTORY,
+  INSTALL_TLS_FILES,
+  type InstallSecrets,
+} from '../support/install.ts'
 
 // The newest Kubernetes minor the chart supports, and the components that
-// serve it. Each is pinned; bump them together with the chart's support window.
+// serve it. Each is pinned; bump them together with the chart's support window:
+// kube_versions in scripts/check-chart.sh and KUBECTL_VERSION in reel.yml.
 const KIND_NODE_IMAGE =
   'kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
 const CLOUD_PROVIDER_KIND_IMAGE =
@@ -53,8 +59,16 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
   const work = await mkdtemp(join(tmpdir(), 'reel-install-'))
   const tls = join(work, 'tls')
   const kubeconfig = join(work, 'kubeconfig')
-  const env = { ...process.env, KUBECONFIG: kubeconfig }
-  const made = { cluster: false, ccm: false }
+  // Only what kind, kubectl, Helm and Docker need: no developer settings.
+  const env = {
+    ...Object.fromEntries(
+      ['PATH', 'HOME', 'TMPDIR', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG'].flatMap((key) =>
+        process.env[key] ? [[key, process.env[key]]] : [],
+      ),
+    ),
+    KUBECONFIG: kubeconfig,
+  }
+  const made = { cluster: false, cloudProvider: false }
   const exec = async (command: string, args: string[], input?: string) => {
     if (input === undefined) return (await run(command, args, { env, maxBuffer: 1 << 26 })).stdout
     return pipe(command, args, input, env)
@@ -69,7 +83,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       if (options.keep) {
         console.log(`Reel kept the install cluster ${name}; its kubeconfig is ${kubeconfig}`)
       } else {
-        if (made.ccm) {
+        if (made.cloudProvider) {
           await run('docker', ['rm', '-f', `${name}-ccm`]).catch(() => {})
           // cloud-provider-kind's load balancers outlive it; they carry the cluster's name.
           const balancers = (
@@ -95,7 +109,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
   }
 
   try {
-    const settings = await certificates(tls)
+    const secrets = await certificates(tls)
     console.log(`Reel install: creating the kind cluster ${name}`)
     made.cluster = true
     await exec('kind', [
@@ -119,7 +133,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
     ])
     // Envoy Gateway serves the Gateway; cloud-provider-kind only gives its
     // Service an address on kind's Docker network.
-    made.ccm = true
+    made.cloudProvider = true
     await exec('docker', [
       'run',
       '--detach',
@@ -190,11 +204,11 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       'reel-ca',
       '--namespace',
       NAMESPACE,
-      `--from-file=ca.crt=${join(tls, 'ca.pem')}`,
+      `--from-file=ca.crt=${join(tls, INSTALL_TLS_FILES.ca)}`,
     ])
     // The work folder is private to this run and goes when it ends.
-    const secrets = join(work, 'coral.env')
-    await writeFile(secrets, secretEnv(settings, postgresPassword), { mode: 0o600 })
+    const secretFile = join(work, 'coral.env')
+    await writeFile(secretFile, secretEnv(secrets, postgresPassword), { mode: 0o600 })
     await kubectl([
       'create',
       'secret',
@@ -202,7 +216,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       'coral',
       '--namespace',
       NAMESPACE,
-      `--from-env-file=${secrets}`,
+      `--from-env-file=${secretFile}`,
     ])
     await kubectl([
       'rollout',
@@ -215,7 +229,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
     ])
     console.log('Reel install: installing the chart')
     const values = join(work, 'values.json')
-    await writeFile(values, JSON.stringify(chartValues(settings, options)))
+    await writeFile(values, JSON.stringify(chartValues(secrets, options)))
     await exec('helm', [
       'install',
       'coral',
@@ -229,6 +243,13 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       '15m',
     ])
     console.log(`Reel install: ready at https://${INSTALL_HOSTS.web}, through ${address}`)
+    // In a file, not on the command line, where `ps` would show the secret.
+    const containerEnv = join(work, 'container.env')
+    await writeFile(
+      containerEnv,
+      `E2E_INSTALL_OWNER_SUBJECT=${secrets.ownerSubject}\nE2E_INSTALL_CLIENT_SECRET=${secrets.clientSecret}\n`,
+      { mode: 0o600 },
+    )
     return {
       containerArgs: [
         '--network',
@@ -242,10 +263,8 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
         ]),
         '--mount',
         `type=bind,src=${tls},dst=${INSTALL_TLS_DIRECTORY},readonly`,
-        '-e',
-        `E2E_INSTALL_OWNER_SUBJECT=${settings.ownerSubject}`,
-        '-e',
-        `E2E_INSTALL_CLIENT_SECRET=${settings.clientSecret}`,
+        '--env-file',
+        containerEnv,
       ],
       stop,
     }
@@ -276,7 +295,7 @@ async function certificates(directory: string) {
     '-keyout',
     path('ca.key'),
     '-out',
-    path('ca.pem'),
+    path(INSTALL_TLS_FILES.ca),
   ])
   const leaf = async (name: string, hosts: string[]) => {
     await run('openssl', [
@@ -304,7 +323,7 @@ async function certificates(directory: string) {
       '-in',
       path(`${name}.csr`),
       '-CA',
-      path('ca.pem'),
+      path(INSTALL_TLS_FILES.ca),
       '-CAkey',
       path('ca.key'),
       '-CAcreateserial',
@@ -318,15 +337,12 @@ async function certificates(directory: string) {
   await leaf('idp', [INSTALL_HOSTS.idp])
   await leaf('postgres', [POSTGRES_HOST])
   // The container's root reads these, whoever owns them on the host.
-  await run('chmod', ['0644', ...['ca.pem', 'idp.pem', 'idp.key'].map(path)])
-  const settings: InstallSettings = {
+  await run('chmod', ['0644', ...Object.values(INSTALL_TLS_FILES).map(path)])
+  const secrets: InstallSecrets = {
     ownerSubject: `reel-${randomUUID()}`,
     clientSecret: randomBytes(32).toString('hex'),
-    caFile: path('ca.pem'),
-    certFile: path('idp.pem'),
-    keyFile: path('idp.key'),
   }
-  return settings
+  return secrets
 }
 
 function gatewayManifest() {
@@ -484,7 +500,7 @@ spec:
 }
 
 /** The chart's Secret, as an env file. */
-function secretEnv(settings: InstallSettings, postgresPassword: string) {
+function secretEnv(secrets: InstallSecrets, postgresPassword: string) {
   const { privateKey } = generateKeyPairSync('ec', {
     namedCurve: 'prime256v1',
     privateKeyEncoding: { format: 'der', type: 'pkcs8' },
@@ -494,7 +510,7 @@ function secretEnv(settings: InstallSettings, postgresPassword: string) {
     CORAL_DATABASE_URL: `postgres://postgres:${postgresPassword}@${POSTGRES_HOST}:5432/postgres?sslmode=verify-full`,
     CORAL_CREDENTIALS_KEY: randomBytes(32).toString('base64'),
     CORAL_SESSION_SIGNING_KEY: privateKey.toString('base64'),
-    CORAL_OIDC_CLIENT_SECRET: settings.clientSecret,
+    CORAL_OIDC_CLIENT_SECRET: secrets.clientSecret,
     CORAL_WEB_SESSION_SECRET: randomBytes(32).toString('hex'),
     CORAL_RUN_EXECUTOR_TOKEN: randomBytes(32).toString('hex'),
   })
@@ -504,8 +520,15 @@ function secretEnv(settings: InstallSettings, postgresPassword: string) {
 
 /** An image the cluster already holds, never pulled. */
 function localImage(reference: string) {
-  const [repository, tag] = reference.split(':')
-  return { registry: '', repository, tag, pullPolicy: 'Never' }
+  // The tag follows the last colon after the last slash: a registry may have a port.
+  const colon = reference.lastIndexOf(':')
+  if (colon <= reference.lastIndexOf('/')) throw new Error(`Name a tag for ${reference}`)
+  return {
+    registry: '',
+    repository: reference.slice(0, colon),
+    tag: reference.slice(colon + 1),
+    pullPolicy: 'Never',
+  }
 }
 
 /** Small, so the suite fits a laptop's cluster. */
@@ -513,7 +536,7 @@ function memory(size: string) {
   return { requests: { cpu: '100m', memory: size }, limits: { memory: size } }
 }
 
-function chartValues(settings: InstallSettings, options: InstallOptions) {
+function chartValues(secrets: InstallSecrets, options: InstallOptions) {
   const web = `https://${INSTALL_HOSTS.web}`
   const idp = `https://${INSTALL_HOSTS.idp}`
   return {
@@ -536,7 +559,7 @@ function chartValues(settings: InstallSettings, options: InstallOptions) {
         provider: {
           issuer: idp,
           client_id: FIXTURE_CLIENT_ID,
-          bootstrap_owner_subject: settings.ownerSubject,
+          bootstrap_owner_subject: secrets.ownerSubject,
         },
       },
       // The identity provider and the provider fixtures run in the Reel

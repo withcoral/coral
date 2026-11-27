@@ -39,7 +39,7 @@ const starting: RequestListener = (_request, response) => {
  * starts, so they come from its setup. Without these, the provider listens on
  * loopback HTTP at a free port, and makes both up.
  */
-export interface PublicIdentityProvider {
+export interface PublishedIdentityProvider {
   host: string
   certFile: string
   keyFile: string
@@ -50,7 +50,7 @@ export interface PublicIdentityProvider {
 export async function startIdentityProvider(
   coralCallback: string,
   reefOrigin: string,
-  published?: PublicIdentityProvider,
+  published?: PublishedIdentityProvider,
 ) {
   let handler = starting
   const listener: RequestListener = (request, response) => handler(request, response)

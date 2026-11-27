@@ -225,6 +225,12 @@ hops resolve the same fixture hostname as Coral; MCP streaming and cancellation
 use ordinary direct connections, without a reverse proxy, except on the
 multi-instance suite.
 
+The install suite is the exception to the first three rules. Its container
+joins kind's shared `kind` network instead of its own, trusts the install CA
+that the host mounts read-only, and its Install runs in the cluster, not in the
+container. cloud-provider-kind, which the host also starts, mounts the Docker
+socket to run the Gateway's load balancer.
+
 Cargo registry/git/target and npm build caches survive image rebuilds. Reef builds
 inside each run. The cost is a Linux build even on macOS; native builds cannot be reused. Linux
 container evidence proves the Linux Electron app, not native macOS, Windows or
@@ -267,13 +273,17 @@ scenarios. Recordings, traces, screenshots, logs and source snapshots survive fa
 runs and interruption without moving to another path. Signals stop the owned container;
 its init process reaps children. The runner removes its container and network on normal
 completion or failure. An uncatchable host kill can leave resources named
-`coral-reel-<uuid>`; its evidence remains at the printed run paths.
+`coral-reel-<uuid>`; its evidence remains at the printed run paths. An install suite run can also
+leave a kind cluster named `reel-<8 hex>`, containers named `reel-<8 hex>-ccm`
+and `kindccm-<id>` (labelled `io.x-k8s.cloud-provider-kind.cluster`), and a
+temporary folder `reel-install-*` that holds the run's CA key and Secret.
 Inspect and recover only that invocation's resources.
 Never prune unrelated work. Podman disables SELinux labeling for this test container
 rather than relabeling host artifact directories; no host CA or interface changes occur.
 
 Supported host options are `REEL_CONTAINER_ENGINE` (`docker` or `podman`),
-`REEL_SELF_CHECK=1`, and `E2E_FILM=1`. Other developer credentials, database URLs,
+`REEL_SELF_CHECK=1`, and `E2E_FILM=1`, and for the install suite
+`REEL_INSTALL_CORAL_IMAGE`, `REEL_INSTALL_WEB_IMAGE` and `REEL_KEEP_INSTALL=1`. Other developer credentials, database URLs,
 fixture settings and TLS-disable variables do not cross into the container.
 Viewer settings remain `E2E_RESULTS_PORT` and `E2E_RESULTS_ORIGIN` as described above.
 
@@ -516,6 +526,7 @@ scenarios/
     parity/
   desktop/
   multi-instance/
+  install/
 ```
 
 Group `scenarios/main/` by the product behavior being proved:
@@ -788,5 +799,6 @@ repository also uploads passing runs.
 No recordings or traces are published to Pages or a public trace viewer.
 
 CI runs the install suite, as `reel-install`, on every change to the chart, to
-migrations, to `.proto` files, to workflows or to the suite itself. It installs
+migrations, to `.proto` files, to workflows, or to Reel outside the other
+suites' scenarios. It installs
 the images that the `images` job built in the same run.
