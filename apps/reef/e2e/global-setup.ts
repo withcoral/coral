@@ -7,6 +7,8 @@ import { json, renderRun } from './support/artifacts.ts'
 import { ready, startStack } from './support/stack.ts'
 import { loopbackFixtures, type DesktopApp } from './support/config.ts'
 import { checkDesktopProfiles } from './support/desktop-profile.ts'
+import { INSTALL_HOSTS, type InstallSettings } from './support/install.ts'
+import { startIdentityProvider } from './support/oidc-fixture.ts'
 import { validateFixtureTLS } from './support/provider-fixtures.ts'
 
 export default async function setup(project: TestProject) {
@@ -17,10 +19,13 @@ export default async function setup(project: TestProject) {
   const authenticated = (config.suite === 'main' || multiInstance) && !config.probes
   // Authenticated Coral denies loopback, so the container advertises a private
   // host. Local Coral reaches loopback services, as Desktop's users run them.
-  const fixtures = authenticated ? (config.fixtures ?? loopbackFixtures) : loopbackFixtures
+  // An Install in a cluster reaches only the container's private host.
+  const fixtures =
+    authenticated || config.install ? (config.fixtures ?? loopbackFixtures) : loopbackFixtures
   const targetDir = join(config.runDir, name)
   await mkdir(targetDir, { recursive: true })
   let stack: Awaited<ReturnType<typeof startStack>> | undefined
+  let install: Awaited<ReturnType<typeof startInstallTarget>> | undefined
   let closed: Promise<void> | undefined
   const metadata: {
     name: string
@@ -34,6 +39,7 @@ export default async function setup(project: TestProject) {
     closed ??= (async () => {
       try {
         await stack?.stop()
+        await install?.close()
         if (metadata.state !== 'failed') metadata.state = 'closed'
       } catch (error) {
         metadata.state = 'failed'
@@ -56,21 +62,23 @@ export default async function setup(project: TestProject) {
     // Each Desktop scenario launches its own app, which chooses its origin.
     const target = config.desktop
       ? { name: 'desktop' as const, baseURL: '' }
-      : config.attached
-        ? { name: 'attached-local' as const, baseURL: config.attached.replace(/\/$/, '') }
-        : (stack = await startStack({
-            ...config,
-            // State is already private per stack; logs must also stay target-owned.
-            runDir: targetDir,
-            authenticated,
-            // Product fixtures are explicitly trusted; ordinary stack builders
-            // keep deny/deny so independent default-policy tests stay meaningful.
-            privateNetworkAccess: authenticated ? 'http-and-https' : undefined,
-            postgresURL: config.postgresURL,
-            fixtures,
-            probes: config.probes,
-            multiInstance,
-          })).target
+      : config.install
+        ? (install = await startInstallTarget(config.install)).target
+        : config.attached
+          ? { name: 'attached-local' as const, baseURL: config.attached.replace(/\/$/, '') }
+          : (stack = await startStack({
+              ...config,
+              // State is already private per stack; logs must also stay target-owned.
+              runDir: targetDir,
+              authenticated,
+              // Product fixtures are explicitly trusted; ordinary stack builders
+              // keep deny/deny so independent default-policy tests stay meaningful.
+              privateNetworkAccess: authenticated ? 'http-and-https' : undefined,
+              postgresURL: config.postgresURL,
+              fixtures,
+              probes: config.probes,
+              multiInstance,
+            })).target
     if (config.attached) await ready(target.baseURL)
     metadata.state = 'ready'
     metadata.pids = stack?.pids.filter((pid) => pid !== undefined) ?? []
@@ -94,6 +102,35 @@ export default async function setup(project: TestProject) {
     } catch (cleanup) {
       console.warn(cleanup)
     }
+    throw error
+  }
+}
+
+/**
+ * The Install that install/cluster.ts set up before this container started,
+ * and the identity provider it trusts, which runs here.
+ */
+async function startInstallTarget(settings: InstallSettings) {
+  const web = `https://${INSTALL_HOSTS.web}`
+  const auth = `https://${INSTALL_HOSTS.auth}`
+  const idp = await startIdentityProvider(`${auth}/auth/oidc/callback`, web, {
+    host: INSTALL_HOSTS.idp,
+    ...settings,
+  })
+  try {
+    await ready(web)
+    return {
+      target: {
+        name: 'install' as const,
+        baseURL: web,
+        mcpURL: `https://${INSTALL_HOSTS.mcp}`,
+        publicOrigins: [web, auth, `https://${INSTALL_HOSTS.mcp}`],
+        authentication: { issuerURL: auth, oidcURL: idp.origin, owner: idp.owner },
+      },
+      close: idp.close,
+    }
+  } catch (error) {
+    await idp.close()
     throw error
   }
 }

@@ -3,7 +3,13 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { bootstrapConfig, commandOptions, repoRoot } from '../support/config.ts'
+import { startInstall, type Install } from '../install/cluster.ts'
+import {
+  bootstrapConfig,
+  commandOptions,
+  reelProvisionsDatabase,
+  repoRoot,
+} from '../support/config.ts'
 
 const args = process.argv.slice(2)
 const options = commandOptions(args)
@@ -31,6 +37,7 @@ let child: ReturnType<typeof spawn> | undefined
 let interrupted = false
 let imageBuilt = false
 let networkCreated = false
+let install: Install | undefined
 const stop = () => {
   interrupted = true
   child?.kill('SIGTERM')
@@ -88,19 +95,30 @@ try {
   ])
   imageBuilt = true
   const image = (await readFile(join(scratch, 'image'), 'utf8')).trim()
-  await run(['network', 'create', name])
-  networkCreated = true
   for (const directory of artifacts) {
     await mkdir(directory, { recursive: true })
     console.log(`Reel host evidence: ${directory}`)
+  }
+  // The install suite's container joins kind's network instead of its own.
+  if (options.suite === 'install') {
+    if (engine !== 'docker') throw new Error('The install suite runs kind, which needs Docker')
+    install = await startInstall({
+      // Built from this checkout: make docker-build reef-docker-build.
+      coralImage: process.env.REEL_INSTALL_CORAL_IMAGE || 'coral:local',
+      webImage: process.env.REEL_INSTALL_WEB_IMAGE || 'coral-web:local',
+      keep: process.env.REEL_KEEP_INSTALL === '1',
+      evidence: join(artifacts[0], 'install', 'cluster'),
+    })
+  } else {
+    await run(['network', 'create', name])
+    networkCreated = true
   }
   await run([
     'run',
     '--rm',
     '--name',
     name,
-    '--network',
-    name,
+    ...(install?.containerArgs ?? ['--network', name]),
     '--network-alias',
     'sidecar',
     '--shm-size',
@@ -122,7 +140,8 @@ try {
     '-e',
     `REEL_SELF_CHECK=${process.env.REEL_SELF_CHECK === '1' ? '1' : '0'}`,
     '-e',
-    `REEL_DATABASE=${options.database}`,
+    // The install suite's cluster brings its own Postgres.
+    `REEL_DATABASE=${reelProvisionsDatabase(options.suite) ? options.database : 'none'}`,
     '-e',
     `E2E_SOURCE_COMMIT=${sha}`,
     '-e',
@@ -134,6 +153,12 @@ try {
   console.error(error instanceof Error ? error.message : 'Reel container failed')
   process.exitCode = 1
 } finally {
+  try {
+    await install?.stop()
+  } catch (error) {
+    console.error(`Reel install cleanup failed: ${String(error)}`)
+    process.exitCode = 1
+  }
   for (const commandArgs of [
     ['rm', '-f', name],
     // The build cache keeps the layers, so the next build stays fast.
