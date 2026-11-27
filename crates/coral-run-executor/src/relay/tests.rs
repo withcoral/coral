@@ -8,19 +8,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_db::{Database, DatabaseSystem};
+use coral_telemetry::testing::{MetricCapture, process_spans};
 use coral_test_support::TestDatabase;
+use opentelemetry::trace::Status;
 use tokio::task::JoinHandle;
+use tracing::Instrument as _;
 
 use super::CompileRelay;
+use crate::compile_trace::tests::{RUN_EXECUTOR, compile_span_under, run_executor_fields, traced};
 use crate::pull::tests::{
-    Sent, busy_stream as open_busy, compiled, dialed_stream as open, fill_compile, in_line, up,
+    answer, busy_stream as open_busy, compile_42, compiled, dialed_stream as open, fill_compile,
+    in_line, next_compile, up,
 };
 use crate::relay_repository::{Take, count, take_oldest};
-use crate::wire::v1::{PullResponse, pull_response};
-use crate::{
-    BuiltinTools, CompileError, CompilerClient, PullStreamCompiler, PullStreams, StreamId,
-    Unavailable,
-};
+use crate::{CompileError, CompilerClient, PullStreamCompiler, PullStreams, Unavailable};
 
 /// One Coral Instance: its pull streams, its compiler client, and its
 /// pickup, stopped when it drops.
@@ -97,39 +98,13 @@ async fn instances_answering<const N: usize>(
     (requester, others)
 }
 
-/// The number of the next `Compile` sent on `stream`.
-async fn next_compile(sent: &mut Sent) -> u64 {
-    let next = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
-    let Ok(Some(Ok(PullResponse {
-        message: Some(pull_response::Message::Compile(compile)),
-    }))) = next
-    else {
-        panic!("a Compile within 5 s");
-    };
-    compile.number
-}
-
-/// Answers the next `Compile` sent on `stream` with the package `42`.
-async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent) {
-    let number = next_compile(sent).await;
-    streams
-        .receive(stream, up(compiled(number)))
-        .expect("the answer");
-}
-
 /// Compiles `return 42;` on `compiler` within `time_left`.
 fn compiling(
     compiler: &PullStreamCompiler,
     time_left: Duration,
 ) -> JoinHandle<Result<String, CompileError>> {
     let compiler = compiler.clone();
-    tokio::spawn(async move {
-        let builtin_tools = BuiltinTools::default();
-        let program = compiler
-            .compile(time_left, "return 42;", &[], &builtin_tools, None)
-            .await?;
-        Ok(program.javascript().to_owned())
-    })
+    tokio::spawn(async move { compile_42(&compiler, time_left).await })
 }
 
 /// Waits until `rows` rows are waiting, looking again on each change
@@ -310,6 +285,55 @@ async fn a_row_written_while_no_run_executor_is_linked_is_served_once_one_dials_
     answer(&server.streams, stream, &mut sent).await;
     assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(count(&database.database()).await.unwrap(), 0);
+}
+
+// Catches: a relayed compile whose span does not name the Run Executor
+// that took it on another Coral Instance, or does not say it was relayed.
+#[tokio::test]
+async fn a_relayed_compile_is_one_span_that_names_the_run_executor_that_took_it() {
+    process_spans();
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = server.streams.scripted(RUN_EXECUTOR, 0);
+
+    let request = tracing::info_span!("a request that compiles through the relay");
+    let compiling = tokio::spawn(traced(requester.compiler.clone()).instrument(request));
+    answer(&server.streams, stream, &mut sent).await;
+    assert_eq!(compiling.await.unwrap().as_deref(), Ok("42"));
+
+    let span = compile_span_under("a request that compiles through the relay");
+    assert_eq!(
+        run_executor_fields(&span),
+        [
+            Some(RUN_EXECUTOR.into()),
+            Some("dialed".into()),
+            Some("true".into())
+        ]
+    );
+    assert_eq!(span.status, Status::Unset);
+}
+
+// Catches: a relayed call left uncounted, or a probe for room counted as a
+// relayed compile.
+#[tokio::test]
+async fn each_row_with_a_call_counts_one_relayed_compile_and_a_probe_none() {
+    let metrics = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let relayed = || metrics.values("coral.compile.relayed").iter().sum::<f64>();
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = open(&server.streams, 0);
+    let before = relayed();
+
+    let ready = readying(&requester.compiler);
+    assert_eq!(ready.await.unwrap().map(|held| held.is_some()), Ok(false));
+    assert_eq!(relayed() - before, 0.0, "a probe relays no compile");
+    for _ in 0..2 {
+        let call = compiling(&requester.compiler, Duration::from_secs(5));
+        answer(&server.streams, stream, &mut sent).await;
+        assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
+    }
+    assert_eq!(relayed() - before, 2.0, "one for each row with a call");
 }
 
 /// The requester, and another Coral Instance whose pickup holds a unit for

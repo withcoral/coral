@@ -20,6 +20,7 @@ use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
 use tonic::{Code, Request, Response, Status, Streaming};
 
+use crate::compile_trace::ServedBy;
 use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::link::{KEEPALIVE, Token};
 use crate::relay::CompileRelay;
@@ -100,6 +101,13 @@ impl Kind {
             Self::Local => "local",
             Self::Dialed => "dialed",
         }
+    }
+
+    /// The kind a row records, or `None` for text no release writes.
+    pub(crate) fn from_storage_str(stored: &str) -> Option<Self> {
+        [Self::Local, Self::Dialed]
+            .into_iter()
+            .find(|kind| kind.as_storage_str() == stored)
     }
 }
 
@@ -561,6 +569,17 @@ impl PullStreams {
         Err(CompileTurn {
             streams: self.clone(),
             handed: Some(handed),
+        })
+    }
+
+    /// The Run Executor of `stream`, closing or not, while this Coral
+    /// Instance holds it and its id is a UUID, as a `Hello` must give.
+    pub(crate) fn served_by(&self, stream: StreamId) -> Option<ServedBy> {
+        let held = lock(&self.held);
+        let held = held.get(&stream)?;
+        Some(ServedBy {
+            run_executor_id: uuid::Uuid::try_parse(&held.view.run_executor_id).ok()?,
+            kind: held.view.kind,
         })
     }
 

@@ -42,6 +42,8 @@ rustix = { workspace = true, features = ["process"] }
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber.workspace = true

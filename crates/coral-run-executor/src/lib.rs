@@ -17,6 +17,7 @@
 //! [`LocalRunExecutors`] starts the Run Executors that run as Coral's own
 //! child processes.
 
+mod compile_trace;
 mod compile_wire;
 mod compiler;
 mod in_process;
@@ -33,6 +34,7 @@ mod served;
 pub mod testing;
 mod time;
 
+pub use compile_trace::traced_compile;
 pub use compile_wire::ProtocolError;
 pub use compile_wire::package_sha256;
 pub use compiler::{

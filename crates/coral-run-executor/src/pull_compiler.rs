@@ -253,6 +253,7 @@ impl PullStreamCompiler {
         let mut on_held = held_for_it.and_then(|stream| {
             self.streams
                 .compile_held(stream, millis(left()), call.clone())
+                .inspect(|_| self.sent_on(stream))
                 .ok()
         });
         let lost_its_unit = held_for_it.is_some() && on_held.is_none();
@@ -338,7 +339,10 @@ impl PullStreamCompiler {
                 self.streams.compile(stream, millis(left), call.clone())
             };
             match sent {
-                Ok(answer) => return Ok(Routed::Stream(answer)),
+                Ok(answer) => {
+                    self.sent_on(stream);
+                    return Ok(Routed::Stream(answer));
+                }
                 // Its stream is ending: look again, at the front.
                 Err(Refused::NoRoom | Refused::Closed)
                     if matches!(self.target, Target::MostRoom { .. }) =>
@@ -357,6 +361,14 @@ impl PullStreamCompiler {
 }
 
 impl PullStreamCompiler {
+    /// Names the Run Executor of `stream`, which took a call, on the
+    /// compile's span.
+    fn sent_on(&self, stream: StreamId) {
+        if let Some(served) = self.streams.served_by(stream) {
+            served.record(false);
+        }
+    }
+
     /// A client whose first call spends the unit of `stream`'s compile room
     /// held for it.
     fn holding(&self, stream: StreamId) -> Arc<dyn CompilerClient> {

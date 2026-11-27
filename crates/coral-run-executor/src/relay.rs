@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_db::{ChangeSubscription, Database, UnixNanos};
-use coral_telemetry::safe;
+use coral_telemetry::{metric, safe};
 use tokio::time::Instant;
 
 use crate::compile_wire::{ProtocolError, Read, Takes};
@@ -154,10 +154,13 @@ impl CompileRelay {
             }
             Waited::Unanswered { taken: true } => Err(STOPPED),
             Waited::Answered {
-                answer: Ok(Answered::Call(answer)),
+                answer: Ok(Answered::Call { answer, served_by }),
                 ..
             } => {
-                let read = Read::answer(answer)?;
+                if let Some(served_by) = served_by {
+                    served_by.record(true);
+                }
+                let read = Read::answer(*answer)?;
                 if !read.answers(Takes::of(call)) {
                     return Err(ProtocolError.into());
                 }
@@ -422,28 +425,33 @@ impl CompileRelay {
         let until = before(deadline, self.answer_reserve);
         let left = until.saturating_duration_since(unix_now());
         let time_left_ms = millis(left);
-        let sent = match via {
-            Via::Free(stream) => streams.compile(stream, time_left_ms, call),
+        let (stream, sent) = match via {
+            Via::Free(stream) => (stream, streams.compile(stream, time_left_ms, call)),
             Via::Held(stream) => {
                 let fallback = streams.most_compile_room().map(|free| (free, call.clone()));
                 match (streams.compile_held(stream, time_left_ms, call), fallback) {
                     (Err(Refused::NoRoom | Refused::Closed), Some((free, call))) => {
-                        streams.compile(free, time_left_ms, call)
+                        (free, streams.compile(free, time_left_ms, call))
                     }
-                    (sent, _) => sent,
+                    (sent, _) => (stream, sent),
                 }
             }
         };
         match sent {
             Ok(answered) => {
                 let relay = self.clone();
+                let served_by = streams.served_by(stream);
                 tokio::spawn(async move {
                     let read = match tokio::time::timeout(left, answered).await {
                         Ok(Ok(read)) => read,
                         Ok(Err(_closed)) => Read::Failure(STOPPED),
                         Err(_elapsed) => Read::Failure(CompileError::TimedOut),
                     };
-                    relay.answer(&id, Answered::Call(read.into_answer())).await;
+                    let answered = Answered::Call {
+                        answer: Box::new(read.into_answer()),
+                        served_by,
+                    };
+                    relay.answer(&id, answered).await;
                 });
             }
             Err(Refused::NoRoom | Refused::Closed) => self.release(&id).await,
@@ -453,10 +461,16 @@ impl CompileRelay {
         }
     }
 
+    /// Writes `row`, and counts it once committed unless it is a probe.
     async fn request(&self, row: NewRequest<'_>) -> Result<(), coral_db::Error> {
+        let relays_a_call = row.call.is_some();
         let mut transaction = self.database.begin().await?;
         rows::request(&mut transaction, row).await?;
-        transaction.commit().await
+        transaction.commit().await?;
+        if relays_a_call {
+            metric::compile_relayed();
+        }
+        Ok(())
     }
 
     /// Deletes the rows left over past their deadline and [`ORPHAN_GRACE`],
@@ -720,7 +734,10 @@ fn orphaned_before(now: UnixNanos) -> UnixNanos {
 }
 
 fn failed(error: CompileError) -> Answered {
-    Answered::Call(Read::Failure(error).into_answer())
+    Answered::Call {
+        answer: Box::new(Read::Failure(error).into_answer()),
+        served_by: None,
+    }
 }
 
 /// Waits for a change signal for at most `wait`. Without a subscription,
