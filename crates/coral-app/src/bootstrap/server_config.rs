@@ -1537,11 +1537,11 @@ pub(super) mod tests {
         let Err(error) = validated(&raw) else {
             panic!("a launch that adds no mode refuses `mode = 'test'`");
         };
-        assert_eq!(
-            error.to_string(),
-            "failed precondition: invalid auth configuration: auth.provider.mode: this build \
-             has no sign-in mode \
-             `test`. The modes of this build: `oidc`"
+        // The refusal's wording is the auth module's, and its tests own it.
+        assert!(
+            matches!(&error, AppError::Auth(_))
+                && error.to_string().contains("auth.provider.mode: "),
+            "{error}"
         );
     }
 

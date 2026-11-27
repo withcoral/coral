@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-Coral-Enterprise
 
-//! SAML Sign-in: the sign-in mode `saml`, which signs people in by SAML 2.0
-//! in place of OIDC.
+//! SAML Sign-in: the sign-in mode `saml`, in place of OIDC. It begins a
+//! sign-in by SAML 2.0 and serves Coral's metadata. It reads no response
+//! yet, so it signs no one in.
 //!
 //! [`SamlModeFactory`] builds the mode from `[auth.provider]` with
 //! `mode = "saml"`. The mode is the Enterprise Feature [`SAML_SIGN_IN`]: it
 //! asks the Edition at each sign-in, and while the Edition is Community it
 //! ends the sign-in before the browser leaves Coral, with
-//! `saml_needs_enterprise`. Nothing is deleted, and a License makes sign-in
-//! work again.
+//! `saml_needs_enterprise`. Nothing is deleted, and with a License the
+//! sign-in begins.
 //!
 //! A sign-in begins with an unsigned `AuthnRequest` sent by the
 //! HTTP-Redirect binding, with no `RelayState`, whose ID is `_` and the

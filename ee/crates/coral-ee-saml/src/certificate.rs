@@ -53,20 +53,27 @@ const ENDS_SOON: Duration = Duration::from_hours(24 * 30);
 /// Logs one warning at startup, at `now`, for each of `certificates` that is
 /// past its last instant or ends within 30 days. Neither stops the start: a
 /// response signed with a certificate past its last instant is refused when
-/// it arrives.
+/// it arrives. Each message names the entry itself, since no server log
+/// layer shows a `coral.local.*` field; the settings hold one or two. The
+/// four messages are literal, as the telemetry source scan requires.
 pub(crate) fn warn_at_start(certificates: &[Certificate], now: UnixNanos) {
     for (index, certificate) in certificates.iter().enumerate() {
-        let entry = format!("certificates[{index}]");
-        if now > certificate.last_instant {
-            tracing::warn!(
-                coral.local.certificate = %entry,
-                "a SAML signing certificate is past its last day, so each response it signs is refused"
-            );
-        } else if certificate.last_instant.saturating_duration_since(now) <= ENDS_SOON {
-            tracing::warn!(
-                coral.local.certificate = %entry,
-                "a SAML signing certificate ends within 30 days"
-            );
+        let ended = now > certificate.last_instant;
+        let ends_soon = certificate.last_instant.saturating_duration_since(now) <= ENDS_SOON;
+        match (index == 0, ended, ends_soon) {
+            (true, true, _) => tracing::warn!(
+                "the first SAML signing certificate in auth.provider.certificates is past its last day, so each response it signs is refused"
+            ),
+            (true, false, true) => tracing::warn!(
+                "the first SAML signing certificate in auth.provider.certificates ends within 30 days"
+            ),
+            (false, true, _) => tracing::warn!(
+                "the second SAML signing certificate in auth.provider.certificates is past its last day, so each response it signs is refused"
+            ),
+            (false, false, true) => tracing::warn!(
+                "the second SAML signing certificate in auth.provider.certificates ends within 30 days"
+            ),
+            (_, false, false) => {}
         }
     }
 }

@@ -1650,6 +1650,41 @@ mod tests {
         }
     }
 
+    /// Coral's URL is `https`, or `http` on a loopback host only, whatever
+    /// the sign-in mode.
+    #[test]
+    fn refuses_an_http_public_url_off_loopback() {
+        let at = |public_url: &str| {
+            valid("").replace(
+                "public_url = 'http://localhost:9080/'",
+                &format!("public_url = '{public_url}'"),
+            )
+        };
+        let refusal = "invalid auth configuration: listeners.auth.public_url is invalid: \
+                       configured endpoint must use HTTPS or explicit loopback HTTP";
+        assert_eq!(reject(&at("http://auth.example.test/")), refusal);
+        // A registered mode gets no say: core refuses before it builds one.
+        let registered = at("http://auth.example.test/").replace(
+            "issuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\n\
+             client_secret = 'provider-secret'\n",
+            "mode = 'test'\nsign_in_url = 'https://idp.example.test/start'\n",
+        );
+        assert!(registered.contains("mode = 'test'"), "{registered}");
+        let Err(error) = auth_settings_with(&registered, &test_modes()) else {
+            panic!("the test mode starts behind an http public URL");
+        };
+        assert_eq!(error, refusal);
+        for public_url in [
+            "https://auth.example.test/",
+            "http://127.0.0.1:9080/",
+            "http://[::1]:9080/",
+        ] {
+            if let Err(error) = auth_settings(&at(public_url)) {
+                panic!("{public_url}: {error}");
+            }
+        }
+    }
+
     #[test]
     fn resolves_session_key_sources_after_parsing() {
         let temp = tempfile::tempdir().expect("tempdir");

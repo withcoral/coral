@@ -405,35 +405,22 @@ fn serves_the_metadata_document() {
     }
 }
 
-/// What a `fmt` layer writes: the host's own log, with the fields that
-/// never leave it.
-#[derive(Clone, Default)]
-struct HostLog(Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for HostLog {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .map_err(|_poisoned| std::io::Error::other("the host log is poisoned"))?
-            .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// At startup the mode warns once for each certificate past its last
-/// instant and for each that ends within 30 days, naming the entry on the
-/// host only, and for no other. A warning never stops the start: `started`
-/// returns nothing to stop it with.
+/// instant and for each that ends within 30 days, naming the entry in the
+/// exported message, and for no other. A warning never stops the start:
+/// `started` returns nothing to stop it with.
 #[test]
 fn warns_at_start_by_last_day() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    const PAST: &str = "a SAML signing certificate is past its last day";
-    const ENDING: &str = "a SAML signing certificate ends within 30 days";
+    const FIRST_PAST: &str = "the first SAML signing certificate in auth.provider.certificates \
+                              is past its last day, so each response it signs is refused";
+    const FIRST_ENDING: &str =
+        "the first SAML signing certificate in auth.provider.certificates ends within 30 days";
+    const SECOND_ENDING: &str =
+        "the second SAML signing certificate in auth.provider.certificates ends within 30 days";
+    const SECOND_PAST: &str = "the second SAML signing certificate in auth.provider.certificates \
+                               is past its last day, so each response it signs is refused";
     let pem = certificate_ending(2030, 6, 15);
     let later = certificate_ending(2031, 6, 15);
     let last = day_start(2030, 6, 15);
@@ -450,59 +437,46 @@ fn warns_at_start_by_last_day() {
         (
             before(last, thirty_days),
             vec![pem.clone()],
-            vec![(ENDING, 0)],
+            vec![FIRST_ENDING],
         ),
-        (last, vec![pem.clone()], vec![(ENDING, 0)]),
-        (after(last, nanosecond), vec![pem.clone()], vec![(PAST, 0)]),
+        (last, vec![pem.clone()], vec![FIRST_ENDING]),
+        (after(last, nanosecond), vec![pem.clone()], vec![FIRST_PAST]),
         (
             after(last, nanosecond),
             vec![pem.clone(), later.clone()],
-            vec![(PAST, 0)],
+            vec![FIRST_PAST],
         ),
         (
             before(day_start(2031, 6, 15), thirty_days),
             vec![pem.clone(), later.clone()],
-            vec![(PAST, 0), (ENDING, 1)],
+            vec![FIRST_PAST, SECOND_ENDING],
+        ),
+        (
+            before(day_start(2031, 6, 15), thirty_days),
+            vec![later.clone(), pem.clone()],
+            vec![FIRST_ENDING, SECOND_PAST],
         ),
     ] {
         let clock = ManualClock::starting_at(now);
         let mode = build(&settings_toml(&certificates, ""), enterprise()).expect("the mode");
         let exported = coral_telemetry::testing::ExportCapture::default();
-        let host = HostLog::default();
         {
-            let writer = host.clone();
             let _subscriber = tracing::subscriber::set_default(
-                tracing_subscriber::registry()
-                    .with(exported.log_layer())
-                    .with(
-                        tracing_subscriber::fmt::layer()
-                            .with_ansi(false)
-                            .with_writer(move || writer.clone()),
-                    ),
+                tracing_subscriber::registry().with(exported.log_layer()),
             );
             mode.started(clock.now());
         }
-        let host = String::from_utf8(host.0.lock().expect("the host log").clone()).expect("text");
-        let lines: Vec<&str> = host.lines().collect();
-        assert_eq!(lines.len(), warnings.len(), "{now:?}: {host}");
-        for (message, entry) in &warnings {
-            let entry = format!("coral.local.certificate=certificates[{entry}]");
-            assert_eq!(
-                lines
-                    .iter()
-                    .filter(|line| line.contains(message) && line.contains(&entry))
-                    .count(),
-                1,
-                "{now:?}: {message} {entry}: {host}"
-            );
-        }
         let records = exported.log_records();
         assert_eq!(records.len(), warnings.len(), "{now:?}: {records:?}");
-        assert!(
-            records
-                .iter()
-                .all(|record| !record.contains("certificates[")),
-            "the entry never leaves the host: {records:?}"
-        );
+        for warning in warnings {
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.contains(warning) && record.contains("Warn"))
+                    .count(),
+                1,
+                "{now:?}: {warning}: {records:?}"
+            );
+        }
     }
 }
