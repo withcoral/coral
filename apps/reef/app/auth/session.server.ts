@@ -287,16 +287,28 @@ async function retryPendingSignOuts(
   }
 }
 
-/** Whether Coral answered that the session is ended. */
+/**
+ * How long Reef waits for Coral to end a session. A later answer counts as
+ * none, so the session joins the pending sign-outs. Coral answers a repeated
+ * end as it answers the first.
+ */
+const END_AT_CORAL_TIMEOUT_MS = 2000
+
+/** Whether Coral answered in time that the session is ended. */
 async function endAtCoral(session: StoredWebSession, config: RequiredAuthConfig): Promise<boolean> {
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(), END_AT_CORAL_TIMEOUT_MS)
   try {
-    const response = await postSessionForm(`${session.endpoint}/end`, {
-      client_id: authClientId(config),
-      session: session.handle,
-    })
+    const response = await postSessionForm(
+      `${session.endpoint}/end`,
+      { client_id: authClientId(config), session: session.handle },
+      timeout.signal,
+    )
     return response.status === 200
   } catch {
     return false
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -306,13 +318,18 @@ interface SessionTokenResponse {
   session_expires_in?: unknown
 }
 
-async function postSessionForm(url: string, form: Record<string, string>): Promise<Response> {
+async function postSessionForm(
+  url: string,
+  form: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<Response> {
   try {
     return await fetch(url, {
       body: new URLSearchParams(form),
       headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
       method: 'POST',
       redirect: 'manual',
+      signal,
     })
   } catch {
     throw sessionUnavailable()

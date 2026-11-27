@@ -25,8 +25,8 @@ const endEndpoint = `${metadata.coral_web_session_endpoint}/end`
 // Serves discovery, then answers the token exchange with `token`.
 const fetch = vi.fn<typeof globalThis.fetch>()
 let token: () => Promise<Response>
-/** How Coral answers ending a session. */
-let endAnswer: number
+/** How Coral answers ending a session: a status, or no answer at all. */
+let endAnswer: number | 'none'
 
 describe('auth callback route', () => {
   beforeEach(() => {
@@ -34,18 +34,27 @@ describe('auth callback route', () => {
       Response.json({ access_token: 'opaque', expires_in: 3600, refresh_token: 'coral_rt_r' })
     endAnswer = 200
     fetch.mockReset()
-    fetch.mockImplementation(async (input) => {
+    fetch.mockImplementation(async (input, init) => {
       if (String(input) === metadata.token_endpoint) return token()
       if (String(input) === metadata.coral_web_session_endpoint) {
         return Response.json({ expires_in: 3600, session: 'coral_ws_handle' }, { status: 201 })
       }
-      if (String(input) === endEndpoint) return new Response(null, { status: endAnswer })
+      if (String(input) === endEndpoint) {
+        if (endAnswer !== 'none') return new Response(null, { status: endAnswer })
+        // Coral never answers: the request ends only when Reef stops waiting.
+        return new Promise((_, reject) =>
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)),
+        )
+      }
       return Response.json(metadata)
     })
     vi.stubGlobal('fetch', fetch)
   })
 
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
 
   it('is unavailable when local or desktop auth is disabled', async () => {
     const request = await callbackRequest()
@@ -85,14 +94,21 @@ describe('auth callback route', () => {
   })
 
   // One rule for every sign-in over a session, also when the same person signs in.
+  // Reef waits 2 seconds for Coral's answer.
   it.each([
     [200, false],
     [503, true],
-  ])(
-    'ends the session a sign-in replaces at Coral; Coral answering %i keeps it to finish: %s',
-    async (status, pending) => {
-      endAnswer = status
-      const response = await loader(hostedArgs(await callbackRequest({ replaced: true })))
+    ['none', true],
+  ] as const)(
+    'ends the session a sign-in replaces at Coral; Coral answering %s keeps it to finish: %s',
+    async (answer, pending) => {
+      endAnswer = answer
+      const request = await callbackRequest({ replaced: true })
+      vi.useFakeTimers()
+      const loaded = loader(hostedArgs(request))
+      await vi.waitFor(() => expect(endedHandles()).toHaveLength(1))
+      await vi.advanceTimersByTimeAsync(2000)
+      const response = await loaded
 
       expect(response.status).toBe(302)
       expect(endedHandles()).toEqual(['coral_ws_replaced'])
