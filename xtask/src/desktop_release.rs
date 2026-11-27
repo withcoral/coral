@@ -17,6 +17,9 @@ use crate::release::{
 
 const DESKTOP_DIR: &str = "apps/desktop";
 
+/// The Helm chart, whose version and appVersion are Coral's.
+const CHART_YAML: &str = "charts/coral/Chart.yaml";
+
 /// The macOS app in electron-builder's output directory.
 const MAC_APP: &str = "mac-arm64/Coral.app";
 
@@ -27,10 +30,11 @@ pub(crate) struct CheckVersionArgs {
     tag: String,
 }
 
-/// Fails unless the tag, the runtime and Desktop name one version.
+/// Fails unless the tag, the runtime, Desktop and the Helm chart name one
+/// version.
 pub(crate) fn check_version(args: &CheckVersionArgs) -> Result<bool> {
     let version = workspace_release_version(&args.tag)?;
-    println!("Release {version}: the tag, the runtime and Desktop agree");
+    println!("Release {version}: the tag, the runtime, Desktop and the chart agree");
     Ok(true)
 }
 
@@ -429,7 +433,8 @@ fn workspace_release_version(tag: &str) -> Result<String> {
     let cargo = fs::read_to_string("Cargo.toml").context("reading Cargo.toml")?;
     let desktop = fs::read_to_string(Path::new(DESKTOP_DIR).join("package.json"))
         .context("reading apps/desktop/package.json")?;
-    release_version(tag, &cargo, &desktop)
+    let chart = fs::read_to_string(CHART_YAML).context("reading charts/coral/Chart.yaml")?;
+    release_version(tag, &cargo, &desktop, &chart)
 }
 
 /// A platform that Desktop releases for, with the feed electron-updater reads
@@ -551,10 +556,16 @@ fn verify_feed(dir: &Path, platform: DesktopPlatform, version: &str) -> Result<V
     Ok(assets)
 }
 
-/// Returns the release version once the tag, the Rust workspace and Desktop
-/// all name it. release-please moves them together; a tag cut by hand on a
-/// commit it never bumped would publish a feed that names the wrong version.
-fn release_version(tag: &str, cargo_toml: &str, package_json: &str) -> Result<String> {
+/// Returns the release version once the tag, the Rust workspace, Desktop and
+/// the Helm chart all name it. release-please moves them together; a tag cut
+/// by hand on a commit it never bumped would publish a feed, or a chart, that
+/// names the wrong version.
+fn release_version(
+    tag: &str,
+    cargo_toml: &str,
+    package_json: &str,
+    chart_yaml: &str,
+) -> Result<String> {
     let cargo: toml::Table = toml::from_str(cargo_toml).context("parsing Cargo.toml")?;
     let runtime = cargo
         .get("workspace")
@@ -568,16 +579,31 @@ fn release_version(tag: &str, cargo_toml: &str, package_json: &str) -> Result<St
         .get("version")
         .and_then(Value::as_str)
         .context("apps/desktop/package.json has no version")?;
+    let chart: ChartVersions =
+        serde_yaml::from_str(chart_yaml).context("parsing charts/coral/Chart.yaml")?;
 
     let Some(version) = tag.strip_prefix('v') else {
         bail!("release tag {tag} must start with v");
     };
-    if runtime != version || desktop != version {
+    if [runtime, desktop, &chart.version, &chart.app_version]
+        .iter()
+        .any(|named| *named != version)
+    {
         bail!(
-            "release tag {tag} needs runtime and Desktop at {version}; they are {runtime} and {desktop}"
+            "release tag {tag} needs the runtime, Desktop and the chart at {version}; they are runtime {runtime}, Desktop {desktop}, chart {} and chart appVersion {}",
+            chart.version,
+            chart.app_version
         );
     }
     Ok(version.to_owned())
+}
+
+/// The versions in the chart's `Chart.yaml`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChartVersions {
+    version: String,
+    app_version: String,
 }
 
 /// The 0.x app polls this repository's releases. A v1 feed there would
@@ -899,22 +925,73 @@ mod tests {
         format!(r#"{{"name": "@withcoral/desktop", "version": "{version}"}}"#)
     }
 
+    fn chart(version: &str, app_version: &str) -> String {
+        format!(
+            "apiVersion: v2\nname: coral\nversion: {version} # x-release-please-version\nappVersion: \"{app_version}\" # x-release-please-version\n"
+        )
+    }
+
     #[test]
-    fn release_version_requires_tag_runtime_and_desktop_to_agree() {
+    fn release_version_requires_tag_runtime_desktop_and_chart_to_agree() {
+        // (tag, runtime, Desktop, chart version, chart appVersion, expected)
         let cases = [
-            ("v1.2.0", "1.2.0", "1.2.0", Ok("1.2.0")),
+            ("v1.2.0", "1.2.0", "1.2.0", "1.2.0", "1.2.0", Ok("1.2.0")),
             (
                 "v1.2.0-beta.1",
                 "1.2.0-beta.1",
                 "1.2.0-beta.1",
+                "1.2.0-beta.1",
+                "1.2.0-beta.1",
                 Ok("1.2.0-beta.1"),
             ),
-            ("1.2.0", "1.2.0", "1.2.0", Err("must start with v")),
-            ("v1.2.0", "1.1.0", "1.2.0", Err("they are 1.1.0 and 1.2.0")),
-            ("v1.2.0", "1.2.0", "1.1.0", Err("they are 1.2.0 and 1.1.0")),
+            (
+                "1.2.0",
+                "1.2.0",
+                "1.2.0",
+                "1.2.0",
+                "1.2.0",
+                Err("must start with v"),
+            ),
+            (
+                "v1.2.0",
+                "1.1.0",
+                "1.2.0",
+                "1.2.0",
+                "1.2.0",
+                Err("runtime 1.1.0"),
+            ),
+            (
+                "v1.2.0",
+                "1.2.0",
+                "1.1.0",
+                "1.2.0",
+                "1.2.0",
+                Err("Desktop 1.1.0"),
+            ),
+            (
+                "v1.2.0",
+                "1.2.0",
+                "1.2.0",
+                "1.1.0",
+                "1.2.0",
+                Err("chart 1.1.0"),
+            ),
+            (
+                "v1.2.0",
+                "1.2.0",
+                "1.2.0",
+                "1.2.0",
+                "1.1.0",
+                Err("chart appVersion 1.1.0"),
+            ),
         ];
-        for (tag, runtime, app, expected) in cases {
-            let actual = release_version(tag, &cargo(runtime), &desktop(app));
+        for (tag, runtime, app, chart_version, app_version, expected) in cases {
+            let actual = release_version(
+                tag,
+                &cargo(runtime),
+                &desktop(app),
+                &chart(chart_version, app_version),
+            );
             match (expected, actual) {
                 (Ok(version), Ok(actual)) => assert_eq!(actual, version, "{tag}"),
                 (Err(message), Err(error)) => {
