@@ -14,8 +14,8 @@ hosts:
 
 # Routing to the three hosts, for your own ingress controller or Gateway. Both
 # are off by default: route the Services yourself, or turn one on. Neither
-# routes coral's gRPC, which stays on the cluster network. The "Kubernetes
-# routing" docs page lists the streaming settings your controller needs.
+# routes coral's gRPC, which stays on the cluster network. "Routing" in the
+# Kubernetes docs lists the streaming settings your controller needs.
 ingress:
   enabled: false
   # Your IngressClass, such as nginx or alb. Empty means the cluster's default.

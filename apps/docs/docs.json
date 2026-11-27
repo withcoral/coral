@@ -102,8 +102,7 @@
             "pages": [
               "getting-started/self-host",
               "getting-started/self-host/docker-compose",
-              "getting-started/self-host/kubernetes",
-              "getting-started/self-host/kubernetes-routing"
+              "getting-started/self-host/kubernetes"
             ]
           }
         ]
