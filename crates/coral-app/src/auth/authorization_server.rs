@@ -56,6 +56,8 @@ pub struct CoralAuthorizationServer {
     clock: Arc<dyn coral_db::Clock>,
     readiness: Option<crate::ListenerReadiness>,
     providers: Option<coral_provider::ProviderModule>,
+    /// The deployment's Edition, which the server reads once when it starts.
+    edition: coral_edition::EditionCheck,
 }
 
 impl CoralAuthorizationServer {
@@ -131,11 +133,19 @@ impl CoralAuthorizationServer {
             clock,
             readiness: None,
             providers: None,
+            edition: coral_edition::EditionCheck::default(),
         })
     }
 
     pub(crate) fn with_readiness(mut self, readiness: crate::ListenerReadiness) -> Self {
         self.readiness = Some(readiness);
+        self
+    }
+
+    /// Reads the Edition from `edition`, the launching binary's check, once
+    /// the License is applied. Without it the Edition is Community.
+    pub(crate) fn with_edition(mut self, edition: coral_edition::EditionCheck) -> Self {
+        self.edition = edition;
         self
     }
 
@@ -233,11 +243,18 @@ impl CoralAuthorizationServer {
     /// and advertised relative to `listeners.auth.public_url`, which must
     /// mount at the root, so a proxy that adds a path prefix strands discovery,
     /// the authorize route, and the sign-in mode's URLs.
+    ///
+    /// Telemetry has started by now, so this is where the server logs what an
+    /// operator must know of the sign-in mode: one warning when it is an
+    /// Enterprise Feature and the Edition is Community, then whatever the
+    /// mode logs when told it started.
     /// # Errors
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
         let sign_in_mode = self.settings.sign_in_mode(self.outbound_policy)?;
+        let needs_enterprise =
+            self.settings.sign_in_feature().is_some() && !self.edition.is_enterprise();
         let state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
@@ -249,6 +266,12 @@ impl CoralAuthorizationServer {
             self.providers,
             self.clock,
         )?;
+        if needs_enterprise {
+            tracing::warn!(
+                "the configured sign-in mode needs the Enterprise Edition, so each sign-in is refused"
+            );
+        }
+        state.sign_in_mode.started(state.clock.now());
         start_listener(
             bind_addr,
             health_routes(
@@ -294,6 +317,18 @@ fn auth_router(state: AuthorizationServerHttpState) -> Router {
                 post(callback::mode_post.layer(DefaultBodyLimit::max(body_limit))),
             ),
         });
+    // A document needs no sign-in, so it reads nothing of the request.
+    let router =
+        state
+            .sign_in_documents
+            .iter()
+            .cloned()
+            .fold(router, |router, (path, media_type, body)| {
+                router.route(
+                    &path,
+                    get(move || async move { ([(header::CONTENT_TYPE, media_type)], body) }),
+                )
+            });
     router.with_state(state)
 }
 
@@ -421,6 +456,9 @@ struct AuthorizationServerHttpState {
     /// The path and method of each of the sign-in mode's URLs, read once
     /// and checked.
     sign_in_routes: Arc<[(String, ModeMethod)]>,
+    /// The path, `Content-Type` and body of each of the sign-in mode's
+    /// documents, read once and checked.
+    sign_in_documents: Arc<[(String, header::HeaderValue, axum::body::Bytes)]>,
     authorization_resources: Arc<BTreeSet<String>>,
     workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
@@ -458,7 +496,8 @@ impl AuthorizationServerHttpState {
         clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
         let urls = sign_in_mode.urls();
-        coral_sign_in::ModeUrl::check_all(&urls).map_err(|error| {
+        let documents = sign_in_mode.documents();
+        coral_sign_in::ModeUrl::check_all(&urls, &documents).map_err(|error| {
             AuthServerError::Config(format!(
                 "sign-in mode `{}` cannot serve its URLs: {error}",
                 sign_in_name.as_str()
@@ -467,6 +506,17 @@ impl AuthorizationServerHttpState {
         let sign_in_routes = urls
             .into_iter()
             .map(|url| (url.path(sign_in_name), url.method()))
+            .collect();
+        // `check_all` refused a media type that is not a header value.
+        let sign_in_documents = documents
+            .into_iter()
+            .map(|document| {
+                (
+                    document.path(sign_in_name),
+                    header::HeaderValue::from_static(document.media_type()),
+                    axum::body::Bytes::from(document.body().to_owned()),
+                )
+            })
             .collect();
         // Preserve local MCP client-ID derivation, but never treat an HTTPS
         // MCP base as an operator-registered Reef metadata destination. Only
@@ -510,6 +560,7 @@ impl AuthorizationServerHttpState {
             tokens,
             sign_in_mode,
             sign_in_routes,
+            sign_in_documents,
             authorization_resources,
             workspace_resource_family: workspace_resource_family.map(Arc::new),
             client_metadata_resolver: Arc::new(clients.clone()),
@@ -1364,5 +1415,115 @@ mod tests {
             404
         );
         local.shutdown().await.unwrap();
+    }
+
+    /// A server over `database` whose build registers only `factory`,
+    /// configured for the test mode and started under `edition`, with what
+    /// its start exported to the operator's log.
+    async fn started_with(
+        database: &coral_test_support::TestDatabase,
+        factory: Arc<dyn coral_sign_in::SignInModeFactory>,
+        edition: coral_edition::Edition,
+    ) -> (super::RunningCoralAuthorizationServer, String) {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let dir = config(&format!(
+            "{AUTHORIZATION_SERVER}\n[auth.provider]\nmode = 'test'\n\
+             sign_in_url = 'https://idp.example.test/start'\n"
+        ));
+        let config_path = dir.path().join("config.toml");
+        let raw = fs::read_to_string(&config_path).expect("config snapshot");
+        let modes = coral_sign_in::SignInModes::default().with(factory);
+        let settings = crate::bootstrap::auth_settings_with(&raw, &modes)
+            .expect("valid config")
+            .expect("auth settings");
+        let server = CoralAuthorizationServer::from_settings(
+            &config_path,
+            settings,
+            loopback_policy(),
+            database.database(),
+            Arc::new(coral_test_support::ManualClock::starting_now()),
+        )
+        .expect("valid server dependencies")
+        .with_edition(coral_edition::EditionCheck::new(Arc::new(edition)));
+        let logs = coral_telemetry::testing::ExportCapture::default();
+        let running = {
+            let _subscriber = tracing::subscriber::set_default(
+                tracing_subscriber::registry().with(logs.log_layer()),
+            );
+            server.start().await.expect("the server starts")
+        };
+        (running, logs.text())
+    }
+
+    /// The server tells the sign-in mode once that it started, and warns
+    /// once when the mode is an Enterprise Feature and the Edition is
+    /// Community. A warning never stops the start.
+    #[tokio::test]
+    async fn tells_the_mode_it_started_and_warns_once_of_the_edition() {
+        use coral_edition::Edition;
+        use coral_sign_in::testing::{EnterpriseTestModeFactory, TestModeFactory};
+
+        const WARNING: &str = "the configured sign-in mode needs the Enterprise Edition";
+        for (factory, edition, warnings) in [
+            (
+                Arc::new(TestModeFactory) as Arc<dyn coral_sign_in::SignInModeFactory>,
+                Edition::Community,
+                0,
+            ),
+            (Arc::new(EnterpriseTestModeFactory), Edition::Community, 1),
+            (Arc::new(EnterpriseTestModeFactory), Edition::Enterprise, 0),
+        ] {
+            let fixture = database().await;
+            let (running, logs) = started_with(&fixture, factory, edition).await;
+            assert_eq!(
+                logs.matches(WARNING).count(),
+                warnings,
+                "{edition:?}: {logs}"
+            );
+            assert_eq!(
+                logs.matches("the test sign-in mode started").count(),
+                1,
+                "{edition:?}: {logs}"
+            );
+            running.shutdown().await.expect("shutdown");
+        }
+    }
+
+    /// A mode's document answers a GET with its media type and body, with
+    /// no sign-in and no cookie.
+    #[tokio::test]
+    async fn serves_a_modes_document_with_no_sign_in() {
+        let fixture = database().await;
+        let (running, _logs) = started_with(
+            &fixture,
+            Arc::new(coral_sign_in::testing::TestModeFactory),
+            coral_edition::Edition::Community,
+        )
+        .await;
+        let http = reqwest::Client::new();
+        let response = http
+            .get(format!("{}/auth/test/about", running.endpoint_uri()))
+            .send()
+            .await
+            .expect("GET");
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers().get(reqwest::header::CONTENT_TYPE),
+            Some(&reqwest::header::HeaderValue::from_static(
+                coral_sign_in::testing::ABOUT_MEDIA_TYPE
+            ))
+        );
+        assert!(
+            response
+                .headers()
+                .get(reqwest::header::SET_COOKIE)
+                .is_none()
+        );
+        assert_eq!(
+            response.text().await.expect("body"),
+            "the test sign-in mode of http://localhost:9080/"
+        );
+        running.shutdown().await.expect("shutdown");
     }
 }

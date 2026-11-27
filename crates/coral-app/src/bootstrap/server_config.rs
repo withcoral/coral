@@ -1510,6 +1510,41 @@ pub(super) mod tests {
             })
     }
 
+    /// Startup builds the sign-in mode from the modes the launching binary
+    /// adds: a config that selects one starts only in a launch that adds it.
+    #[test]
+    fn validate_builds_the_launchers_modes() {
+        let raw = authenticated(
+            "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",
+            "",
+        )
+        .replace(
+            "issuer = 'https://accounts.example.test'\n\
+             client_id = 'upstream-client'\n\
+             client_secret = 'test-secret'\n",
+            "mode = 'test'\nsign_in_url = 'https://idp.example.test/start'\n",
+        );
+        let launcher = Launcher {
+            extensions: crate::Extensions {
+                sign_in_modes: crate::auth::test_config::test_modes(),
+                ..crate::Extensions::default()
+            },
+            ..Launcher::default()
+        };
+        if let Err(error) = validated_launched(&raw, &launcher) {
+            panic!("a launch that adds the test mode starts with it: {error}");
+        }
+        let Err(error) = validated(&raw) else {
+            panic!("a launch that adds no mode refuses `mode = 'test'`");
+        };
+        assert_eq!(
+            error.to_string(),
+            "failed precondition: invalid auth configuration: auth.provider.mode: this build \
+             has no sign-in mode \
+             `test`. The modes of this build: `oidc`"
+        );
+    }
+
     /// The `[otel]` settings startup reads from `raw`, beside the web origin
     /// every deployment names, for the telemetry module's tests.
     pub(crate) fn telemetry(raw: &str) -> Result<crate::telemetry::TelemetryConfig, AppError> {

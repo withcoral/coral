@@ -12,8 +12,10 @@
 //! begins it, the URLs where its answer arrives ([`ModeUrl`]), the
 //! `SameSite` of the sign-in cookie that answer needs ([`SameSite`]), which
 //! sign-in a request at those URLs names, and the check of that request,
-//! which ends in a [`ProvenPerson`] or a [`Refusal`]. Core does the rest:
-//! the sign-in cookie, the User, the code and the tokens.
+//! which ends in a [`ProvenPerson`] or a [`Refusal`]. It can also serve fixed
+//! documents that need no sign-in ([`ModeDocument`]), and say at startup what
+//! an operator must know ([`SignInMode::started`]). Core does the rest: the
+//! sign-in cookie, the User, the code and the tokens.
 //!
 //! No error here repeats a configured value, since an operator can paste a
 //! secret under the wrong key.
@@ -247,8 +249,9 @@ pub trait SignInModeFactory: Send + Sync {
     fn name(&self) -> ModeName;
 
     /// The Enterprise Feature that the mode is, or `None` for a mode of
-    /// every Edition. A mode that is one checks the Edition at each use
-    /// itself, and refuses while it is Community.
+    /// every Edition. While the Edition is Community, core logs one warning
+    /// when the server starts, and the mode refuses each sign-in itself: it
+    /// checks the Edition at each use and never keeps the answer.
     fn feature(&self) -> Option<EnterpriseFeature>;
 
     /// Checks `settings` and builds the mode. Sends nothing.
@@ -366,14 +369,33 @@ impl ModeUrl {
         format!("/auth/{}/{}", name.as_str(), self.segment)
     }
 
-    /// Checks that each of `urls` stays below `/auth/{name}/`: its segment
-    /// has the form of a mode's name ([`ModeName::is_name`]), and no segment
-    /// is declared twice with the same method.
+    /// Checks that each of `urls` and `documents` stays below
+    /// `/auth/{name}/`: its segment has the form of a mode's name
+    /// ([`ModeName::is_name`]), and no segment is declared twice with the
+    /// same method. A document is a GET, and its media type is visible
+    /// ASCII, as a header value must be.
     ///
     /// # Errors
-    /// Returns the first rule that `urls` breaks.
-    pub fn check_all(urls: &[Self]) -> Result<(), InvalidUrl> {
-        for (index, url) in urls.iter().enumerate() {
+    /// Returns the first rule that `urls` and `documents` break.
+    pub fn check_all(urls: &[Self], documents: &[ModeDocument]) -> Result<(), InvalidUrl> {
+        let header_value = |value: &str| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+        };
+        if !documents
+            .iter()
+            .all(|document| header_value(document.media_type))
+        {
+            return Err(InvalidUrl::MediaType);
+        }
+        let all: Vec<Self> = urls
+            .iter()
+            .copied()
+            .chain(documents.iter().map(|document| document.url))
+            .collect();
+        for (index, url) in all.iter().enumerate() {
             if !ModeName::is_name(url.segment) {
                 return Err(InvalidUrl::Segment);
             }
@@ -381,11 +403,50 @@ impl ModeUrl {
                 other.segment == url.segment
                     && std::mem::discriminant(&other.method) == std::mem::discriminant(&url.method)
             };
-            if urls.iter().skip(index + 1).any(same) {
+            if all.iter().skip(index + 1).any(same) {
                 return Err(InvalidUrl::Repeated);
             }
         }
         Ok(())
+    }
+}
+
+/// A fixed document that a mode serves to a GET at
+/// `/auth/{name}/{segment}` of Coral's URL, with no sign-in and no cookie.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModeDocument {
+    url: ModeUrl,
+    media_type: &'static str,
+    body: String,
+}
+
+impl ModeDocument {
+    /// The document `body`, of the media type `media_type`, at `segment`.
+    #[must_use]
+    pub const fn new(segment: &'static str, media_type: &'static str, body: String) -> Self {
+        Self {
+            url: ModeUrl::get(segment),
+            media_type,
+            body,
+        }
+    }
+
+    /// The document's path below Coral's URL, for the mode `name`.
+    #[must_use]
+    pub fn path(&self, name: ModeName) -> String {
+        self.url.path(name)
+    }
+
+    /// The media type that core sends as the `Content-Type`.
+    #[must_use]
+    pub const fn media_type(&self) -> &'static str {
+        self.media_type
+    }
+
+    /// The document.
+    #[must_use]
+    pub fn body(&self) -> &str {
+        &self.body
     }
 }
 
@@ -400,6 +461,9 @@ pub enum InvalidUrl {
     /// One segment declared twice with the same method.
     #[error("a sign-in mode declares one URL segment twice with the same method")]
     Repeated,
+    /// A document whose media type is not visible ASCII.
+    #[error("a sign-in mode's document has a media type that is not visible ASCII")]
+    MediaType,
 }
 
 /// One mode of signing people in, built from a deployment's settings.
@@ -409,6 +473,18 @@ pub trait SignInMode: Send + Sync {
     /// `/auth/{name}/`. Core reads them once, when the server starts, and
     /// refuses to start when [`ModeUrl::check_all`] refuses them.
     fn urls(&self) -> Vec<ModeUrl>;
+
+    /// The documents the mode serves with no sign-in, below `/auth/{name}/`
+    /// beside its URLs. Core reads them once, when the server starts.
+    fn documents(&self) -> Vec<ModeDocument> {
+        Vec::new()
+    }
+
+    /// Core calls this once when the server starts, after telemetry starts
+    /// and the License is applied, with `now` read from the deployment's
+    /// clock. A mode logs here what an operator must know at startup; the
+    /// start goes on whatever it logs.
+    fn started(&self, _now: UnixNanos) {}
 
     /// The `SameSite` value of the mode's sign-in cookie. A mode whose
     /// answer arrives as a POST from another site needs [`SameSite::None`].

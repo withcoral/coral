@@ -10,26 +10,57 @@
 //! `sign_in` and its person by `person`, in the query or a form body. A
 //! request that names no sign-in is refused, where core answers it, with
 //! `test_not_requested`, and one whose cookie core lacks with
-//! `test_no_sign_in`.
+//! `test_no_sign_in`. It serves the document `about`, which names Coral's
+//! URL, and logs one line when the server starts.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 
 use coral_db::{Clock, UnixNanos};
-use coral_edition::EnterpriseFeature;
+use coral_edition::{EnterpriseFeature, EnterpriseFeatureId};
 use serde::Deserialize;
 use url::Url;
 
 use crate::{
-    ModeEnvironment, ModeName, ModeRequest, ModeSettings, ModeUrl, Named, PersonIdentifier,
-    ProvenPerson, Refusal, SameSite, SettingError, SignInMode, SignInModeFactory, SignInValue,
+    ModeDocument, ModeEnvironment, ModeName, ModeRequest, ModeSettings, ModeUrl, Named,
+    PersonIdentifier, ProvenPerson, Refusal, SameSite, SettingError, SignInMode, SignInModeFactory,
+    SignInValue,
 };
 
 /// The most bytes of body the test mode's POST reads.
 pub const BODY_LIMIT: usize = 1024;
 
-/// Builds the test mode, named `test`.
+/// The media type of the test mode's document `about`.
+pub const ABOUT_MEDIA_TYPE: &str = "text/plain; charset=utf-8";
+
+/// The Enterprise Feature that [`EnterpriseTestModeFactory`]'s mode is.
+pub const TEST_FEATURE: EnterpriseFeature =
+    EnterpriseFeature::new(EnterpriseFeatureId::new("test-sign-in"), "Test sign-in");
+
+/// Builds the test mode, named `test`, a mode of every Edition.
 pub struct TestModeFactory;
+
+/// Builds the test mode, named `test`, as the Enterprise Feature
+/// [`TEST_FEATURE`]. Its mode does not check the Edition.
+pub struct EnterpriseTestModeFactory;
+
+impl SignInModeFactory for EnterpriseTestModeFactory {
+    fn name(&self) -> ModeName {
+        TestModeFactory.name()
+    }
+
+    fn feature(&self) -> Option<EnterpriseFeature> {
+        Some(TEST_FEATURE)
+    }
+
+    fn build(
+        &self,
+        settings: &ModeSettings,
+        environment: &ModeEnvironment,
+    ) -> Result<Arc<dyn SignInMode>, SettingError> {
+        TestModeFactory.build(settings, environment)
+    }
+}
 
 /// The test mode of `settings`, a TOML table, for a Coral at
 /// `https://coral.example.test/`.
@@ -111,6 +142,18 @@ impl SignInModeFactory for TestModeFactory {
 impl SignInMode for TestMode {
     fn urls(&self) -> Vec<ModeUrl> {
         vec![ModeUrl::get("answer"), ModeUrl::post("answer", BODY_LIMIT)]
+    }
+
+    fn documents(&self) -> Vec<ModeDocument> {
+        vec![ModeDocument::new(
+            "about",
+            ABOUT_MEDIA_TYPE,
+            format!("the test sign-in mode of {}", self.coral_url),
+        )]
+    }
+
+    fn started(&self, _now: UnixNanos) {
+        tracing::info!("the test sign-in mode started");
     }
 
     fn same_site(&self) -> SameSite {
