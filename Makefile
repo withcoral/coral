@@ -219,6 +219,8 @@ protocol-level: lint-proto
 	scripts/check-protocol-level.test.sh
 
 # Lints, renders and validates the Helm chart, and runs its helm-unittest
-# suites. Needs helm, kubeconform and the helm-unittest plugin.
+# suites. Then tries each case the release's images.txt check must judge.
+# Needs helm, kubeconform, the helm-unittest plugin and yq.
 chart-checks:
 	./scripts/check-chart.sh
+	./scripts/check-images-txt.test.sh
