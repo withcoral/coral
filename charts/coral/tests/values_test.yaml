@@ -1,0 +1,69 @@
+suite: values
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders with the least values
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: fails on an unknown key
+    set:
+      replicas: 3
+    asserts:
+      - failedTemplate:
+          errorPattern: additional properties 'replicas' not allowed
+
+  - it: fails on an unknown nested key
+    set:
+      coral.extraEnv: []
+    asserts:
+      - failedTemplate:
+          errorPattern: additional properties 'extraEnv' not allowed
+
+  - it: fails without host
+    set:
+      host: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: /host
+
+  - it: fails on a host with an empty label
+    set:
+      host: coral..example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: /host
+
+  - it: fails on a host with a port out of range
+    set:
+      host: coral.example.com:65536
+    asserts:
+      - failedTemplate:
+          errorPattern: /host
+
+  - it: fails on an issuer that is not a string
+    set:
+      config.auth.provider.issuer: 5
+    asserts:
+      - failedTemplate:
+          errorPattern: /config/auth/provider/issuer
+
+  # The chart joins the names with commas, so a comma would split one name.
+  - it: fails on a plugin client name with a comma
+    set:
+      web.agentsWithAvailablePlugins: ["claude,chatgpt"]
+    asserts:
+      - failedTemplate:
+          errorPattern: /web/agentsWithAvailablePlugins/0
+
+  - it: checks the auth host like host
+    set:
+      hosts.auth: login..example.org
+    asserts:
+      - failedTemplate:
+          errorPattern: /hosts/auth

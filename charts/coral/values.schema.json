@@ -1,0 +1,381 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "config"
+  ],
+  "properties": {
+    "host": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?$",
+      "minLength": 1,
+      "description": "The UI's host name, with no scheme or path."
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?$"
+        },
+        "mcp": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?$"
+        }
+      }
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "imageRegistry": {
+          "type": "string"
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseUrl",
+        "credentialsKey",
+        "sessionSigningKey",
+        "oidcClientSecret",
+        "webSessionSecret",
+        "license"
+      ],
+      "properties": {
+        "databaseUrl": {
+          "$ref": "#/definitions/secret"
+        },
+        "credentialsKey": {
+          "$ref": "#/definitions/secret"
+        },
+        "sessionSigningKey": {
+          "$ref": "#/definitions/secret"
+        },
+        "oidcClientSecret": {
+          "$ref": "#/definitions/secret"
+        },
+        "webSessionSecret": {
+          "$ref": "#/definitions/secret"
+        },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "secretName",
+            "key"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Coral's config.toml, merged on top of the chart's settings.",
+      "required": [
+        "auth"
+      ],
+      "properties": {
+        "auth": {
+          "type": "object",
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "type": "object",
+              "required": [
+                "issuer",
+                "client_id"
+              ],
+              "properties": {
+                "issuer": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "client_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "coral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "replicas",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "startup",
+            "readiness",
+            "liveness"
+          ],
+          "properties": {
+            "startup": {
+              "$ref": "#/definitions/probe"
+            },
+            "readiness": {
+              "$ref": "#/definitions/probe"
+            },
+            "liveness": {
+              "$ref": "#/definitions/probe"
+            }
+          }
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "replicas",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readiness",
+            "liveness"
+          ],
+          "properties": {
+            "readiness": {
+              "$ref": "#/definitions/probe"
+            },
+            "liveness": {
+              "$ref": "#/definitions/probe"
+            }
+          }
+        },
+        "agentsWithAvailablePlugins": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "description": "A client name, as coral-web accepts it.",
+            "pattern": "^[A-Za-z0-9]+([ ._-][A-Za-z0-9]+)*$",
+            "maxLength": 32
+          }
+        }
+      }
+    },
+    "runExecutors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replicas",
+        "maxRunsHeld",
+        "terminationGracePeriodSeconds",
+        "token",
+        "previousToken",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRunsHeld": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "token": {
+          "$ref": "#/definitions/secret"
+        },
+        "previousToken": {
+          "$ref": "#/definitions/secret"
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readiness",
+            "liveness"
+          ],
+          "properties": {
+            "readiness": {
+              "$ref": "#/definitions/probe"
+            },
+            "liveness": {
+              "$ref": "#/definitions/probe"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "secretName",
+        "key"
+      ],
+      "properties": {
+        "secretName": {
+          "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry",
+        "repository",
+        "tag",
+        "digest",
+        "pullPolicy"
+      ],
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(|sha256:[0-9a-f]{64})$"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

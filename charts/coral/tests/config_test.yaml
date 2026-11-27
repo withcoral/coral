@@ -1,0 +1,97 @@
+suite: config
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: derives every public URL from host
+    set:
+      host: ui.example.net
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[listeners\.web\]\s+public_url = "https://ui\.example\.net"'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[listeners\.auth\][^\[]*public_url = "https://auth\.ui\.example\.net"'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[listeners\.mcp\][^\[]*public_url = "https://mcp\.ui\.example\.net"'
+
+  - it: takes the auth and MCP hosts from hosts
+    set:
+      hosts.auth: login.example.org
+      hosts.mcp: tools.example.org
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[listeners\.auth\][^\[]*public_url = "https://login\.example\.org"'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[listeners\.mcp\][^\[]*public_url = "https://tools\.example\.org"'
+
+  - it: turns off local Run Executors
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'local_run_executors = false'
+
+  - it: merges config on top, with whole numbers as integers
+    set:
+      config.runtime.execution_heap_bytes: 134217728
+      config.search.semantic_search_enabled: false
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'execution_heap_bytes = 134217728\n'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'semantic_search_enabled = false'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'issuer = "https://idp\.example\.com"'
+
+  - it: accepts the previous Run Executor token during a rotation
+    set:
+      runExecutors.previousToken.key: OLD_TOKEN
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'token_env = \["CORAL_RUN_EXECUTOR_TOKEN", "CORAL_RUN_EXECUTOR_PREVIOUS_TOKEN"\]'
+
+  - it: fails when config sets a listener
+    set:
+      config.listeners.grpc.bind: 0.0.0.0:1
+    asserts:
+      - failedTemplate:
+          errorPattern: config.listeners.grpc is set by the chart
+
+  - it: fails when config sets the database
+    set:
+      config.database.backend: sqlite
+    asserts:
+      - failedTemplate:
+          errorPattern: config.database is set by the chart
+
+  - it: fails when config sets the OIDC client secret
+    set:
+      config.auth.provider.client_secret: hunter2
+    asserts:
+      - failedTemplate:
+          errorPattern: config.auth.provider.client_secret is set by the chart
+
+  - it: fails when config sets local Run Executors
+    set:
+      config.runtime.local_run_executors: true
+    asserts:
+      - failedTemplate:
+          errorPattern: config.runtime.local_run_executors is set by the chart
+
+  - it: fails when config sets the License
+    set:
+      config.license.key_env: MY_LICENSE
+    asserts:
+      - failedTemplate:
+          errorPattern: config.license is set by the chart

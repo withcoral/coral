@@ -450,6 +450,7 @@ required gates below after the change stabilizes, then report what ran:
 | Postgres-backed behavior | `make postgres-tests`                                                                                                                                                                        |
 | Reef                     | `npm run check --prefix apps/reef`, `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, `npm run build --prefix apps/reef`, then `npm run test:server --prefix apps/reef` |
 | Desktop                  | `npm run check --prefix apps/desktop`, `npm test --prefix apps/desktop`, then the Reel `desktop` suite: `npm run test:e2e --prefix apps/reef -- --suite desktop`                             |
+| Helm chart               | `make chart-checks`                                                                                                                                                                          |
 | Runtime or Reef image    | `make docker-test`                                                                                                                                                                           |
 
 ### E2E scope and cadence

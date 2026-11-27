@@ -11,6 +11,7 @@
       "package-name": "coral",
       "extra-files": [
         "Cargo.toml",
+        "charts/coral/Chart.yaml",
         { "type": "json", "path": "apps/desktop/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "apps/desktop/package-lock.json", "jsonpath": "$.version" },
         { "type": "json", "path": "apps/desktop/package-lock.json", "jsonpath": "$.packages[\"\"].version" }

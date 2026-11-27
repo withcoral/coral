@@ -1,0 +1,94 @@
+suite: web
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/web.yaml
+tests:
+  - it: rolls with no downtime
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.strategy
+          value:
+            type: RollingUpdate
+            rollingUpdate:
+              maxUnavailable: 0
+              maxSurge: 1
+
+  - it: probes readiness and liveness on their own paths
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value:
+            path: /readyz
+            port: http
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value:
+            path: /healthz
+            port: http
+
+  - it: locks the pod down
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+  - it: derives its URLs from the hosts
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      hosts.auth: login.example.org
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_WEB_PUBLIC_URL
+            value: https://coral.example.com
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_WEB_AUTH_ISSUER
+            value: https://login.example.org
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_ENDPOINT
+            value: http://prod:14555
+
+  - it: serves the UI on the Service's http port
+    documentSelector:
+      path: kind
+      value: Service
+    asserts:
+      - equal:
+          path: spec.ports
+          value:
+            - name: http
+              port: 3000
+              targetPort: http
