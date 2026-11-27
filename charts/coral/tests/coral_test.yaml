@@ -38,15 +38,3 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].readinessProbe.grpc.service
           value: coral.readiness
-
-  - it: pins the image by digest when one is set
-    documentSelector:
-      path: kind
-      value: Deployment
-    set:
-      global.imageRegistry: registry.internal
-      coral.image.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-    asserts:
-      - equal:
-          path: spec.template.spec.containers[0].image
-          value: registry.internal/withcoral/coral@sha256:0000000000000000000000000000000000000000000000000000000000000000

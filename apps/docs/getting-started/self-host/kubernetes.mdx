@@ -465,6 +465,48 @@ Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first, and the re
 
 A change to your values rolls the pods when you run `helm upgrade`. To pick up a changed Secret, see [Rotate a secret](#rotate-a-secret).
 
+## Air-gapped and restricted egress
+
+You can run Coral in a cluster that cannot reach the internet. Pull the images from your own registry. Then allow only the destinations in [What needs outside access](#what-needs-outside-access) that you use.
+
+### Pull images from your registry
+
+1. On a machine with internet access, get the chart with `git clone`, as in [Install](#install). Copy the chart's folder to a machine that can reach your cluster.
+2. Copy these images to your registry. Keep each repository path, so that `ghcr.io/withcoral/coral` becomes `<registry>/withcoral/coral`.
+   - `ghcr.io/withcoral/coral:<version>`
+   - `ghcr.io/withcoral/coral-web:<version>`
+3. If your nodes need credentials to pull, create a pull Secret:
+
+   ```shell
+   kubectl -n coral create secret docker-registry registry-internal \
+     --docker-server=<registry> --docker-username='...' --docker-password='...'
+   ```
+
+4. Copy the values from `coral/charts/coral/examples/values-airgapped.yaml` in your clone into your `values.yaml`. Set `global.imageRegistry` to your registry's host, and add a port if it needs one. Set `imagePullSecrets` to your pull Secret, or to `[]` if you have none.
+5. Install as in [Install](#install).
+
+`global.imageRegistry` replaces only the registry host of each image. To change the path, the tag or the digest of one image, set `repository`, `tag` or `digest` under `coral.image` or `web.image`. When you set a digest, the chart pulls by the digest and ignores the tag.
+
+### What needs outside access
+
+| Destination                                                  | Called by              | When                                                                                                                  |
+| ------------------------------------------------------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Your Postgres server                                         | `coral`                | Always                                                                                                                |
+| Your OIDC provider                                           | `coral`                | When a user signs in                                                                                                  |
+| `auth.<coral-host>`, or `hosts.auth`                         | `coral`, `coral-web`   | When a user signs in. The pods call it through your routing, so they must reach its address.                          |
+| Each provider's API, and its OAuth authorization server      | `coral`                | When a program calls a provider's tool, and when a user connects an account                                           |
+| An OpenAPI document or MCP server URL                        | `coral`                | When a user adds a provider from a URL                                                                                |
+| An MCP client's client ID URL                                | `coral`                | When an MCP client that names itself by a URL signs in. Coral reads the client's metadata document from that URL.    |
+| Your [secret stores](/reference/configuration#secret_stores) | `coral`                | When a provider reads a credential from a store                                                                       |
+| AWS STS, and the pod's AWS credential address                | `coral`                | When `coral` uses AWS, such as for AWS Secrets Manager, with EKS Pod Identity or IRSA                                 |
+| Your OpenTelemetry Collector                                 | Every component        | Only if you send telemetry to it. Telemetry is off by default.                                                        |
+| `telemetry.withcoral.com`, port 443                          | `coral`                | Once a day, for [usage reports](/reference/configuration#usage-data). Set `usageReports.enabled: false` to stop them. |
+| `api.github.com`, port 443                                   | `coral`                | Only if you set `updates.check: true` under `config`. The check is off by default.                                    |
+
+Run Executors connect only to `coral`'s Service, and to your Collector if you send their telemetry to it. The `coral` image holds the model for semantic search, so Coral downloads nothing at startup.
+
+`coral` ignores `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, and connects to each destination directly. Allow each one in your firewall. AWS calls are the one exception: for AWS credentials and STS, `coral` uses `HTTPS_PROXY` and `NO_PROXY`.
+
 ## Offering a Coral plugin
 
 The onboarding prompt can tell some MCP clients to look for a Coral plugin. To offer one, list those clients in `web.agentsWithAvailablePlugins`:
