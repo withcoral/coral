@@ -105,6 +105,29 @@ tests:
           path: data["envoy.yaml"]
           pattern: "max_active_downstream_connections: 1000\n"
 
+  # Without its own limit, connections held open on the health listener would
+  # use up the cap above, and coral-web's own connections would be refused.
+  - it: limits the health listener's connections on their own
+    template: templates/envoy.yaml
+    asserts:
+      - matchRegex:
+          path: data["envoy.yaml"]
+          pattern: "connection_limit.v3.ConnectionLimit\n *stat_prefix: health\n *max_connections: 100\n"
+
+  # A flood on the health listener must not restart Envoy and drop every
+  # stream: Kubernetes restarts the sidecar when it exits, and the startup
+  # probe still holds coral-web until Envoy is up.
+  - it: gives Envoy no liveness probe
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - notExists:
+          path: spec.template.spec.initContainers[0].livenessProbe
+      - exists:
+          path: spec.template.spec.initContainers[0].startupProbe
+
   - it: renders a headless Service for coral's gRPC
     template: templates/coral.yaml
     documentSelector:

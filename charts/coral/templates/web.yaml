@@ -70,13 +70,9 @@ spec:
               port: envoy-health
             periodSeconds: 1
             failureThreshold: 30
-          livenessProbe:
-            httpGet:
-              path: /ready
-              port: envoy-health
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 6
+          # No liveness probe: any pod in the cluster can reach the health
+          # port, and a flood there must not restart Envoy and drop every
+          # stream. Kubernetes restarts the sidecar if it exits.
           resources:
             {{- toYaml .Values.web.envoy.resources | nindent 12 }}
           securityContext:

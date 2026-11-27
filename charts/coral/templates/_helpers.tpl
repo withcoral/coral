@@ -299,8 +299,8 @@ headless Service, whose DNS name resolves to every ready pod.
 */}}
 {{- define "coral.envoyConfig" -}}
 # Every listener together. coral-web needs a few connections, and the
-# kubelet's probes one each. The health listener is open to the cluster, so
-# without a cap a flood of connections could take Envoy past its memory limit.
+# kubelet's probe one. Without a cap, a flood of connections could take Envoy
+# past its memory limit.
 overload_manager:
   resource_monitors:
     - name: envoy.resource_monitors.global_downstream_max_connections
@@ -343,7 +343,9 @@ static_resources:
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-    # For the kubelet's probes only.
+    # For the kubelet's startup probe only. Any pod in the cluster can reach
+    # it, so it has its own limit and drops idle connections: connections held
+    # open here can't use up the cap above.
     - name: health
       address:
         socket_address:
@@ -351,10 +353,17 @@ static_resources:
           port_value: {{ include "coral.port.envoyHealth" . }}
       filter_chains:
         - filters:
+            - name: envoy.filters.network.connection_limit
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+                stat_prefix: health
+                max_connections: 100
             - name: envoy.filters.network.http_connection_manager
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                 stat_prefix: health
+                common_http_protocol_options:
+                  idle_timeout: 10s
                 route_config:
                   virtual_hosts:
                     - name: health
