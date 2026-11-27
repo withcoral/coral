@@ -40,8 +40,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       {{- if .Values.tls.extraCABundle.key }}
-      # coral's TLS reads one bundle, so this writes the image's roots and the
-      # extra CA into one file, which replaces the image's.
+      # SSL_CERT_FILE replaces coral's roots, so this writes the image's roots
+      # and the extra CA into one file for it.
       initContainers:
         - name: ca-bundle
           image: {{ include "coral.image" (list . .Values.coral.image) }}
@@ -88,6 +88,10 @@ spec:
             {{- if .Values.runExecutors.previousToken.key }}
             {{- include "coral.secretEnv" (list . "CORAL_RUN_EXECUTOR_PREVIOUS_TOKEN" "runExecutors.previousToken" .Values.runExecutors.previousToken) | nindent 12 }}
             {{- end }}
+            {{- if .Values.tls.extraCABundle.key }}
+            - name: SSL_CERT_FILE
+              value: /etc/coral/ca-bundle/ca-certificates.crt
+            {{- end }}
             {{- if .Values.database.tls.caBundle.key }}
             - name: PGSSLROOTCERT
               value: /etc/coral/database-ca/ca.crt
@@ -117,8 +121,7 @@ spec:
             {{- end }}
             {{- if .Values.tls.extraCABundle.key }}
             - name: ca-bundle
-              mountPath: /etc/ssl/certs/ca-certificates.crt
-              subPath: ca-certificates.crt
+              mountPath: /etc/coral/ca-bundle
               readOnly: true
             {{- end }}
             {{- with .Values.coral.extraVolumeMounts }}

@@ -52,8 +52,8 @@ tests:
                 - key: root.pem
                   path: ca.crt
 
-  # coral's TLS reads one bundle, and a bundle with only the CA would stop
-  # it reaching the OIDC provider and public providers.
+  # SSL_CERT_FILE replaces coral's roots, so a bundle with only the CA would
+  # stop it reaching the OIDC provider and public providers.
   - it: gives coral the image's roots plus the CA
     set:
       tls.extraCABundle:
@@ -69,11 +69,15 @@ tests:
           path: spec.template.spec.initContainers[0].command[2]
           pattern: /etc/ssl/certs/ca-certificates\.crt .*/etc/coral/extra-ca/ca\.crt
       - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SSL_CERT_FILE
+            value: /etc/coral/ca-bundle/ca-certificates.crt
+      - contains:
           path: spec.template.spec.containers[0].volumeMounts
           content:
             name: ca-bundle
-            mountPath: /etc/ssl/certs/ca-certificates.crt
-            subPath: ca-certificates.crt
+            mountPath: /etc/coral/ca-bundle
             readOnly: true
       - contains:
           path: spec.template.spec.volumes
