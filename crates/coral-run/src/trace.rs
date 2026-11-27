@@ -129,10 +129,9 @@ pub(crate) fn record_run_accepted(principal: &coral_workspace::Principal) {
 pub(crate) fn record_start(run: &RunRecord, started_at: i64) {
     let accepted = UnixNanos::new(run.accepted_at_unix_nanos);
     let started = UnixNanos::new(started_at).max(accepted);
-    metric::run_start_wait(
-        run.run_executor_kind().metric(),
-        started.saturating_duration_since(accepted),
-    );
+    if let Some(kind) = run.run_executor_kind {
+        metric::run_start_wait(kind.metric(), started.saturating_duration_since(accepted));
+    }
     let (Some(trace), Some(taken)) = (&run.trace, run.taken_at_unix_nanos) else {
         return;
     };

@@ -1195,9 +1195,14 @@ impl LinkService for PullService {
         // A Run Executor sends Hello with the call; one that sends none
         // within a keepalive holds nothing open, shutdown included.
         let first = timeout(KEEPALIVE, inbound.message()).await.ok();
+        // A message that does not decode is a bad Hello; a transport error,
+        // such as a cancel, is no refusal.
         let first = first
             .transpose()
-            .map_err(|status| refused(Refusal::Hello, undecodable(&status).unwrap_or(status)))?;
+            .map_err(|status| match undecodable(&status) {
+                Some(violation) => refused(Refusal::Hello, violation),
+                None => status,
+            })?;
         let Some(pull_request::Message::Hello(hello)) =
             first.flatten().and_then(|request| request.message)
         else {

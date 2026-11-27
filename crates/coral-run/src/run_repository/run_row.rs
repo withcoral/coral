@@ -235,9 +235,7 @@ impl RunRow {
             trace: decode_trace(self.trace_parent.as_deref()),
             time_limit_nanos: self.time_limit_nanos,
             taken_at_unix_nanos: self.taken_at_unix_nanos,
-            on_run_executor: self.run_executor_kind.is_some(),
-            on_local_child: taken_kind(self.run_executor_kind.as_deref())
-                == coral_run_executor::Kind::Local,
+            run_executor_kind: taken_kind(self.run_executor_kind.as_deref()),
             committed_request_number: self
                 .committed_request_number
                 .map(u64::try_from)
@@ -385,12 +383,13 @@ fn decode_terminal(
     Ok(Some(outcome))
 }
 
-/// The Run Executor kind a take recorded on a row. Text no release writes
-/// reads as dialed, as does a row no take wrote.
-pub(super) fn taken_kind(stored: Option<&str>) -> coral_run_executor::Kind {
-    stored
-        .and_then(coral_run_executor::Kind::from_storage_str)
-        .unwrap_or(coral_run_executor::Kind::Dialed)
+/// The Run Executor kind a take recorded on a row, `None` on a row no take
+/// wrote. Text no release writes reads as dialed.
+pub(super) fn taken_kind(stored: Option<&str>) -> Option<coral_run_executor::Kind> {
+    stored.map(|stored| {
+        coral_run_executor::Kind::from_storage_str(stored)
+            .unwrap_or(coral_run_executor::Kind::Dialed)
+    })
 }
 
 #[cfg(test)]

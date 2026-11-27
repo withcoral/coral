@@ -515,7 +515,7 @@ impl Written {
     /// Whether another writer moved the head of a Run a Run Executor holds
     /// under this chunk's claim: the chunk is rebuilt on the new head.
     fn moved_on(self, run: &RunRecord, claim_id: &str) -> bool {
-        run.on_run_executor
+        run.run_executor_kind.is_some()
             && run.state == crate::RunState::Running
             && run.execution_claim_id.as_deref() == Some(claim_id)
             && run.chunk_sequence > self.head_before

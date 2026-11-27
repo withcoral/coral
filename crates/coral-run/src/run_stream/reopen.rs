@@ -114,7 +114,9 @@ impl RunModule {
         let Some(deadline_at_unix_nanos) = run.deadline_at_unix_nanos else {
             return link.close(Closing::Unavailable("the started Run has no deadline"));
         };
-        metric::run_reconnected(run.run_executor_kind().metric());
+        if let Some(kind) = run.run_executor_kind {
+            metric::run_reconnected(kind.metric());
+        }
         link.committed(Some(resume.watermark));
         let started = StartedExecution {
             head: run.chunk_sequence,

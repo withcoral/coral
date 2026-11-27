@@ -395,7 +395,9 @@ async fn put_back_in(mut transaction: Transaction<'_>, held: &HeldRun) -> Result
         return Ok(false);
     }
     transaction.commit().await?;
-    metric::run_put_back(held.run_executor_kind.metric());
+    if let Some(kind) = held.run_executor_kind {
+        metric::run_put_back(kind.metric());
+    }
     tracing::info!(
         coral.run.id = safe::id(&HeldRunId::of_held_row(held.run_id.clone())),
         coral.run_executor.id = held

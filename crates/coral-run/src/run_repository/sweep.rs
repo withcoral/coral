@@ -77,7 +77,7 @@ pub(crate) struct HeldRun {
     /// The Run Executor the take gave it to.
     pub(crate) run_executor_id: Option<String>,
     /// That Run Executor's kind, as the take recorded it.
-    pub(crate) run_executor_kind: Kind,
+    pub(crate) run_executor_kind: Option<Kind>,
 }
 
 type HeldRow = (String, String, String, Option<String>, Option<String>);

@@ -286,8 +286,8 @@ async fn one_pass_ends_puts_back_and_releases_only_what_no_stream_decided() {
     for run_id in [&stale_take, &lapsed_unstarted] {
         let run = sweep.run(run_id).await;
         assert_eq!(
-            (run.state, run.execution_claim_id, run.on_run_executor),
-            (RunState::Running, None, false)
+            (run.state, run.execution_claim_id, run.run_executor_kind),
+            (RunState::Running, None, None)
         );
     }
     let mut late = Scripted::open(&sweep.runs, &stale_take.to_string(), &stale_claim);
