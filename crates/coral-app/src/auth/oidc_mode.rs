@@ -12,14 +12,25 @@ use serde_json::Value;
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::OIDC_CALLBACK_PATH;
 use super::config::{config_error, invalid_provider};
 use super::error::AuthServerError;
 use coral_outbound::{Configured, EndpointUrl};
+use coral_sign_in::{ModeName, ModeUrl};
 
 mod sign_in;
 
 pub(super) use sign_in::OidcMode;
+
+/// The name of the mode every build has: `mode = "oidc"`, or no `mode`.
+pub(super) const NAME: ModeName = match ModeName::new("oidc") {
+    Ok(name) => name,
+    Err(_) => panic!("`oidc` has the form of a mode's name"),
+};
+
+/// The URL the provider sends the browser back to, the mode's one URL.
+/// The provider's `redirect_uri` is built from it, so the advertised
+/// callback is always one the router serves.
+const CALLBACK: ModeUrl = ModeUrl::get("callback");
 
 const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
 
@@ -223,7 +234,7 @@ impl OidcProviderSettings {
             issuer: self.issuer,
             client_id: self.client_id,
             // The validated issuer is a canonical origin with no trailing slash.
-            redirect_uri: format!("{authorization_server_issuer}{OIDC_CALLBACK_PATH}"),
+            redirect_uri: format!("{authorization_server_issuer}{}", CALLBACK.path(NAME)),
             scopes: self.scopes,
             bootstrap_owner_subject: self.bootstrap_owner_subject,
             display_name_claim: self.display_name_claim,

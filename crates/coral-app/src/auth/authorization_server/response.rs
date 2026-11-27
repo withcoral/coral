@@ -9,12 +9,12 @@
 //!
 //! # Trust
 //!
-//! Only three kinds of value reach a response body or a `Location` here: a
+//! Only four kinds of value reach a response body or a `Location` here: a
 //! `&'static str` chosen by the calling handler, a sign-in mode's
-//! [`Refusal`], whose text is fixed or the checked form `<code> <time>`, and
-//! values the client itself supplied and Coral stored. Nothing an upstream
-//! provider sends is passed in, so a provider cannot steer a redirect or
-//! place text in an error.
+//! [`Refusal`], whose text is fixed or the checked form `<code> <time>`,
+//! values the client itself supplied and Coral stored, and a URL the
+//! operator configured. Nothing an upstream provider sends is passed in, so a
+//! provider cannot steer a redirect or place text in an error.
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -107,14 +107,28 @@ impl TrustedRedirect {
 /// to be sent, so the error is rendered here rather than redirected — a
 /// redirect to an unvalidated URI would make Coral the open redirector.
 pub(super) fn direct_error(error: &'static str, description: &'static str) -> Response {
-    direct(error, description)
+    direct(StatusCode::BAD_REQUEST, error, description)
+}
+
+/// Refuses a body longer than the sign-in mode reads at its URL. It logs
+/// nothing, since anybody can send one.
+pub(super) fn body_too_large() -> Response {
+    direct(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "invalid_request",
+        "request body is too large",
+    )
 }
 
 /// Reports a sign-in mode's refusal directly, as [`direct_error`] does, and
 /// logs it as [`log_refusal`] does.
 pub(super) fn direct_refusal(refusal: &Refusal) -> Response {
     log_refusal(refusal);
-    direct(refusal.error().as_str(), refusal.description())
+    direct(
+        StatusCode::BAD_REQUEST,
+        refusal.error().as_str(),
+        refusal.description(),
+    )
 }
 
 /// Logs a refusal in the form `<code> <time>` by its code. A fixed
@@ -130,14 +144,14 @@ fn log_refusal(refusal: &Refusal) {
     }
 }
 
-fn direct(error: &str, description: &str) -> Response {
+fn direct(status: StatusCode, error: &str, description: &str) -> Response {
     let body = serde_json::json!({
         "error": error,
         "error_description": description,
     })
     .to_string();
     (
-        StatusCode::BAD_REQUEST,
+        status,
         security_headers(),
         [(header::CONTENT_TYPE, "application/json")],
         body,
@@ -145,10 +159,20 @@ fn direct(error: &str, description: &str) -> Response {
         .into_response()
 }
 
+/// Sends the browser to `location` with a GET, also after a POST, with no
+/// cached copy and no referrer.
+pub(super) fn see_other(location: &str) -> Response {
+    redirect_with(StatusCode::SEE_OTHER, location)
+}
+
 /// Sends the browser to `location` with no cached copy and no referrer.
 pub(super) fn redirect(location: &str) -> Response {
+    redirect_with(StatusCode::FOUND, location)
+}
+
+fn redirect_with(status: StatusCode, location: &str) -> Response {
     (
-        StatusCode::FOUND,
+        status,
         security_headers(),
         [(header::LOCATION, location)],
         "",

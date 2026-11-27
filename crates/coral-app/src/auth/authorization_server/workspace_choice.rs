@@ -38,7 +38,7 @@ pub(super) async fn offer(
     state: &AuthorizationServerHttpState,
     headers: &HeaderMap,
     trusted: &TrustedRedirect,
-    oidc_state: &str,
+    sign_in: &str,
     user_id: UserId,
     signed_in_as: Option<&str>,
     session: SignInSession,
@@ -51,7 +51,7 @@ pub(super) async fn offer(
     let providers = provider_summaries(state, &user_id, &choices).await;
     let pending = PendingWorkspaceChoice {
         user_id,
-        oidc_state: oidc_state.to_owned(),
+        sign_in: sign_in.to_owned(),
         request: session.request,
     };
     let client_name = session.client_name.as_deref().unwrap_or(UNNAMED_CLIENT);
@@ -122,7 +122,7 @@ pub(super) async fn oauth_workspace_post(
         Err(error) => return ChoiceFailure::from_domain(&error).into_error(&trusted),
     };
     let grant = pending.request.grant(&pending.user_id, Some(workspace));
-    callback::issue_code(&state, &trusted, &pending.oidc_state, &grant, now).await
+    callback::issue_code(&state, &trusted, &pending.sign_in, &grant, now).await
 }
 
 enum ChoiceFailure {

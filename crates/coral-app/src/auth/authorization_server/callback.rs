@@ -1,5 +1,7 @@
+use axum::body::Bytes;
+use axum::extract::rejection::BytesRejection;
 use axum::extract::{RawQuery, State};
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -7,7 +9,7 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
 use super::super::sealed_handshake::SignInSession;
-use super::response::{TrustedRedirect, direct_error, direct_refusal};
+use super::response::{TrustedRedirect, body_too_large, direct_error, direct_refusal, see_other};
 use super::{AuthorizationServerHttpState, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedLogin};
@@ -16,8 +18,8 @@ use coral_sign_in::{ModeRequest, Named, PersonIdentifier, ProvenPerson, SignInVa
 use coral_telemetry::safe;
 use coral_workspace::UserId;
 
-/// The OIDC callback, the URL the provider sends the browser back to.
-pub(super) async fn oidc_callback(
+/// A GET at one of the sign-in mode's URLs.
+pub(super) async fn mode_get(
     State(state): State<AuthorizationServerHttpState>,
     RawQuery(raw_query): RawQuery,
     headers: HeaderMap,
@@ -25,6 +27,30 @@ pub(super) async fn oidc_callback(
     let request = ModeRequest {
         query: raw_query.as_deref().unwrap_or_default(),
         body: b"",
+    };
+    finish(&state, &request, &headers).await
+}
+
+/// A POST at one of the sign-in mode's URLs. The route limits its body to
+/// the mode's limit.
+pub(super) async fn mode_post(
+    State(state): State<AuthorizationServerHttpState>,
+    RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    // A body that cannot be read is refused before any cookie is found, so
+    // the sign-in stays.
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return body_too_large();
+        }
+        Err(_) => return direct_error("invalid_request", "request body could not be read"),
+    };
+    let request = ModeRequest {
+        query: raw_query.as_deref().unwrap_or_default(),
+        body: &body,
     };
     finish(&state, &request, &headers).await
 }
@@ -40,14 +66,21 @@ async fn finish(
     let arrived = state.clock.now();
     let sign_in = match state.sign_in_mode.names(request, arrived) {
         Named::SignIn(sign_in) => sign_in,
-        Named::NoSignIn => return invalid_state(),
+        // The web interface begins a sign-in for the person the browser
+        // brings; with none, the mode's refusal is the answer.
+        Named::NoSignIn(refusal) => {
+            return match state.settings.authorization_server().fresh_sign_in_url() {
+                Some(page) => see_other(page),
+                None => direct_refusal(&refusal),
+            };
+        }
         Named::Refused(refusal) => return direct_refusal(&refusal),
     };
     // A browser that did not start this sign-in has no cookie for it.
-    let secure = state.secure_cookies();
-    let Some((cookie_name, sealed)) = sign_in_cookie::find(headers, sign_in.as_str(), secure)
+    let attributes = state.sign_in_cookie_attributes();
+    let Some((cookie_name, sealed)) = sign_in_cookie::find(headers, sign_in.as_str(), attributes)
     else {
-        return invalid_state();
+        return direct_refusal(&state.sign_in_mode.no_sign_in_cookie(arrived));
     };
     let session = SignInSession::open(
         state.settings.handshake_keys(),
@@ -57,19 +90,12 @@ async fn finish(
     );
     let mut response = match session {
         Some(session) => complete(state, request, &sign_in, session, headers).await,
-        None => invalid_state(),
+        None => direct_refusal(&state.sign_in_mode.no_sign_in_cookie(arrived)),
     };
-    if let Some(clear) = sign_in_cookie::clear_header(&cookie_name, secure) {
+    if let Some(clear) = sign_in_cookie::clear_header(&cookie_name, attributes) {
         response.headers_mut().append(header::SET_COOKIE, clear);
     }
     response
-}
-
-fn invalid_state() -> Response {
-    direct_error(
-        "invalid_request",
-        "OIDC callback state is invalid or expired",
-    )
 }
 
 /// Finishes the sign-in `session` describes with the mode's answer in
@@ -129,13 +155,13 @@ async fn complete(
 }
 
 /// Stores a new code for `grant`, issued at `now` by the sign-in named
-/// `oidc_state`, and returns the client redirect that carries it. A sign-in
+/// `sign_in`, and returns the client redirect that carries it. A sign-in
 /// that already issued its code, or a code that cannot be stored, is refused
 /// with the client's error redirect.
 pub(super) async fn issue_code(
     state: &AuthorizationServerHttpState,
     trusted: &TrustedRedirect,
-    oidc_state: &str,
+    sign_in: &str,
     grant: &AuthorizationGrant,
     now: UnixNanos,
 ) -> Response {
@@ -145,7 +171,7 @@ pub(super) async fn issue_code(
     };
     match state
         .codes
-        .issue(&authorization_code, oidc_state, grant, now)
+        .issue(&authorization_code, sign_in, grant, now)
         .await
     {
         Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
@@ -227,7 +253,7 @@ async fn provision(
         Ok(LoginProvisioning::Disabled) => Err(ProvisioningFailure::Disabled),
         Ok(LoginProvisioning::IssuerMismatch) => {
             tracing::warn!(
-                "OIDC callback refused a login whose subject is already bound to a different \
+                "Sign-in refused a login whose subject is already bound to a different \
                  provider issuer; reconcile that user directory row before this login can succeed"
             );
             Err(ProvisioningFailure::IssuerMismatch)
@@ -235,7 +261,7 @@ async fn provision(
         Err(error) => {
             tracing::warn!(
                 error.type = safe::kind(provisioning_error_code(&error)),
-                "OIDC callback could not provision the verified login"
+                "Sign-in could not provision the verified login"
             );
             Err(ProvisioningFailure::Unavailable)
         }
@@ -285,7 +311,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use axum::body::to_bytes;
+    use axum::body::{Bytes, to_bytes};
     use axum::http::{HeaderValue, StatusCode, header};
 
     use serde_json::{Value, json};
@@ -422,17 +448,17 @@ mod tests {
     }
 
     /// The `Cookie` a browser holds after starting the sign-in named by
-    /// `oidc_state` for `session`.
+    /// `sign_in` for `session`.
     fn browser_cookie(
         state: &AuthorizationServerHttpState,
-        oidc_state: &str,
+        sign_in: &str,
         session: &SignInSession,
     ) -> HeaderValue {
         let now = state.clock.now().whole_seconds();
         let sealed = session
-            .seal(state.settings.handshake_keys(), oidc_state, now + 300)
+            .seal(state.settings.handshake_keys(), sign_in, now + 300)
             .expect("sealed session");
-        let name = sign_in_cookie::name(oidc_state, now, state.secure_cookies());
+        let name = sign_in_cookie::name(sign_in, now, state.sign_in_cookie_attributes());
         HeaderValue::from_str(&format!("{name}={sealed}")).expect("cookie")
     }
 
@@ -447,7 +473,7 @@ mod tests {
                 );
             }
         }
-        oidc_callback(State(state), RawQuery(Some(raw)), headers).await
+        mode_get(State(state), RawQuery(Some(raw)), headers).await
     }
 
     async fn callback(state: AuthorizationServerHttpState, pairs: &[(&str, &str)]) -> Response {
@@ -475,6 +501,30 @@ mod tests {
             .and_then(Value::as_str)
             .expect("error code")
             .to_owned()
+    }
+
+    fn error_description(body: &[u8]) -> Option<String> {
+        serde_json::from_slice::<Value>(body)
+            .expect("JSON error")
+            .get("error_description")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// The description `response` sends: in the client's redirect, or in
+    /// the body of a direct answer.
+    async fn sent_description(response: Response) -> Option<String> {
+        if response.headers().contains_key(header::LOCATION) {
+            return redirect_query(&response)
+                .into_iter()
+                .find(|(key, _)| key == "error_description")
+                .map(|(_, value)| value);
+        }
+        error_description(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
     }
 
     fn assert_security(response: &Response) {
@@ -577,7 +627,7 @@ mod tests {
             ("no cookie", HeaderMap::new()),
             ("a repeated cookie", shadowed),
         ] {
-            let response = oidc_callback(
+            let response = mode_get(
                 State(auth_state.clone()),
                 RawQuery(Some(query(&[
                     ("state", OIDC_STATE),
@@ -592,6 +642,12 @@ mod tests {
                 .await
                 .expect("body");
             assert_eq!(error_code(&body), "invalid_request", "{case}");
+            // The OIDC mode's answer, which core sends as it is.
+            assert_eq!(
+                error_description(&body).as_deref(),
+                Some("OIDC callback state is invalid or expired"),
+                "{case}"
+            );
         }
         assert!(
             provider
@@ -617,7 +673,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.append(header::COOKIE, browser_cookie(&app, OIDC_STATE, &session()));
         let callback = || {
-            oidc_callback(
+            mode_get(
                 State(app.clone()),
                 RawQuery(Some(query(&[
                     ("state", OIDC_STATE),
@@ -1209,7 +1265,7 @@ mod tests {
             header::COOKIE,
             browser_cookie(state, OIDC_STATE, &organization_session()),
         );
-        oidc_callback(
+        mode_get(
             State(state.clone()),
             RawQuery(Some(query(&[
                 ("state", OIDC_STATE),
@@ -1535,7 +1591,7 @@ mod tests {
     ) -> (Response, String) {
         let mut headers = HeaderMap::new();
         headers.append(header::COOKIE, browser_cookie(&state, sign_in, &session()));
-        with_logs(oidc_callback(
+        with_logs(mode_get(
             State(state),
             RawQuery(Some(raw.to_owned())),
             headers,
@@ -1549,28 +1605,47 @@ mod tests {
     #[tokio::test]
     async fn a_sign_in_finishes_through_the_configured_mode() {
         let database = database().await;
-        let app = mode_state(&database, super::super::test_state::test_mode(""));
-        let (response, _logs) = mode_answer(app, "value-1", "sign_in=value-1&person=00u1").await;
-        assert!(clears_sign_in_cookie(&response));
-        let user_id = stored_user_id(&database.database(), &response).await;
-        let again = UserDirectory::new(database.database())
-            .provision_login(VerifiedLogin::name_id(
-                "00u1",
-                None,
-                UnixNanos::new(coral_test_support::now_unix_nanos()),
-            ))
-            .await
-            .expect("provision");
-        assert_eq!(
-            again,
-            LoginProvisioning::Provisioned(UserId::parse(&user_id).expect("User ID"))
-        );
+        // Each cookie is found and cleared with the mode's `SameSite`.
+        for (settings, sign_in, person, same_site) in [
+            ("", "value-1", "00u1", "SameSite=Lax"),
+            ("same_site = 'none'", "value-2", "00u2", "SameSite=None"),
+        ] {
+            let app = mode_state(&database, super::super::test_state::test_mode(settings));
+            let answer = format!("sign_in={sign_in}&person={person}");
+            let (response, _logs) = mode_answer(app, sign_in, &answer).await;
+            assert!(
+                response
+                    .headers()
+                    .get_all(header::SET_COOKIE)
+                    .iter()
+                    .any(|cookie| cookie.to_str().is_ok_and(|cookie| {
+                        cookie.contains("Max-Age=0;") && cookie.ends_with(same_site)
+                    })),
+                "{settings}: {response:?}"
+            );
+            let user_id = stored_user_id(&database.database(), &response).await;
+            let again = UserDirectory::new(database.database())
+                .provision_login(VerifiedLogin::name_id(
+                    person,
+                    None,
+                    UnixNanos::new(coral_test_support::now_unix_nanos()),
+                ))
+                .await
+                .expect("provision");
+            assert_eq!(
+                again,
+                LoginProvisioning::Provisioned(UserId::parse(&user_id).expect("User ID")),
+                "{settings}"
+            );
+        }
     }
 
     /// Core sends each refusal of a mode with its OAuth error and a text that
     /// is fixed or in the checked form, and logs one the mode described. A
-    /// refusal of the check ends the sign-in; a request that names no
-    /// sign-in, or that the mode refuses before it names one, leaves it.
+    /// refusal of the check ends the sign-in. A request that the mode refuses
+    /// before it names a sign-in, one that names none in a deployment with no
+    /// web interface, and one whose sign-in has no cookie in this browser
+    /// each get the mode's refusal directly, and leave the browser's sign-in.
     #[tokio::test]
     async fn each_refusal_of_a_mode_gets_its_answer() {
         let database = database().await;
@@ -1629,9 +1704,15 @@ mod tests {
             ),
             (
                 "person=00u1",
-                "invalid_request",
-                "OIDC callback state is invalid or expired",
-                None,
+                "access_denied",
+                "test_not_requested 1970-01-01T00:00:00Z",
+                Some("test_not_requested"),
+            ),
+            (
+                "sign_in=value-2&person=00u1",
+                "access_denied",
+                "test_no_sign_in 1970-01-01T00:00:00Z",
+                Some("test_no_sign_in"),
             ),
         ] {
             let (response, logs) = mode_answer(app.clone(), "value-1", raw).await;
@@ -1686,6 +1767,302 @@ mod tests {
                 authority.organization_role() == Some(coral_workspace::OrganizationRole::Owner),
                 owner,
                 "{person}"
+            );
+        }
+    }
+
+    /// The test mode's answer for `sign_in`, padded with a form field to
+    /// exactly `len` bytes.
+    fn posted_answer(sign_in: &str, len: usize) -> String {
+        let answer = format!("sign_in={sign_in}&person=00u1&pad=");
+        let pad = len.checked_sub(answer.len()).expect("room for the answer");
+        format!("{answer}{}", "x".repeat(pad))
+    }
+
+    /// POSTs `body` to `path` chunked, so no `Content-Length` announces
+    /// its size, and returns the whole response as text.
+    async fn post_chunked(
+        server: &super::super::RunningCoralAuthorizationServer,
+        path: &str,
+        cookie: &HeaderValue,
+        body: &str,
+    ) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut stream = tokio::net::TcpStream::connect(server.local_addr())
+            .await
+            .expect("connect");
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nhost: {}\r\ncookie: {}\r\n\
+             content-type: application/x-www-form-urlencoded\r\n\
+             transfer-encoding: chunked\r\nconnection: close\r\n\r\n\
+             {:x}\r\n{body}\r\n0\r\n\r\n",
+            server.local_addr(),
+            cookie.to_str().expect("ASCII"),
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.expect("request");
+        let mut response = String::new();
+        // A guard, not a wait: the server closes the connection at once.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            stream.read_to_string(&mut response),
+        )
+        .await
+        .expect("the server answers")
+        .expect("response");
+        response
+    }
+
+    /// The test mode's POST is read up to its limit. A longer body, with or
+    /// without its length announced, gets core's answer before any cookie
+    /// is found: the sign-in stays, so the answer of exactly the limit then
+    /// finishes it.
+    #[tokio::test]
+    async fn a_modes_post_is_read_up_to_its_limit() {
+        let database = database().await;
+        let state = super::super::test_state::test_mode_state(&database, "", "", &[RESOURCE]);
+        let cookie = browser_cookie(&state, "value-1", &session());
+        let server = super::super::test_state::serve(state).await;
+        let url = format!("{}/auth/test/answer", server.endpoint_uri());
+        let browser = super::super::test_state::browser();
+        let post = |body: String| {
+            browser
+                .post(&url)
+                .header(header::COOKIE, cookie.clone())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(body)
+                .send()
+        };
+        let limit = coral_sign_in::testing::BODY_LIMIT;
+
+        let over = post(posted_answer("value-1", limit + 1))
+            .await
+            .expect("post");
+        assert_eq!(over.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!over.headers().contains_key(header::SET_COOKIE));
+        let body: Value = over.json().await.expect("JSON error");
+        assert_eq!(
+            (
+                body.get("error").and_then(Value::as_str),
+                body.get("error_description").and_then(Value::as_str)
+            ),
+            (Some("invalid_request"), Some("request body is too large"))
+        );
+        // Core's answer, not axum's own plain-text one.
+        let chunked = post_chunked(
+            &server,
+            "/auth/test/answer",
+            &cookie,
+            &posted_answer("value-1", limit + 1),
+        )
+        .await;
+        assert!(
+            chunked.starts_with("HTTP/1.1 413 Payload Too Large\r\n")
+                && chunked.contains("content-type: application/json\r\n")
+                && chunked.contains(r#""error_description":"request body is too large""#),
+            "{chunked}"
+        );
+
+        let at_limit = post(posted_answer("value-1", limit)).await.expect("post");
+        assert_eq!(at_limit.status(), StatusCode::FOUND);
+        let location = Url::parse(
+            at_limit.headers()[header::LOCATION]
+                .to_str()
+                .expect("location"),
+        )
+        .expect("client redirect");
+        assert!(
+            location.query_pairs().any(|(key, _)| key == "code"),
+            "{location}"
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
+    /// A deployment serves the URLs of its own sign-in mode, each with its
+    /// methods, and no other mode's.
+    #[tokio::test]
+    async fn each_deployment_serves_only_its_modes_urls() {
+        let database = database().await;
+        let test_mode = super::super::test_state::test_mode_state(&database, "", "", &[RESOURCE]);
+        let oidc = http_state(&database, "https://provider.invalid", "", &[RESOURCE]);
+        for (state, served, unserved) in [
+            (test_mode, "/auth/test/answer", "/auth/oidc/callback"),
+            (oidc, "/auth/oidc/callback", "/auth/test/answer"),
+        ] {
+            let server = super::super::test_state::serve(state).await;
+            let at = |path: &str| format!("{}{path}", server.endpoint_uri());
+            let browser = super::super::test_state::browser();
+            // The mode refuses an answer that names no sign-in, but the URL
+            // is served.
+            let get = browser.get(at(served)).send().await.expect("GET");
+            assert_eq!(get.status(), StatusCode::BAD_REQUEST, "{served}");
+            let put = browser.put(at(served)).send().await.expect("PUT");
+            assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED, "{served}");
+            for method in [reqwest::Method::GET, reqwest::Method::POST] {
+                let response = browser
+                    .request(method.clone(), at(unserved))
+                    .send()
+                    .await
+                    .expect("request");
+                assert_eq!(
+                    response.status(),
+                    StatusCode::NOT_FOUND,
+                    "{method} {unserved}"
+                );
+            }
+            server.shutdown().await.expect("shutdown");
+        }
+    }
+
+    /// A request that names no sign-in, by GET or POST, sends the browser
+    /// to the web interface's page that begins one, whatever its scheme. It
+    /// carries nothing from the request, logs nothing, and leaves the
+    /// browser's sign-in. The mode's other direct answers do not change.
+    #[tokio::test]
+    async fn a_request_that_names_no_sign_in_goes_to_the_web_interface() {
+        let database = database().await;
+        for web in ["https://reef.example.test", "http://localhost:5173"] {
+            let state = super::super::test_state::test_mode_state(
+                &database,
+                "",
+                &format!("[listeners.web]\npublic_url = '{web}'\n"),
+                &[RESOURCE],
+            );
+            let mut headers = HeaderMap::new();
+            headers.append(
+                header::COOKIE,
+                browser_cookie(&state, "value-1", &session()),
+            );
+            let unasked = "person=00u1&returnTo=%2Fsettings";
+            for (method, response) in [
+                (
+                    "GET",
+                    with_logs(mode_get(
+                        State(state.clone()),
+                        RawQuery(Some(unasked.to_owned())),
+                        headers.clone(),
+                    ))
+                    .await,
+                ),
+                (
+                    "POST",
+                    with_logs(mode_post(
+                        State(state.clone()),
+                        RawQuery(None),
+                        headers.clone(),
+                        Ok(Bytes::from(unasked)),
+                    ))
+                    .await,
+                ),
+            ] {
+                let (response, logs) = response;
+                assert_eq!(response.status(), StatusCode::SEE_OTHER, "{web} {method}");
+                assert_eq!(
+                    response.headers()[header::LOCATION],
+                    format!("{web}/login?fresh=1"),
+                    "{web} {method}"
+                );
+                assert_security(&response);
+                assert!(
+                    !response.headers().contains_key(header::SET_COOKIE),
+                    "{web} {method}"
+                );
+                assert!(logs.is_empty(), "{web} {method}: {logs}");
+            }
+            for (raw, code) in [
+                ("sign_in=value-1&sign_in=value-2", "test_malformed "),
+                ("sign_in=value-2&person=00u1", "test_no_sign_in "),
+            ] {
+                let (response, _logs) = mode_answer(state.clone(), "value-1", raw).await;
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{web} {raw}");
+                let description = sent_description(response).await.unwrap_or_default();
+                assert!(description.starts_with(code), "{web} {raw}: {description}");
+            }
+        }
+    }
+
+    /// How the browser holds the sign-in's cookie.
+    #[derive(Clone, Copy, Debug)]
+    enum Held {
+        /// As the begin set it.
+        Sealed,
+        /// Past its five minutes.
+        Expired,
+        /// Under its name, with no sealed sign-in.
+        Unsealed,
+    }
+
+    /// Once core finds the sign-in's cookie, every answer clears it: a
+    /// refusal of the check, and a cookie that does not open because it
+    /// expired or holds no sealed sign-in. None of them issues a code.
+    #[tokio::test]
+    async fn once_found_the_sign_in_cookie_is_cleared_with_every_answer() {
+        let database = database().await;
+        for (settings, sign_in, held, status, description) in [
+            (
+                "refuse = true",
+                "value-1",
+                Held::Sealed,
+                StatusCode::FOUND,
+                "test_refused 1970-01-01T00:00:00Z",
+            ),
+            (
+                "",
+                "value-2",
+                Held::Expired,
+                StatusCode::BAD_REQUEST,
+                "test_no_sign_in 1970-01-01T00:05:01Z",
+            ),
+            (
+                "",
+                "value-3",
+                Held::Unsealed,
+                StatusCode::BAD_REQUEST,
+                "test_no_sign_in 1970-01-01T00:00:00Z",
+            ),
+        ] {
+            let clock = Arc::new(ManualClock::starting_at(UnixNanos::new(0)));
+            let mut app = mode_state(&database, super::super::test_state::test_mode(settings));
+            app.clock = clock.clone();
+            let name = sign_in_cookie::name(sign_in, 0, app.sign_in_cookie_attributes());
+            let cookie = match held {
+                Held::Sealed | Held::Expired => browser_cookie(&app, sign_in, &session()),
+                Held::Unsealed => {
+                    HeaderValue::from_str(&format!("{name}=unsealed")).expect("cookie")
+                }
+            };
+            if matches!(held, Held::Expired) {
+                clock.advance(Duration::from_secs(sign_in_cookie::MAX_AGE_SECONDS + 1));
+            }
+            let mut headers = HeaderMap::new();
+            headers.append(header::COOKIE, cookie);
+            let answer = format!("sign_in={sign_in}&person=00u1");
+            let response = mode_get(State(app), RawQuery(Some(answer.clone())), headers).await;
+            assert_eq!(response.status(), status, "{held:?}");
+            assert!(
+                response
+                    .headers()
+                    .get_all(header::SET_COOKIE)
+                    .iter()
+                    .any(|value| value.as_bytes().starts_with(format!("{name}=;").as_bytes())),
+                "{held:?}: the cookie is cleared"
+            );
+            assert_eq!(
+                sent_description(response).await.as_deref(),
+                Some(description),
+                "{held:?}"
+            );
+
+            // No answer issued a code: the same sign-in, begun again in this
+            // browser, still issues its one code.
+            let mut again = mode_state(&database, super::super::test_state::test_mode(""));
+            again.clock = clock.clone();
+            let (response, _logs) = mode_answer(again, sign_in, &answer).await;
+            assert!(
+                redirect_query(&response)
+                    .iter()
+                    .any(|(key, _)| key == "code"),
+                "{held:?}: {response:?}"
             );
         }
     }

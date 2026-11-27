@@ -100,7 +100,9 @@ pub(super) async fn oauth_authorize_get(
         return trusted.error("invalid_request", inputs);
     }
     let sealed_len = sign_in.sealed_len();
-    if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.secure_cookies())) {
+    if !sealed_len
+        .is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.sign_in_cookie_attributes()))
+    {
         return trusted.error("invalid_request", "authorization request is too large");
     }
     // A trusted client proceeds as if the user had already pressed Allow.
@@ -221,7 +223,7 @@ async fn provider_sign_in(
         Err(refusal) => return trusted.refused(&refusal),
     };
     let keys = state.settings.handshake_keys();
-    let secure = state.secure_cookies();
+    let attributes = state.sign_in_cookie_attributes();
     // The sign-in starts when the mode's answer arrives, not when the
     // request did.
     let now = state.clock.now().whole_seconds();
@@ -234,17 +236,17 @@ async fn provider_sign_in(
         .ok()
         .and_then(|sealed| {
             sign_in_cookie::set_header(
-                &sign_in_cookie::name(sign_in.as_str(), now, secure),
+                &sign_in_cookie::name(sign_in.as_str(), now, attributes),
                 &sealed,
-                secure,
+                attributes,
             )
         })
     else {
         return trusted.error("server_error", "authorization failed");
     };
     let mut response = redirect(url.as_str());
-    for evicted in sign_in_cookie::evicted_by_new_sign_in(headers, secure) {
-        if let Some(clear) = sign_in_cookie::clear_header(&evicted, secure) {
+    for evicted in sign_in_cookie::evicted_by_new_sign_in(headers, attributes) {
+        if let Some(clear) = sign_in_cookie::clear_header(&evicted, attributes) {
             response.headers_mut().append(header::SET_COOKIE, clear);
         }
     }
@@ -492,8 +494,9 @@ mod tests {
                 HeaderValue::from_str(pair.expect("name and value")).expect("cookie"),
             );
         }
-        let (_name, sealed) = sign_in_cookie::find(&cookies, oidc_state, state.secure_cookies())
-            .expect("sign-in cookie");
+        let (_name, sealed) =
+            sign_in_cookie::find(&cookies, oidc_state, state.sign_in_cookie_attributes())
+                .expect("sign-in cookie");
         let now = state.clock.now().whole_seconds();
         SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
             .expect("sealed sign-in")
@@ -1663,13 +1666,20 @@ mod tests {
         let auth_state = state_with(&database, &provider.uri(), &trusting(CLIENT_ID), resolver);
         let mut headers = browser_headers();
         for started_at in [30, 10, 20] {
-            let name = sign_in_cookie::name(&format!("held-{started_at}"), started_at, true);
+            let name = sign_in_cookie::name(
+                &format!("held-{started_at}"),
+                started_at,
+                auth_state.sign_in_cookie_attributes(),
+            );
             headers.append(
                 header::COOKIE,
                 HeaderValue::from_str(&format!("{name}=sealed")).expect("cookie"),
             );
         }
-        let evicted = sign_in_cookie::evicted_by_new_sign_in(&headers, true);
+        let evicted = sign_in_cookie::evicted_by_new_sign_in(
+            &headers,
+            auth_state.sign_in_cookie_attributes(),
+        );
         assert!(!evicted.is_empty(), "the setup must reach the cap");
         let response =
             oauth_authorize_get(State(auth_state), RawQuery(Some(encode(&pairs()))), headers).await;
@@ -1916,6 +1926,21 @@ mod tests {
         );
         let session = returned_session(&app, &response, sign_in);
         assert_eq!(session.request.client_id, CLIENT_ID);
+        // The cookie takes the mode's `SameSite`.
+        for (settings, same_site) in [
+            ("", "SameSite=Lax"),
+            ("same_site = 'none'", "SameSite=None"),
+        ] {
+            let response = request(
+                auth_state(super::super::test_state::test_mode(settings)),
+                &pairs(),
+            )
+            .await;
+            let cookie = response.headers()[header::SET_COOKIE]
+                .to_str()
+                .expect("ASCII");
+            assert!(cookie.ends_with(same_site), "{cookie}");
+        }
 
         let refusing = auth_state(Arc::new(super::super::test_state::Refusing(
             coral_sign_in::Refusal::failed("mode_unavailable"),
@@ -2027,14 +2052,8 @@ mod tests {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let auth_state = state(&database, &provider.uri());
-        let bind_addr = auth_state.settings.bind_addr();
-        let server = super::super::start_listener(bind_addr, super::super::auth_router(auth_state))
-            .await
-            .expect("start");
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("client");
+        let server = super::super::test_state::serve(auth_state).await;
+        let client = super::super::test_state::browser();
         let authorize_url = format!("{}/oauth/authorize", server.endpoint_uri());
         let response = client
             .get(format!(

@@ -9,9 +9,11 @@
 //! that name, which checks the settings and builds the [`SignInMode`].
 //!
 //! A mode does the part of a sign-in that its protocol owns: the URL that
-//! begins it, which sign-in a request at the mode's URL names, and the check
-//! of that request, which ends in a [`ProvenPerson`] or a [`Refusal`]. Core
-//! does the rest: the sign-in cookie, the User, the code and the tokens.
+//! begins it, the URLs where its answer arrives ([`ModeUrl`]), the
+//! `SameSite` of the sign-in cookie that answer needs ([`SameSite`]), which
+//! sign-in a request at those URLs names, and the check of that request,
+//! which ends in a [`ProvenPerson`] or a [`Refusal`]. Core does the rest:
+//! the sign-in cookie, the User, the code and the tokens.
 //!
 //! No error here repeats a configured value, since an operator can paste a
 //! secret under the wrong key.
@@ -48,7 +50,7 @@ impl ModeName {
     /// # Errors
     /// Returns [`InvalidName`] unless `name` has the form of a mode's name
     /// ([`Self::is_name`]).
-    pub fn new(name: &'static str) -> Result<Self, InvalidName> {
+    pub const fn new(name: &'static str) -> Result<Self, InvalidName> {
         if Self::is_name(name) {
             Ok(Self(name))
         } else {
@@ -60,8 +62,8 @@ impl ModeName {
     /// letters, digits, `-` or `_`, starting with a letter. A message may
     /// repeat only such a value.
     #[must_use]
-    pub fn is_name(value: &str) -> bool {
-        is_token(value, 32, |c| c == '-' || c == '_')
+    pub const fn is_name(value: &str) -> bool {
+        is_token(value, 32, true)
     }
 
     /// The name as config writes it.
@@ -78,12 +80,24 @@ impl ModeName {
 )]
 pub struct InvalidName;
 
-fn is_token(value: &str, max_len: usize, also: impl Fn(char) -> bool) -> bool {
-    value.len() <= max_len
-        && value.starts_with(|c: char| c.is_ascii_lowercase())
-        && value
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || also(c))
+/// At most `max_len` lowercase letters, digits, `_`, and `-` when `dash`,
+/// starting with a letter.
+const fn is_token(value: &str, max_len: usize, dash: bool) -> bool {
+    let mut rest = value.as_bytes();
+    if rest.len() > max_len || !matches!(rest.first(), Some(b'a'..=b'z')) {
+        return false;
+    }
+    while let Some((byte, tail)) = rest.split_first() {
+        if !(byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || *byte == b'_'
+            || (dash && *byte == b'-'))
+        {
+            return false;
+        }
+        rest = tail;
+    }
+    true
 }
 
 /// Why one setting of a mode is unusable: the field below `[auth.provider]`,
@@ -275,9 +289,133 @@ impl SignInModes {
     }
 }
 
+/// The `SameSite` value of a mode's sign-in cookie.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SameSite {
+    /// `Lax`: the browser sends the cookie when another site sends the
+    /// browser itself to Coral with a GET, as an identity provider's
+    /// redirect does. It does not send it with a POST from another site,
+    /// nor with another site's image, frame or script request.
+    #[default]
+    Lax,
+    /// `None`: the browser sends the cookie on every request to Coral, also
+    /// a POST from another site. Core then always marks the cookie
+    /// `Secure`, as browsers require.
+    None,
+}
+
+impl SameSite {
+    /// The value as a `Set-Cookie` writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lax => "Lax",
+            Self::None => "None",
+        }
+    }
+}
+
+/// A URL that a mode answers at: `/auth/{name}/{segment}` of Coral's URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeUrl {
+    segment: &'static str,
+    method: ModeMethod,
+}
+
+/// How a browser reaches a mode's URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeMethod {
+    /// A GET. Core hands the mode no body.
+    Get,
+    /// A POST. Core hands the mode a body of at most `body_limit` bytes, and
+    /// refuses a longer one itself.
+    Post {
+        /// The most bytes of body the mode reads.
+        body_limit: usize,
+    },
+}
+
+impl ModeUrl {
+    /// A GET at `segment`.
+    #[must_use]
+    pub const fn get(segment: &'static str) -> Self {
+        Self {
+            segment,
+            method: ModeMethod::Get,
+        }
+    }
+
+    /// A POST at `segment`, whose body is at most `body_limit` bytes.
+    #[must_use]
+    pub const fn post(segment: &'static str, body_limit: usize) -> Self {
+        Self {
+            segment,
+            method: ModeMethod::Post { body_limit },
+        }
+    }
+
+    /// How a browser reaches the URL.
+    #[must_use]
+    pub const fn method(self) -> ModeMethod {
+        self.method
+    }
+
+    /// The URL's path below Coral's URL, for the mode `name`.
+    #[must_use]
+    pub fn path(self, name: ModeName) -> String {
+        format!("/auth/{}/{}", name.as_str(), self.segment)
+    }
+
+    /// Checks that each of `urls` stays below `/auth/{name}/`: its segment
+    /// has the form of a mode's name ([`ModeName::is_name`]), and no segment
+    /// is declared twice with the same method.
+    ///
+    /// # Errors
+    /// Returns the first rule that `urls` breaks.
+    pub fn check_all(urls: &[Self]) -> Result<(), InvalidUrl> {
+        for (index, url) in urls.iter().enumerate() {
+            if !ModeName::is_name(url.segment) {
+                return Err(InvalidUrl::Segment);
+            }
+            let same = |other: &Self| {
+                other.segment == url.segment
+                    && std::mem::discriminant(&other.method) == std::mem::discriminant(&url.method)
+            };
+            if urls.iter().skip(index + 1).any(same) {
+                return Err(InvalidUrl::Repeated);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// URLs that a mode cannot serve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidUrl {
+    /// A segment that does not have the form of a mode's name.
+    #[error(
+        "a sign-in mode's URL segment must be at most 32 lowercase letters, digits, `-` or `_`, starting with a letter"
+    )]
+    Segment,
+    /// One segment declared twice with the same method.
+    #[error("a sign-in mode declares one URL segment twice with the same method")]
+    Repeated,
+}
+
 /// One mode of signing people in, built from a deployment's settings.
 #[async_trait::async_trait]
 pub trait SignInMode: Send + Sync {
+    /// The URLs the mode answers at, which core serves below
+    /// `/auth/{name}/`. Core reads them once, when the server starts, and
+    /// refuses to start when [`ModeUrl::check_all`] refuses them.
+    fn urls(&self) -> Vec<ModeUrl>;
+
+    /// The `SameSite` value of the mode's sign-in cookie. A mode whose
+    /// answer arrives as a POST from another site needs [`SameSite::None`].
+    fn same_site(&self) -> SameSite {
+        SameSite::Lax
+    }
+
     /// Begins the sign-in whose random value is `sign_in`, at `now`, and
     /// returns the URL to send the browser to.
     ///
@@ -289,6 +427,12 @@ pub trait SignInMode: Send + Sync {
     /// Says which sign-in `request`, at one of the mode's URLs, names. Core
     /// then looks for that sign-in's cookie in the browser.
     fn names(&self, request: &ModeRequest<'_>, now: UnixNanos) -> Named;
+
+    /// The refusal of a request that names a sign-in, at `now`, when the
+    /// browser holds no cookie for it, more than one, or one that does not
+    /// open: the sign-in expired, or another browser began it. Core answers
+    /// it directly, since no client is known to send the browser back to.
+    fn no_sign_in_cookie(&self, now: UnixNanos) -> Refusal;
 
     /// Checks `request` against the sign-in `sign_in`, whose cookie core
     /// found and opened, and returns the person it proves.
@@ -361,7 +505,9 @@ pub enum Named {
     /// The sign-in with this random value.
     SignIn(SignInValue),
     /// No sign-in: the request is not an answer to one that Coral began.
-    NoSignIn,
+    /// Core sends the browser to the web interface to begin one; in a
+    /// deployment that has none, it answers with this refusal directly.
+    NoSignIn(Refusal),
     /// The request is refused before any sign-in is known.
     Refused(Refusal),
 }
@@ -494,8 +640,8 @@ impl Refusal {
 }
 
 /// At most 64 lowercase letters, digits or `_`, starting with a letter.
-fn is_code(value: &str) -> bool {
-    is_token(value, 64, |c| c == '_')
+const fn is_code(value: &str) -> bool {
+    is_token(value, 64, false)
 }
 
 /// The person a mode proved.

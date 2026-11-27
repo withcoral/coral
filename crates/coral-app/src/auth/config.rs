@@ -14,7 +14,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::error::AuthServerError;
-use super::oidc_mode::{OidcProviderSettings, ResolvedOidcProvider};
+use super::oidc_mode::{self, OidcMode, OidcProviderSettings, ResolvedOidcProvider};
 use super::sealed_handshake::HandshakeKeys;
 use crate::oauth_resource::CanonicalOauthUrl;
 use coral_auth::SessionTokenIssuer;
@@ -46,7 +46,7 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 #[derive(Clone)]
 pub struct AuthSettings {
     auth: RawAuthSettings,
-    provider: OidcProviderSettings,
+    sign_in: SignIn<OidcProviderSettings>,
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
 }
@@ -90,22 +90,15 @@ impl AuthSettings {
     ) -> Result<Option<Self>, AuthServerError> {
         let issuer = listener.validate(auth.is_some())?;
         let web_client = web.and_then(WebClient::from_settings);
+        // Any web interface, `http` on loopback too, begins a sign-in.
+        let fresh_sign_in_url = web.map(|web| web.public_url.page_url(FRESH_SIGN_IN_PATH));
         let Some(AuthSection(mut auth)) = auth else {
             return Ok(None);
         };
         auth.validate()?;
         let issuer =
             issuer.ok_or_else(|| config_error("[auth] requires listeners.auth.public_url"))?;
-        let provider = match provider_choice(std::mem::take(&mut auth.provider), &issuer, modes)? {
-            ProviderChoice::Oidc(provider) => *provider,
-            // No sign-in path serves a registered mode yet.
-            ProviderChoice::Mode(name, _mode) => {
-                return Err(invalid_provider(format!(
-                    "mode: sign-in mode `{}` cannot serve sign-in yet",
-                    name.as_str()
-                )));
-            }
-        };
+        let sign_in = provider_choice(std::mem::take(&mut auth.provider), &issuer, modes)?;
         if let Some(web) = &web_client {
             // Do not count the derived registration as a duplicate of an
             // explicitly listed audience. Explicit duplicates still fail in
@@ -121,10 +114,11 @@ impl AuthSettings {
             issuer,
             trusted_clients: std::mem::take(&mut auth.trusted_clients),
             web_client,
+            fresh_sign_in_url,
         };
         Ok(Some(Self {
             auth,
-            provider,
+            sign_in,
             bind_addr: listener.bind.unwrap_or(DEFAULT_BIND_ADDR),
             authorization_server,
         }))
@@ -154,9 +148,10 @@ impl AuthSettings {
             .map(|web| web.public_url.as_str())
     }
 
-    /// Fetches the secrets the config only points at — the provider client
-    /// secret and the session signing key — and builds the session-token
-    /// issuer keyed by the latter.
+    /// Fetches the secrets the config only points at — the OIDC provider's
+    /// client secret, when the mode is OIDC, and the session signing key —
+    /// and builds the session-token issuer keyed by the latter. A registered
+    /// mode read its own settings when it was built.
     ///
     /// # Errors
     ///
@@ -167,9 +162,12 @@ impl AuthSettings {
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<(ResolvedAuthSettings, SessionTokenIssuer), AuthServerError> {
-        let provider = self
-            .provider
-            .resolve(&self.authorization_server.issuer, get_var)?;
+        let sign_in = match self.sign_in {
+            SignIn::Oidc(provider) => SignIn::Oidc(Box::new(
+                provider.resolve(&self.authorization_server.issuer, get_var)?,
+            )),
+            SignIn::Mode(name, mode) => SignIn::Mode(name, mode),
+        };
         let key = self.auth.session.load_signing_key(config_path, get_var)?;
         let access_token_ttl = Duration::from_secs(self.auth.session.access_token_ttl_seconds);
         let session_tokens = SessionTokenIssuer::new(
@@ -186,7 +184,7 @@ impl AuthSettings {
                 authorization_server: self.authorization_server,
                 access_token_ttl,
                 refresh_token_ttl: Duration::from_secs(self.auth.session.refresh_token_ttl_seconds),
-                provider,
+                sign_in,
                 handshake_keys: Arc::new(handshake_keys),
             },
             session_tokens,
@@ -197,14 +195,15 @@ impl AuthSettings {
 /// Validated auth settings whose runtime dependencies have been resolved.
 ///
 /// [`AuthSettings::resolve_runtime_dependencies`] is the only constructor, so
-/// holding one is proof that the provider secret was fetched from its source —
-/// which is why reading it cannot fail and nothing rechecks runtime readiness.
+/// holding one is proof that the session signing key, and for OIDC the
+/// provider secret, were fetched from their sources — which is why reading
+/// them cannot fail and nothing rechecks runtime readiness.
 pub(crate) struct ResolvedAuthSettings {
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
     access_token_ttl: Duration,
     refresh_token_ttl: Duration,
-    provider: ResolvedOidcProvider,
+    sign_in: SignIn<ResolvedOidcProvider>,
     /// Seals sign-in state into browsers; derived from the session signing key.
     handshake_keys: Arc<HandshakeKeys>,
 }
@@ -223,8 +222,28 @@ impl ResolvedAuthSettings {
         self.refresh_token_ttl
     }
 
-    pub(super) fn provider(&self) -> &ResolvedOidcProvider {
-        &self.provider
+    /// The sign-in mode that `[auth.provider]` configures, and the name its
+    /// URLs are served under: the registered mode the settings hold, or the
+    /// OIDC mode of their provider, which reaches it under `policy`.
+    ///
+    /// # Errors
+    /// Returns [`AuthServerError::ProviderClient`] when the OIDC mode's HTTP
+    /// client cannot be built.
+    pub(super) fn sign_in_mode(
+        &self,
+        policy: coral_outbound::DestinationPolicy,
+    ) -> Result<(ModeName, Arc<dyn SignInMode>), AuthServerError> {
+        let provider = match &self.sign_in {
+            SignIn::Oidc(provider) => provider,
+            SignIn::Mode(name, mode) => return Ok((*name, Arc::clone(mode))),
+        };
+        let mode = OidcMode::new(
+            (**provider).clone(),
+            Arc::clone(&self.handshake_keys),
+            policy,
+        )
+        .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?;
+        Ok((oidc_mode::NAME, Arc::new(mode)))
     }
 
     pub(super) fn handshake_keys(&self) -> &Arc<HandshakeKeys> {
@@ -452,11 +471,21 @@ pub(crate) struct AuthorizationServerSettings {
     /// port the authorization code is about to be handed to.
     trusted_clients: Vec<String>,
     web_client: Option<WebClient>,
+    /// The web interface's sign-in page, with the mark that asks it to begin
+    /// a sign-in although the browser holds a session.
+    fresh_sign_in_url: Option<String>,
 }
 
 impl AuthorizationServerSettings {
     pub(crate) fn issuer(&self) -> &str {
         &self.issuer
+    }
+
+    /// The web interface's sign-in page, with the mark that asks it to begin
+    /// a sign-in although the browser holds a session, or `None` in a
+    /// deployment with no web interface.
+    pub(super) fn fresh_sign_in_url(&self) -> Option<&str> {
+        self.fresh_sign_in_url.as_deref()
     }
 
     /// Reports whether this request may skip the approval page: the web
@@ -536,12 +565,16 @@ fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> 
     Ok(value.to_string())
 }
 
-/// The mode every build has, which `[auth.provider]` selects with no `mode`.
-const OIDC_MODE: &str = "oidc";
+/// The web interface's sign-in page, with the mark that makes it begin a
+/// sign-in although the browser holds a session.
+const FRESH_SIGN_IN_PATH: &str = "/login?fresh=1";
 
-/// The sign-in mode that `[auth.provider]` selects, with its settings checked.
-enum ProviderChoice {
-    Oidc(Box<OidcProviderSettings>),
+/// The sign-in mode that `[auth.provider]` selects, with its settings
+/// checked: OIDC with its provider `P`, which the server builds into a mode
+/// when it starts, or a mode the build registered, built already.
+#[derive(Clone)]
+enum SignIn<P> {
+    Oidc(Box<P>),
     Mode(ModeName, Arc<dyn SignInMode>),
 }
 
@@ -553,17 +586,20 @@ fn provider_choice(
     mut table: toml::Table,
     coral_url: &str,
     modes: &SignInModes,
-) -> Result<ProviderChoice, AuthServerError> {
+) -> Result<SignIn<OidcProviderSettings>, AuthServerError> {
     let mode = match table.remove("mode") {
         None => None,
         Some(toml::Value::String(mode)) => Some(mode),
         Some(_) => return Err(missing_mode(None, modes)),
     };
+    // `oidc` is the mode every build has, and a missing `mode` selects it.
+    let oidc = oidc_mode::NAME.as_str();
     let name = match mode.as_deref() {
-        None | Some(OIDC_MODE) => {
+        Some(name) if name != oidc => name,
+        _ => {
             let mut provider: OidcProviderSettings =
                 ModeSettings::new(table).decode().map_err(|error| {
-                    not_a_setting(OIDC_MODE, &error).unwrap_or_else(|| {
+                    not_a_setting(oidc, &error).unwrap_or_else(|| {
                         // The text that a decode error of the whole file has.
                         AuthServerError::Config(format!(
                             "server configuration is invalid: {}",
@@ -572,9 +608,8 @@ fn provider_choice(
                     })
                 })?;
             provider.validate()?;
-            return Ok(ProviderChoice::Oidc(Box::new(provider)));
+            return Ok(SignIn::Oidc(Box::new(provider)));
         }
-        Some(name) => name,
     };
     let Some(factory) = modes.get(name) else {
         return Err(missing_mode(Some(name), modes));
@@ -586,7 +621,7 @@ fn provider_choice(
         .map_err(|error| {
             not_a_setting(name, &error).unwrap_or_else(|| config_error(at_provider(&error)))
         })?;
-    Ok(ProviderChoice::Mode(factory.name(), mode))
+    Ok(SignIn::Mode(factory.name(), mode))
 }
 
 /// The refusal of a key of `[auth.provider]` that the mode `mode` does not
@@ -613,9 +648,10 @@ fn at_provider(error: &SettingError) -> String {
 /// string it holds, if any. It repeats the value only when it has the form of
 /// a mode's name, since an operator can paste a secret under the wrong key.
 fn missing_mode(value: Option<&str>, modes: &SignInModes) -> AuthServerError {
-    let mut names: Vec<&str> = modes.names().filter(|name| *name != OIDC_MODE).collect();
+    let oidc = oidc_mode::NAME.as_str();
+    let mut names: Vec<&str> = modes.names().filter(|name| *name != oidc).collect();
     names.sort_unstable();
-    let names = std::iter::once(OIDC_MODE)
+    let names = std::iter::once(oidc)
         .chain(names)
         .map(|name| format!("`{name}`"))
         .collect::<Vec<_>>()
@@ -704,9 +740,8 @@ mod tests {
 
     use super::*;
 
-    use crate::auth::test_config::{PROVIDER, SESSION};
+    use crate::auth::test_config::{PROVIDER, SESSION, test_modes};
     use crate::bootstrap::{auth_settings, auth_settings_with};
-    use coral_sign_in::testing::TestModeFactory;
 
     /// Local override of the shared fixture: the trailing slash proves
     /// `validate_issuer` normalizes it away, and the rejection table rewrites
@@ -728,6 +763,16 @@ mod tests {
         match auth_settings(raw) {
             Err(error) => error,
             Ok(_) => panic!("expected invalid config"),
+        }
+    }
+
+    impl ResolvedAuthSettings {
+        /// The OIDC provider that the settings configure.
+        pub(in crate::auth) fn provider(&self) -> &ResolvedOidcProvider {
+            match &self.sign_in {
+                SignIn::Oidc(provider) => provider,
+                SignIn::Mode(..) => panic!("the settings configure another sign-in mode"),
+            }
         }
     }
 
@@ -1346,17 +1391,13 @@ mod tests {
         valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n")
     }
 
-    fn test_modes() -> SignInModes {
-        SignInModes::default().with(Arc::new(TestModeFactory))
-    }
-
     /// A mode that a launcher registers as `oidc`. Its `build` fails, so a
     /// start that builds it is refused.
     struct Impostor;
 
     impl coral_sign_in::SignInModeFactory for Impostor {
         fn name(&self) -> ModeName {
-            ModeName::new(OIDC_MODE).expect("a mode's name")
+            oidc_mode::NAME
         }
 
         fn feature(&self) -> Option<coral_edition::EnterpriseFeature> {
@@ -1475,31 +1516,33 @@ mod tests {
     }
 
     /// The mode gets the rest of `[auth.provider]`, without `mode`, and
-    /// Coral's URL. Until a sign-in path serves a mode, startup then refuses.
+    /// Coral's URL. Its settings resolve with no client secret.
     #[tokio::test]
     async fn a_registered_mode_gets_the_rest_of_the_section_and_coral_url() {
         let prefix = "invalid auth configuration: auth.provider";
         let start = "sign_in_url = 'https://idp.example.test/start'";
-        for (settings, expected) in [
-            (start, ".mode: sign-in mode `test` cannot serve sign-in yet"),
-            (
-                &format!("{start}\nissuer = 'https://accounts.example.test'"),
-                ".issuer: not a setting of sign-in mode `test`",
-            ),
-        ] {
-            let Err(error) = auth_settings_with(&with_mode("'test'", settings), &test_modes())
-            else {
-                panic!("{settings}: expected a refusal");
-            };
-            // The mode's own words follow; they are the mode's to test.
-            assert!(
-                error.starts_with(&format!("{prefix}{expected}")),
-                "{settings}: {error}"
-            );
-        }
+        let settings = auth_settings_with(&with_mode("'test'", start), &test_modes())
+            .expect("the test mode starts")
+            .expect("auth settings");
+        let dir = signing_key_dir();
+        let (resolved, _tokens) = settings
+            .resolve_runtime_dependencies(&dir.path().join("config.toml"), &|_| Ok(None))
+            .expect("no client secret to read");
+        let (name, _mode) = resolved
+            .sign_in_mode(crate::auth::test_config::loopback_policy())
+            .expect("the registered mode");
+        assert_eq!(name.as_str(), "test");
+        let unknown = format!("{start}\nissuer = 'https://accounts.example.test'");
+        let Err(error) = auth_settings_with(&with_mode("'test'", &unknown), &test_modes()) else {
+            panic!("{unknown}: expected a refusal");
+        };
+        assert_eq!(
+            error,
+            format!("{prefix}.issuer: not a setting of sign-in mode `test`")
+        );
 
         let table = toml::from_str(&format!("mode = 'test'\n{start}")).expect("TOML");
-        let Ok(ProviderChoice::Mode(name, mode)) =
+        let Ok(SignIn::Mode(name, mode)) =
             provider_choice(table, "http://localhost:9080", &test_modes())
         else {
             panic!("the test mode builds");

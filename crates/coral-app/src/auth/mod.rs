@@ -18,12 +18,6 @@ pub use config::AuthSettings;
 pub(crate) use config::{AuthListenerSettings, AuthSection, ResolvedAuthSettings, WebSettings};
 pub use error::AuthServerError;
 
-/// Path the authorization server answers the upstream provider's callback on.
-///
-/// Configuration derives the provider redirect URI from the public issuer and
-/// this same path, so the advertised callback is always one the router serves.
-pub(in crate::auth) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
-
 /// A server for tests of what a client does with a connection it has used.
 #[cfg(test)]
 pub(super) mod test_server {
@@ -125,11 +119,44 @@ pub(super) mod test_config {
         provider_issuer: &str,
         extra: &str,
     ) -> (ResolvedAuthSettings, SessionTokenIssuer) {
-        let settings = crate::bootstrap::auth_settings(&format!(
-            "[auth.session]\n[listeners.auth]\npublic_url = '{AUTH_ISSUER}'\n\
-             [auth.provider]\nissuer = '{provider_issuer}'\n\
-             client_id = 'provider-client'\nclient_secret = '{PROVIDER_SECRET}'\n{extra}"
-        ))
+        resolve(
+            &format!(
+                "[auth.provider]\nissuer = '{provider_issuer}'\n\
+                 client_id = 'provider-client'\nclient_secret = '{PROVIDER_SECRET}'\n{extra}"
+            ),
+            &coral_sign_in::SignInModes::default(),
+        )
+    }
+
+    /// [`resolved_settings`] for a build that registers `coral-sign-in`'s
+    /// test mode, configured with `settings` beside its `sign_in_url`.
+    pub(crate) fn resolved_test_mode_settings(
+        settings: &str,
+        extra: &str,
+    ) -> (ResolvedAuthSettings, SessionTokenIssuer) {
+        resolve(
+            &format!(
+                "[auth.provider]\nmode = 'test'\n\
+                 sign_in_url = 'https://idp.example.test/start'\n{settings}\n{extra}"
+            ),
+            &test_modes(),
+        )
+    }
+
+    /// The modes of a build that registers `coral-sign-in`'s test mode.
+    pub(crate) fn test_modes() -> coral_sign_in::SignInModes {
+        coral_sign_in::SignInModes::default()
+            .with(std::sync::Arc::new(coral_sign_in::testing::TestModeFactory))
+    }
+
+    fn resolve(
+        provider: &str,
+        modes: &coral_sign_in::SignInModes,
+    ) -> (ResolvedAuthSettings, SessionTokenIssuer) {
+        let settings = crate::bootstrap::auth_settings_with(
+            &format!("[auth.session]\n[listeners.auth]\npublic_url = '{AUTH_ISSUER}'\n{provider}"),
+            modes,
+        )
         .expect("valid auth config")
         .expect("auth settings");
         let signing_key = STANDARD.encode(&*SIGNING_KEY);
