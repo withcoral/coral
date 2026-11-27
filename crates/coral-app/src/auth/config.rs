@@ -90,6 +90,8 @@ impl AuthSettings {
     ) -> Result<Option<Self>, AuthServerError> {
         let issuer = listener.validate(auth.is_some())?;
         let web_client = web.and_then(WebClient::from_settings);
+        // Any web interface, `http` on loopback too, begins a sign-in.
+        let fresh_sign_in = web.map(|web| web.public_url.page_url(FRESH_SIGN_IN));
         let Some(AuthSection(mut auth)) = auth else {
             return Ok(None);
         };
@@ -112,6 +114,7 @@ impl AuthSettings {
             issuer,
             trusted_clients: std::mem::take(&mut auth.trusted_clients),
             web_client,
+            fresh_sign_in,
         };
         Ok(Some(Self {
             auth,
@@ -466,11 +469,21 @@ pub(crate) struct AuthorizationServerSettings {
     /// port the authorization code is about to be handed to.
     trusted_clients: Vec<String>,
     web_client: Option<WebClient>,
+    /// The web interface's sign-in page, with the mark that asks it to begin
+    /// a sign-in although the browser holds a session.
+    fresh_sign_in: Option<String>,
 }
 
 impl AuthorizationServerSettings {
     pub(crate) fn issuer(&self) -> &str {
         &self.issuer
+    }
+
+    /// The web interface's sign-in page, with the mark that asks it to begin
+    /// a sign-in although the browser holds a session, or `None` in a
+    /// deployment with no web interface.
+    pub(super) fn fresh_sign_in(&self) -> Option<&str> {
+        self.fresh_sign_in.as_deref()
     }
 
     /// Reports whether this request may skip the approval page: the web
@@ -549,6 +562,10 @@ fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> 
     }
     Ok(value.to_string())
 }
+
+/// The web interface's sign-in page, with the mark that makes it begin a
+/// sign-in although the browser holds a session.
+const FRESH_SIGN_IN: &str = "/login?fresh=1";
 
 /// The mode every build has, which `[auth.provider]` selects with no `mode`.
 const OIDC_MODE: &str = oidc_mode::NAME.as_str();

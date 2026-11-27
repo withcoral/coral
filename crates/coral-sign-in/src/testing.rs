@@ -7,7 +7,10 @@
 //! begin URL is `sign_in_url` with the sign-in's value as `sign_in` and
 //! Coral's URL as `return_to`. It answers a GET and a POST at `answer`, the
 //! POST's body at most [`BODY_LIMIT`] bytes. A request names its sign-in by
-//! `sign_in` and its person by `person`, in the query or a form body.
+//! `sign_in` and its person by `person`, in the query or a form body. A
+//! request that names no sign-in is refused, where core answers it, with
+//! `test_not_requested`, and one whose cookie core lacks with
+//! `test_no_sign_in`.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -125,10 +128,14 @@ impl SignInMode for TestMode {
     fn names(&self, request: &ModeRequest<'_>, now: UnixNanos) -> Named {
         let mut values = values(request, "sign_in");
         match (values.next(), values.next()) {
-            (None, _) => Named::NoSignIn,
+            (None, _) => Named::NoSignIn(Refusal::new("test_not_requested", now)),
             (Some(value), None) => Named::SignIn(SignInValue::new(value.into_owned())),
             (Some(_), Some(_)) => Named::Refused(Refusal::new("test_malformed", now)),
         }
+    }
+
+    fn no_sign_in_cookie(&self, now: UnixNanos) -> Refusal {
+        Refusal::new("test_no_sign_in", now)
     }
 
     async fn check(

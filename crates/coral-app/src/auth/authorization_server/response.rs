@@ -9,12 +9,12 @@
 //!
 //! # Trust
 //!
-//! Only three kinds of value reach a response body or a `Location` here: a
+//! Only four kinds of value reach a response body or a `Location` here: a
 //! `&'static str` chosen by the calling handler, a sign-in mode's
-//! [`Refusal`], whose text is fixed or the checked form `<code> <time>`, and
-//! values the client itself supplied and Coral stored. Nothing an upstream
-//! provider sends is passed in, so a provider cannot steer a redirect or
-//! place text in an error.
+//! [`Refusal`], whose text is fixed or the checked form `<code> <time>`,
+//! values the client itself supplied and Coral stored, and a URL the
+//! operator configured. Nothing an upstream provider sends is passed in, so a
+//! provider cannot steer a redirect or place text in an error.
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -159,10 +159,20 @@ fn direct(status: StatusCode, error: &str, description: &str) -> Response {
         .into_response()
 }
 
+/// Sends the browser to `location` with a GET, also after a POST, with no
+/// cached copy and no referrer.
+pub(super) fn see_other(location: &str) -> Response {
+    redirect_with(StatusCode::SEE_OTHER, location)
+}
+
 /// Sends the browser to `location` with no cached copy and no referrer.
 pub(super) fn redirect(location: &str) -> Response {
+    redirect_with(StatusCode::FOUND, location)
+}
+
+fn redirect_with(status: StatusCode, location: &str) -> Response {
     (
-        StatusCode::FOUND,
+        status,
         security_headers(),
         [(header::LOCATION, location)],
         "",

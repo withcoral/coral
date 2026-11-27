@@ -9,7 +9,7 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
 use super::super::sealed_handshake::SignInSession;
-use super::response::{TrustedRedirect, body_too_large, direct_error, direct_refusal};
+use super::response::{TrustedRedirect, body_too_large, direct_error, direct_refusal, see_other};
 use super::{AuthorizationServerHttpState, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedLogin};
@@ -66,14 +66,21 @@ async fn finish(
     let arrived = state.clock.now();
     let sign_in = match state.sign_in_mode.names(request, arrived) {
         Named::SignIn(sign_in) => sign_in,
-        Named::NoSignIn => return invalid_state(),
+        // The web interface begins a sign-in for the person the browser
+        // brings; with none, the mode's refusal is the answer.
+        Named::NoSignIn(refusal) => {
+            return match state.settings.authorization_server().fresh_sign_in() {
+                Some(page) => see_other(page),
+                None => direct_refusal(&refusal),
+            };
+        }
         Named::Refused(refusal) => return direct_refusal(&refusal),
     };
     // A browser that did not start this sign-in has no cookie for it.
     let attributes = state.sign_in_cookie();
     let Some((cookie_name, sealed)) = sign_in_cookie::find(headers, sign_in.as_str(), attributes)
     else {
-        return invalid_state();
+        return direct_refusal(&state.sign_in_mode.no_sign_in_cookie(arrived));
     };
     let session = SignInSession::open(
         state.settings.handshake_keys(),
@@ -83,19 +90,12 @@ async fn finish(
     );
     let mut response = match session {
         Some(session) => complete(state, request, &sign_in, session, headers).await,
-        None => invalid_state(),
+        None => direct_refusal(&state.sign_in_mode.no_sign_in_cookie(arrived)),
     };
     if let Some(clear) = sign_in_cookie::clear_header(&cookie_name, attributes) {
         response.headers_mut().append(header::SET_COOKIE, clear);
     }
     response
-}
-
-fn invalid_state() -> Response {
-    direct_error(
-        "invalid_request",
-        "OIDC callback state is invalid or expired",
-    )
 }
 
 /// Finishes the sign-in `session` describes with the mode's answer in
@@ -155,13 +155,13 @@ async fn complete(
 }
 
 /// Stores a new code for `grant`, issued at `now` by the sign-in named
-/// `oidc_state`, and returns the client redirect that carries it. A sign-in
+/// `sign_in`, and returns the client redirect that carries it. A sign-in
 /// that already issued its code, or a code that cannot be stored, is refused
 /// with the client's error redirect.
 pub(super) async fn issue_code(
     state: &AuthorizationServerHttpState,
     trusted: &TrustedRedirect,
-    oidc_state: &str,
+    sign_in: &str,
     grant: &AuthorizationGrant,
     now: UnixNanos,
 ) -> Response {
@@ -171,7 +171,7 @@ pub(super) async fn issue_code(
     };
     match state
         .codes
-        .issue(&authorization_code, oidc_state, grant, now)
+        .issue(&authorization_code, sign_in, grant, now)
         .await
     {
         Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
@@ -253,7 +253,7 @@ async fn provision(
         Ok(LoginProvisioning::Disabled) => Err(ProvisioningFailure::Disabled),
         Ok(LoginProvisioning::IssuerMismatch) => {
             tracing::warn!(
-                "OIDC callback refused a login whose subject is already bound to a different \
+                "Sign-in refused a login whose subject is already bound to a different \
                  provider issuer; reconcile that user directory row before this login can succeed"
             );
             Err(ProvisioningFailure::IssuerMismatch)
@@ -261,7 +261,7 @@ async fn provision(
         Err(error) => {
             tracing::warn!(
                 error.type = safe::kind(provisioning_error_code(&error)),
-                "OIDC callback could not provision the verified login"
+                "Sign-in could not provision the verified login"
             );
             Err(ProvisioningFailure::Unavailable)
         }
@@ -311,7 +311,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use axum::body::to_bytes;
+    use axum::body::{Bytes, to_bytes};
     use axum::http::{HeaderValue, StatusCode, header};
 
     use serde_json::{Value, json};
@@ -451,14 +451,14 @@ mod tests {
     /// `oidc_state` for `session`.
     fn browser_cookie(
         state: &AuthorizationServerHttpState,
-        oidc_state: &str,
+        sign_in: &str,
         session: &SignInSession,
     ) -> HeaderValue {
         let now = state.clock.now().whole_seconds();
         let sealed = session
-            .seal(state.settings.handshake_keys(), oidc_state, now + 300)
+            .seal(state.settings.handshake_keys(), sign_in, now + 300)
             .expect("sealed session");
-        let name = sign_in_cookie::name(oidc_state, now, state.sign_in_cookie());
+        let name = sign_in_cookie::name(sign_in, now, state.sign_in_cookie());
         HeaderValue::from_str(&format!("{name}={sealed}")).expect("cookie")
     }
 
@@ -501,6 +501,30 @@ mod tests {
             .and_then(Value::as_str)
             .expect("error code")
             .to_owned()
+    }
+
+    fn error_description(body: &[u8]) -> Option<String> {
+        serde_json::from_slice::<Value>(body)
+            .expect("JSON error")
+            .get("error_description")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// The description `response` sends: in the client's redirect, or in
+    /// the body of a direct answer.
+    async fn sent_description(response: Response) -> Option<String> {
+        if response.headers().contains_key(header::LOCATION) {
+            return redirect_query(&response)
+                .into_iter()
+                .find(|(key, _)| key == "error_description")
+                .map(|(_, value)| value);
+        }
+        error_description(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
     }
 
     fn assert_security(response: &Response) {
@@ -618,6 +642,12 @@ mod tests {
                 .await
                 .expect("body");
             assert_eq!(error_code(&body), "invalid_request", "{case}");
+            // The OIDC mode's answer, which core sends as it is.
+            assert_eq!(
+                error_description(&body).as_deref(),
+                Some("OIDC callback state is invalid or expired"),
+                "{case}"
+            );
         }
         assert!(
             provider
@@ -1612,8 +1642,10 @@ mod tests {
 
     /// Core sends each refusal of a mode with its OAuth error and a text that
     /// is fixed or in the checked form, and logs one the mode described. A
-    /// refusal of the check ends the sign-in; a request that names no
-    /// sign-in, or that the mode refuses before it names one, leaves it.
+    /// refusal of the check ends the sign-in. A request that the mode refuses
+    /// before it names a sign-in, one that names none in a deployment with no
+    /// web interface, and one whose sign-in has no cookie in this browser
+    /// each get the mode's refusal directly, and leave the browser's sign-in.
     #[tokio::test]
     async fn each_refusal_of_a_mode_gets_its_answer() {
         let database = database().await;
@@ -1672,9 +1704,15 @@ mod tests {
             ),
             (
                 "person=00u1",
-                "invalid_request",
-                "OIDC callback state is invalid or expired",
-                None,
+                "access_denied",
+                "test_not_requested 1970-01-01T00:00:00Z",
+                Some("test_not_requested"),
+            ),
+            (
+                "sign_in=value-2&person=00u1",
+                "access_denied",
+                "test_no_sign_in 1970-01-01T00:00:00Z",
+                Some("test_no_sign_in"),
             ),
         ] {
             let (response, logs) = mode_answer(app.clone(), "value-1", raw).await;
@@ -1869,6 +1907,154 @@ mod tests {
                 );
             }
             server.shutdown().await.expect("shutdown");
+        }
+    }
+
+    /// A request that names no sign-in, by GET or POST, sends the browser
+    /// to the web interface's page that begins one, whatever its scheme. It
+    /// carries nothing from the request, logs nothing, and leaves the
+    /// browser's sign-in. The mode's other direct answers do not change.
+    #[tokio::test]
+    async fn a_request_that_names_no_sign_in_goes_to_the_web_interface() {
+        let database = database().await;
+        for web in ["https://reef.example.test", "http://localhost:5173"] {
+            let state = super::super::test_state::test_mode_state(
+                &database,
+                "",
+                &format!("[listeners.web]\npublic_url = '{web}'\n"),
+                &[RESOURCE],
+            );
+            let mut headers = HeaderMap::new();
+            headers.append(
+                header::COOKIE,
+                browser_cookie(&state, "value-1", &session()),
+            );
+            let unasked = "person=00u1&returnTo=%2Fsettings";
+            for (method, response) in [
+                (
+                    "GET",
+                    with_logs(mode_get(
+                        State(state.clone()),
+                        RawQuery(Some(unasked.to_owned())),
+                        headers.clone(),
+                    ))
+                    .await,
+                ),
+                (
+                    "POST",
+                    with_logs(mode_post(
+                        State(state.clone()),
+                        RawQuery(None),
+                        headers.clone(),
+                        Ok(Bytes::from(unasked)),
+                    ))
+                    .await,
+                ),
+            ] {
+                let (response, logs) = response;
+                assert_eq!(response.status(), StatusCode::SEE_OTHER, "{web} {method}");
+                assert_eq!(
+                    response.headers()[header::LOCATION],
+                    format!("{web}/login?fresh=1"),
+                    "{web} {method}"
+                );
+                assert_security(&response);
+                assert!(
+                    !response.headers().contains_key(header::SET_COOKIE),
+                    "{web} {method}"
+                );
+                assert!(logs.is_empty(), "{web} {method}: {logs}");
+            }
+            for raw in [
+                "sign_in=value-1&sign_in=value-2",
+                "sign_in=value-2&person=00u1",
+            ] {
+                let (response, _logs) = mode_answer(state.clone(), "value-1", raw).await;
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{web} {raw}");
+            }
+        }
+    }
+
+    /// How the browser holds the sign-in's cookie.
+    #[derive(Clone, Copy, Debug)]
+    enum Held {
+        /// As the begin set it.
+        Sealed,
+        /// Past its five minutes.
+        Expired,
+        /// Under its name, with no sealed sign-in.
+        Unsealed,
+    }
+
+    /// Once core finds the sign-in's cookie, every answer clears it: a
+    /// refusal of the check, and a cookie that does not open because it
+    /// expired or holds no sealed sign-in. None of them issues a code.
+    #[tokio::test]
+    async fn once_found_the_sign_in_cookie_is_cleared_with_every_answer() {
+        let database = database().await;
+        for (settings, held, status, description) in [
+            (
+                "refuse = true",
+                Held::Sealed,
+                StatusCode::FOUND,
+                "test_refused 1970-01-01T00:00:00Z",
+            ),
+            (
+                "",
+                Held::Expired,
+                StatusCode::BAD_REQUEST,
+                "test_no_sign_in 1970-01-01T00:05:01Z",
+            ),
+            (
+                "",
+                Held::Unsealed,
+                StatusCode::BAD_REQUEST,
+                "test_no_sign_in 1970-01-01T00:00:00Z",
+            ),
+        ] {
+            let clock = Arc::new(ManualClock::starting_at(UnixNanos::new(0)));
+            let mut app = mode_state(&database, super::super::test_state::test_mode(settings));
+            app.clock = clock.clone();
+            let name = sign_in_cookie::name("value-1", 0, app.sign_in_cookie());
+            let cookie = match held {
+                Held::Sealed | Held::Expired => browser_cookie(&app, "value-1", &session()),
+                Held::Unsealed => {
+                    HeaderValue::from_str(&format!("{name}=unsealed")).expect("cookie")
+                }
+            };
+            if matches!(held, Held::Expired) {
+                clock.advance(Duration::from_secs(sign_in_cookie::MAX_AGE_SECONDS + 1));
+            }
+            let mut headers = HeaderMap::new();
+            headers.append(header::COOKIE, cookie);
+            let response = mode_get(
+                State(app),
+                RawQuery(Some("sign_in=value-1&person=00u1".to_owned())),
+                headers,
+            )
+            .await;
+            assert_eq!(response.status(), status, "{held:?}");
+            assert!(
+                response
+                    .headers()
+                    .get_all(header::SET_COOKIE)
+                    .iter()
+                    .any(|value| value.as_bytes().starts_with(format!("{name}=;").as_bytes())),
+                "{held:?}: the cookie is cleared"
+            );
+            if status == StatusCode::FOUND {
+                assert!(
+                    !redirect_query(&response)
+                        .iter()
+                        .any(|(key, _)| key == "code"),
+                    "{held:?}"
+                );
+            }
+            assert_eq!(
+                sent_description(response).await.as_deref(),
+                Some(description),
+                "{held:?}"
+            );
         }
     }
 }

@@ -70,6 +70,13 @@ impl SignInMode for OidcMode {
         }
     }
 
+    fn no_sign_in_cookie(&self, _now: UnixNanos) -> Refusal {
+        Refusal::invalid(
+            "callback_state_invalid",
+            "OIDC callback state is invalid or expired",
+        )
+    }
+
     async fn check(
         &self,
         request: &ModeRequest<'_>,

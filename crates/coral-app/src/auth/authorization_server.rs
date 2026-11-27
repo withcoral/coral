@@ -232,7 +232,7 @@ impl CoralAuthorizationServer {
     /// reverse proxy that forwards at the origin root. Every endpoint is served
     /// and advertised relative to `listeners.auth.public_url`, which must
     /// mount at the root, so a proxy that adds a path prefix strands discovery,
-    /// the authorize route, and the OIDC callback.
+    /// the authorize route, and the sign-in mode's URLs.
     /// # Errors
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
@@ -752,7 +752,8 @@ mod test_state {
     }
 
     /// A mode that names the sign-in whose value is the whole query, and
-    /// refuses the begin and the check with its refusal.
+    /// refuses the begin, the check and a sign-in with no cookie with its
+    /// refusal.
     pub(super) struct Refusing(pub(super) coral_sign_in::Refusal);
 
     #[async_trait::async_trait]
@@ -775,6 +776,10 @@ mod test_state {
             _now: coral_db::UnixNanos,
         ) -> coral_sign_in::Named {
             coral_sign_in::Named::SignIn(coral_sign_in::SignInValue::new(request.query.to_owned()))
+        }
+
+        fn no_sign_in_cookie(&self, _now: coral_db::UnixNanos) -> coral_sign_in::Refusal {
+            self.0.clone()
         }
 
         async fn check(

@@ -402,7 +402,17 @@ async fn the_test_mode_begins_names_and_checks() {
         query: "person=00u1",
         body: b"",
     };
-    assert!(matches!(mode.names(&unasked, now), Named::NoSignIn));
+    let Named::NoSignIn(refusal) = mode.names(&unasked, now) else {
+        panic!("an answer with no sign-in names none");
+    };
+    assert_eq!(
+        refusal.checked(),
+        Some("test_not_requested 1970-01-01T00:00:00Z")
+    );
+    assert_eq!(
+        mode.no_sign_in_cookie(now).checked(),
+        Some("test_no_sign_in 1970-01-01T00:00:00Z")
+    );
     let malformed = ModeRequest {
         query: "sign_in=a&sign_in=b",
         body: b"",

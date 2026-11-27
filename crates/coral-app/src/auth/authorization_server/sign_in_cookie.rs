@@ -3,13 +3,13 @@
 //! Each sign-in's session is sealed into its own cookie (see
 //! [`SignInSession`](crate::auth::sealed_handshake::SignInSession)), so any
 //! Coral process can finish a sign-in another one started. The cookie also
-//! binds the sign-in to its browser. The OIDC `state` travels through the
-//! provider, so the provider's sign-in link reaches any browser it is sent to,
-//! but only the starting browser holds the cookie. A callback in any other
+//! binds the sign-in to its browser. The sign-in's value travels through the
+//! identity provider, so its sign-in link reaches any browser it is sent to,
+//! but only the starting browser holds the cookie. An answer in any other
 //! browser finds nothing to finish.
 //!
-//! The name carries the sign-in's start time and a tag of its `state`. The tag
-//! lets the callback find its own cookie among a browser's concurrent
+//! The name carries the sign-in's start time and a tag of its value. The tag
+//! lets the mode's answer find its own cookie among a browser's concurrent
 //! sign-ins; the start time lets a new sign-in expire the oldest ones.
 //!
 //! The sign-in mode chooses the cookie's `SameSite`. Everything else about it
@@ -41,9 +41,9 @@ const MAX_APP_INPUT_BYTES: usize = 1536;
 /// The largest cookie browsers store, counted with its attributes.
 const MAX_COOKIE_BYTES: usize = 4096;
 const STEM: &str = "coral_oauth_signin_";
-/// Bytes of SHA-256(`state`) the name carries: enough that one browser's
-/// concurrent sign-ins never share a tag.
-const STATE_TAG_BYTES: usize = 8;
+/// Bytes of SHA-256 of the sign-in's value that the name carries: enough
+/// that one browser's concurrent sign-ins never share a tag.
+const TAG_BYTES: usize = 8;
 
 /// The attributes of one deployment's sign-in cookies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,12 +93,12 @@ pub(super) fn sealed_fits(sealed_len: usize, attributes: Attributes) -> bool {
     .is_some()
 }
 
-/// The cookie name for the sign-in named by `oidc_state`, started at `started_at`.
-pub(super) fn name(oidc_state: &str, started_at_unix_secs: u64, attributes: Attributes) -> String {
+/// The cookie name for the sign-in named by `sign_in`, started at `started_at`.
+pub(super) fn name(sign_in: &str, started_at_unix_secs: u64, attributes: Attributes) -> String {
     format!(
         "{}{STEM}{started_at_unix_secs}_{}",
         prefix(attributes),
-        tag(oidc_state)
+        tag(sign_in)
     )
 }
 
@@ -114,16 +114,16 @@ pub(super) fn clear_header(name: &str, attributes: Attributes) -> Option<HeaderV
     header_value(name, "", 0, attributes)
 }
 
-/// The name and sealed value of this browser's cookie for `oidc_state`.
+/// The name and sealed value of this browser's cookie for `sign_in`.
 ///
 /// `None` when the browser holds none, or more than one: a shadowing cookie
 /// must not choose which value is read.
 pub(super) fn find(
     headers: &HeaderMap,
-    oidc_state: &str,
+    sign_in: &str,
     attributes: Attributes,
 ) -> Option<(String, Zeroizing<Vec<u8>>)> {
-    let expected = tag(oidc_state);
+    let expected = tag(sign_in);
     let mut found = None;
     for (name, value) in cookies::pairs(headers) {
         let Some((_started_at, tag)) = parse(name, attributes) else {
@@ -169,17 +169,17 @@ fn parse(name: &[u8], attributes: Attributes) -> Option<(u64, &[u8])> {
     let (started_at, tag) = rest.split_at_checked(separator)?;
     let started_at = std::str::from_utf8(started_at).ok()?.parse().ok()?;
     let tag = tag.strip_prefix(b"_")?;
-    (tag.len() == STATE_TAG_BYTES * 2).then_some((started_at, tag))
+    (tag.len() == TAG_BYTES * 2).then_some((started_at, tag))
 }
 
 const fn prefix(attributes: Attributes) -> &'static str {
     if attributes.prefixed { "__Host-" } else { "" }
 }
 
-fn tag(oidc_state: &str) -> String {
-    Sha256::digest(oidc_state.as_bytes())
+fn tag(sign_in: &str) -> String {
+    Sha256::digest(sign_in.as_bytes())
         .iter()
-        .take(STATE_TAG_BYTES)
+        .take(TAG_BYTES)
         .fold(String::new(), |mut tag, byte| {
             let _infallible = write!(tag, "{byte:02x}");
             tag

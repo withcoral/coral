@@ -426,6 +426,12 @@ pub trait SignInMode: Send + Sync {
     /// then looks for that sign-in's cookie in the browser.
     fn names(&self, request: &ModeRequest<'_>, now: UnixNanos) -> Named;
 
+    /// The refusal of a request that names a sign-in, at `now`, when the
+    /// browser holds no cookie for it, more than one, or one that does not
+    /// open: the sign-in expired, or another browser began it. Core answers
+    /// it directly, since no client is known to send the browser back to.
+    fn no_sign_in_cookie(&self, now: UnixNanos) -> Refusal;
+
     /// Checks `request` against the sign-in `sign_in`, whose cookie core
     /// found and opened, and returns the person it proves.
     ///
@@ -497,7 +503,9 @@ pub enum Named {
     /// The sign-in with this random value.
     SignIn(SignInValue),
     /// No sign-in: the request is not an answer to one that Coral began.
-    NoSignIn,
+    /// Core sends the browser to the web interface to begin one; in a
+    /// deployment that has none, it answers with this refusal directly.
+    NoSignIn(Refusal),
     /// The request is refused before any sign-in is known.
     Refused(Refusal),
 }
