@@ -3,8 +3,8 @@ name: coral
 description: Coral on your own Kubernetes, against a Postgres database you provide.
 type: application
 # release-please keeps both at Coral's version: chart X installs Coral X.
-version: 1.10.0 # x-release-please-version
-appVersion: "1.10.0" # x-release-please-version
+version: 1.11.0 # x-release-please-version
+appVersion: "1.11.0" # x-release-please-version
 home: https://withcoral.com
 sources:
   - https://github.com/withcoral/coral

@@ -44,7 +44,8 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
-    /// Check that the release tag, the runtime and Desktop name one version.
+    /// Check that the release tag, the runtime, Desktop and the Helm chart name
+    /// one version.
     ReleaseDesktopCheckVersion(desktop_release::CheckVersionArgs),
     /// Package, sign, and verify the staged Desktop build for one platform.
     ReleaseDesktopPackage(desktop_release::PackageArgs),

@@ -1,13 +1,14 @@
 name: Release
 
 # Builds, signs and publishes Desktop to the v1 update feed, and the runtime
-# and coral-web images to GHCR, as one release: no artifact is visible until
+# and coral-web images and the Helm chart to GHCR, as one release: no artifact is visible until
 # every artifact is verified. Each Desktop platform job compiles and stages
 # with no credentials, then hands the staged build to xtask, which owns
 # packaging, signing, notarization and verification. Every Desktop asset goes
 # to a draft release in the feed repository, which updaters ignore. The images
 # are pushed by digest only, which no tag reaches. The promote job publishes
-# the release whole: it tags the images, then publishes the draft.
+# the release whole: it tags the images, pushes and signs the chart, attaches
+# images.txt to this repository's release, then publishes the draft.
 #
 # The feed never lives in withcoral/coral, whose releases the 0.x app
 # polls, or that app would update itself into this one.
@@ -280,11 +281,11 @@ jobs:
           if-no-files-found: error
 
   # Uploads every platform's assets to a draft. A rerun replaces them. The
-  # draft waits for the images too, so a release that cannot ship whole stops
-  # here, before anything is visible.
+  # draft waits for the images and the chart too, so a release that cannot
+  # ship whole stops here, before anything is visible.
   draft:
     name: Draft the release in the feed
-    needs: [validate, package-macos, package-windows, package-linux, images]
+    needs: [validate, package-macos, package-windows, package-linux, images, chart]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     timeout-minutes: 30
@@ -338,23 +339,28 @@ jobs:
 
   # Anyone sees the release only from here. It runs once the draft holds every
   # platform's assets and the images are tested and signed, so neither an
-  # updater nor a docker pull sees a partial release. The images are tagged
-  # before the draft is published: a rerun repairs a draft, but
-  # release-desktop-publish refuses a release that is already published, so
-  # the step a rerun cannot redo runs last.
+  # updater nor a docker pull sees a partial release. The images are tagged,
+  # and the chart pushed and signed, before the draft is published: a rerun
+  # repairs a draft, but release-desktop-publish refuses a release that is
+  # already published, so the step a rerun cannot redo runs last.
   promote:
     name: Publish the release to updaters and registries
-    needs: [validate, draft, images]
+    needs: [validate, draft, images, chart]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     timeout-minutes: 30
     permissions:
-      contents: read
+      # Attaches images.txt to this repository's release.
+      contents: write
       packages: write
+      # cosign signs the chart keylessly with the workflow's identity.
+      id-token: write
     env:
       TAG_NAME: ${{ needs.validate.outputs.tag-name }}
       CORAL_IMAGE: ghcr.io/withcoral/coral
       CORAL_WEB_IMAGE: ghcr.io/withcoral/coral-web
+      # Helm adds the chart's name: the chart is ghcr.io/withcoral/charts/coral.
+      CHART_REPOSITORY: oci://ghcr.io/withcoral/charts
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -367,10 +373,20 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chart
+          path: chart
+
       - name: Install Rust toolchain
         run: rustup show
       - name: Build xtask
         run: cargo build --locked -p xtask
+
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v4.3.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -414,6 +430,48 @@ jobs:
               exit 1
             fi
           done
+
+      # Now that the tags exist: the images the packaged chart renders with
+      # default values are images.txt's, and each resolves to its digest.
+      - name: Check images.txt against the chart
+        env:
+          VERSION: ${{ needs.images.outputs.version }}
+        run: scripts/check-images-txt.sh "chart/coral-${VERSION}.tgz" chart/images.txt
+
+      # Pushing the version again replaces its tag, so a rerun pushes and
+      # signs again. The chart's version is its only tag.
+      - name: Push, sign and verify the chart
+        env:
+          VERSION: ${{ needs.images.outputs.version }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          helm registry login ghcr.io --username "$REGISTRY_USER" --password-stdin <<<"$REGISTRY_PASSWORD"
+          helm push "chart/coral-${VERSION}.tgz" "$CHART_REPOSITORY" 2>&1 | tee "$RUNNER_TEMP/helm-push.txt"
+          digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "$RUNNER_TEMP/helm-push.txt")"
+          if [ -z "$digest" ]; then
+            echo "helm push printed no digest." >&2
+            exit 1
+          fi
+          chart="${CHART_REPOSITORY#oci://}/coral"
+          tagged="sha256:$(docker buildx imagetools inspect --raw "${chart}:${VERSION}" | sha256sum | cut -d' ' -f1)"
+          if [ "$tagged" != "$digest" ]; then
+            echo "${chart}:${VERSION} resolves to ${tagged}, not the pushed ${digest}." >&2
+            exit 1
+          fi
+          cosign sign --yes "${chart}@${digest}"
+          cosign verify \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG_NAME}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${chart}@${digest}" > /dev/null
+          echo "Pushed and signed ${chart}:${VERSION}@${digest}"
+
+      # A rerun replaces the asset.
+      - name: Attach images.txt to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG_NAME" chart/images.txt --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Create a GitHub App token for the feed
         id: token
@@ -539,6 +597,81 @@ jobs:
           git push --force \
             "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "${RELEASE_COMMIT_SHA}:refs/heads/docs"
+
+  # Packages the Helm chart and writes images.txt: every image the chart
+  # renders with default values, pinned by digest. Coral's images take the
+  # digests the images job signed. Envoy is upstream and unsigned, and the
+  # chart already pins it by digest, so the signed chart covers it. Checks
+  # cosign on every Coral image here; promote pushes and signs the chart, and
+  # checks that each tag in images.txt resolves to its digest.
+  chart:
+    name: Package the chart and pin its images
+    needs: [validate, images]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TAG_NAME: ${{ needs.validate.outputs.tag-name }}
+      VERSION: ${{ needs.images.outputs.version }}
+      CORAL_REF: ghcr.io/withcoral/coral:${{ needs.images.outputs.version }}
+      CORAL_WEB_REF: ghcr.io/withcoral/coral-web:${{ needs.images.outputs.version }}
+      CORAL_DIGEST: ${{ needs.images.outputs.coral }}
+      CORAL_WEB_DIGEST: ${{ needs.images.outputs.coral-web }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.commit-sha }}
+          persist-credentials: false
+
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v4.3.2
+
+      - name: Package the chart
+        run: |
+          set -euo pipefail
+          helm package charts/coral --destination chart
+          # validate checked that Chart.yaml names the tag's version.
+          test -f "chart/coral-${VERSION}.tgz"
+
+      # A rendered image that is neither one of Coral's, at this version, nor
+      # pinned by digest fails the release: images.txt could not pin it.
+      - name: Write images.txt from the default render
+        run: |
+          set -euo pipefail
+          scripts/chart-images.sh "chart/coral-${VERSION}.tgz" | while read -r ref; do
+            case "$ref" in
+              *@sha256:*) echo "$ref" ;;
+              "$CORAL_REF") echo "${ref}@${CORAL_DIGEST}" ;;
+              "$CORAL_WEB_REF") echo "${ref}@${CORAL_WEB_DIGEST}" ;;
+              *) echo "The chart renders ${ref}, which images.txt cannot pin" >&2; exit 1 ;;
+            esac
+          done > chart/images.txt
+          cat chart/images.txt
+          grep -qxF "${CORAL_REF}@${CORAL_DIGEST}" chart/images.txt
+          grep -qxF "${CORAL_WEB_REF}@${CORAL_WEB_DIGEST}" chart/images.txt
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Each of Coral's images must carry the signature of this workflow on
+      # this tag. The images are public, so this needs no sign-in.
+      - name: Verify the signature of each Coral image
+        run: |
+          set -euo pipefail
+          grep '^ghcr\.io/withcoral/' chart/images.txt | while read -r image; do
+            cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG_NAME}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${image%:*@*}@${image##*@}" > /dev/null
+            echo "Verified ${image}"
+          done
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: chart
+          path: chart/
+          if-no-files-found: error
 
   # The images keep the product's names, ghcr.io/withcoral/coral and
   # ghcr.io/withcoral/coral-web. This job is the images' counterpart of the

@@ -14,7 +14,7 @@ The chart never creates a database or a Secret. You give it both.
 
 To try Coral without a Postgres server, use [Docker Compose](/getting-started/self-host/docker-compose) instead.
 
-`<coral-host>` is the placeholder for the domain of your Coral deployment. `<version>` is the Coral version you install, such as `1.10.0`. The chart's version is Coral's version.
+`<coral-host>` is the placeholder for the domain of your Coral deployment. `<version>` is the Coral version you install, such as `1.12.0`. The chart's version is Coral's version.
 
 ## Prerequisites
 
@@ -77,11 +77,11 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
 
    By default, sign-in uses `auth.<coral-host>` and MCP uses `mcp.<coral-host>`. To use other hosts, set `hosts.auth` and `hosts.mcp`.
 
-4. Get the chart and install it:
+4. Install the chart from GHCR. To check where it came from first, see [Verify the chart and images](#verify-the-chart-and-images).
 
    ```shell
-   git clone --depth 1 --branch v<version> https://github.com/withcoral/coral.git
-   helm install coral ./coral/charts/coral --namespace coral -f values.yaml --wait --timeout 20m
+   helm install coral oci://ghcr.io/withcoral/charts/coral --version <version> \
+     --namespace coral -f values.yaml --wait --timeout 20m
    ```
 
 5. Route the three hosts. To have the chart render an Ingress or Gateway API HTTPRoutes, set `ingress` or `httpRoute` in your values. Or route each host to its Service yourself. The UI and MCP stream their responses, so your controller needs some settings. See [Routing](#routing).
@@ -95,11 +95,31 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
 To apply plain manifests with your own tools, render them with `helm template`:
 
 ```shell
-helm template coral ./coral/charts/coral --namespace coral -f values.yaml > coral.yaml
+helm template coral oci://ghcr.io/withcoral/charts/coral --version <version> \
+  --namespace coral -f values.yaml > coral.yaml
 kubectl -n coral apply -f coral.yaml
 ```
 
 Render again from the new chart for each upgrade.
+
+### Verify the chart and images
+
+Coral's release workflow signs the chart and the `coral` and `coral-web` images with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/). It signs them keylessly, with the workflow's GitHub identity. To check that they came from that workflow, install cosign and run:
+
+```shell
+identity=https://github.com/withcoral/coral/.github/workflows/release.yml@refs/tags/v<version>
+for artifact in charts/coral coral coral-web; do
+  cosign verify ghcr.io/withcoral/$artifact:<version> \
+    --certificate-identity "$identity" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+done
+```
+
+Each command fails if the signature is missing or comes from another identity.
+
+The Envoy sidecar uses the upstream `envoyproxy/envoy` image, which has no signature. The chart pins it by digest, so the chart's signature covers it: Kubernetes pulls only that exact image.
+
+Each [release](https://github.com/withcoral/coral/releases) also has an `images.txt` file. It lists every image the chart uses with its default values, pinned by digest. To mirror the images, see [Pull images from your registry](#pull-images-from-your-registry).
 
 ### Postgres with a private CA
 
@@ -441,7 +461,7 @@ Each `coral-web` pod runs an Envoy sidecar. Envoy sends each of the pod's gRPC r
 
 Envoy picks a `coral` pod when a request starts. A long request, such as a live update stream, stays on its pod. After you add `coral` pods, these requests move only when they reconnect.
 
-The sidecar uses the upstream `envoyproxy/envoy` image, pinned by digest. To pull it from your own registry, set `global.imageRegistry` or `web.envoy.image`. To size it, set `web.envoy.resources`.
+The sidecar uses the upstream `envoyproxy/envoy` image, pinned by digest. The image has no signature: see [Verify the chart and images](#verify-the-chart-and-images). To pull it from your own registry, set `global.imageRegistry` or `web.envoy.image`. To size it, set `web.envoy.resources`.
 
 If your service mesh spreads gRPC requests, turn the sidecar off with `web.envoy.enabled: false`. `coral-web` then calls the `coral` Service directly.
 
@@ -450,11 +470,11 @@ If your service mesh spreads gRPC requests, turn the sidecar off with `web.envoy
 Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first, and the release notes of every release between yours and the new one.
 
 1. Back up the database with a dump or a snapshot. Keep `CORAL_CREDENTIALS_KEY` with it.
-2. Get the new chart and upgrade:
+2. Upgrade to the new chart:
 
    ```shell
-   git clone --depth 1 --branch v<version> https://github.com/withcoral/coral.git
-   helm upgrade coral ./coral/charts/coral --namespace coral -f values.yaml --wait --timeout 20m
+   helm upgrade coral oci://ghcr.io/withcoral/charts/coral --version <version> \
+     --namespace coral -f values.yaml --wait --timeout 20m
    ```
 
    Do not use `--atomic`. Coral updates its database when it starts, and `--atomic` rolls the chart back after that update.
@@ -471,19 +491,44 @@ You can run Coral in a cluster that cannot reach the internet. Pull the images f
 
 ### Pull images from your registry
 
-1. On a machine with internet access, get the chart with `git clone`, as in [Install](#install). Copy the chart's folder to a machine that can reach your cluster.
-2. Copy these images to your registry. Keep each repository path, so that `ghcr.io/withcoral/coral` becomes `<registry>/withcoral/coral`.
-   - `ghcr.io/withcoral/coral:<version>`
-   - `ghcr.io/withcoral/coral-web:<version>`
-3. If your nodes need credentials to pull, create a pull Secret:
+1. On a machine with internet access, download the chart. Copy `coral-<version>.tgz` to a machine that can reach your cluster.
+
+   ```shell
+   helm pull oci://ghcr.io/withcoral/charts/coral --version <version>
+   ```
+
+2. Download the release's `images.txt`, which lists every image the chart uses, pinned by digest:
+
+   ```shell
+   curl -fsSLO https://github.com/withcoral/coral/releases/download/v<version>/images.txt
+   ```
+
+3. Copy each image to your registry with [crane](https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md). Keep each repository path, so that `ghcr.io/withcoral/coral` becomes `<registry>/withcoral/coral`. The chart pulls Coral's images by tag and Envoy by digest, so the loop keeps the tag where a line has one. crane checks each image against its digest.
+
+   ```shell
+   registry=<registry>
+   while read -r image; do
+     path="${image#*/}"
+     case "$path" in
+       *:*@*) crane copy "$image" "$registry/${path%@*}" ;;
+       *) crane copy "$image" "$registry/$path" ;;
+     esac
+   done < images.txt
+   ```
+
+4. If your nodes need credentials to pull, create a pull Secret:
 
    ```shell
    kubectl -n coral create secret docker-registry registry-internal \
      --docker-server=<registry> --docker-username='...' --docker-password='...'
    ```
 
-4. Copy the values from `coral/charts/coral/examples/values-airgapped.yaml` in your clone into your `values.yaml`. Set `global.imageRegistry` to your registry's host, and add a port if it needs one. Set `imagePullSecrets` to your pull Secret, or to `[]` if you have none.
-5. Install as in [Install](#install).
+5. Copy the values from [`values-airgapped.yaml`](https://github.com/withcoral/coral/blob/main/charts/coral/examples/values-airgapped.yaml) into your `values.yaml`. Set `global.imageRegistry` to your registry's host, and add a port if it needs one. Set `imagePullSecrets` to your pull Secret, or to `[]` if you have none.
+6. Install as in [Install](#install), from the chart you downloaded:
+
+   ```shell
+   helm install coral ./coral-<version>.tgz --namespace coral -f values.yaml --wait --timeout 20m
+   ```
 
 `global.imageRegistry` replaces only the registry host of each image. To change the path, the tag or the digest of one image, set `repository`, `tag` or `digest` under `coral.image` or `web.image`. When you set a digest, the chart pulls by the digest and ignores the tag.
 
