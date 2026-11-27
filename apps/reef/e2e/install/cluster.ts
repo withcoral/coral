@@ -888,6 +888,11 @@ function pipe(
         ? resolve(stdout)
         : reject(new Error(`${command} failed (${code}): ${stderr.trim()}`)),
     )
+    // A child that exits before it reads its input closes the pipe. Its exit
+    // code, not the broken write, says whether it failed.
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') reject(error)
+    })
     child.stdin.end(input)
   })
 }

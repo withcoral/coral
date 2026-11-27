@@ -24,6 +24,9 @@ async function standIns(directory: string, log: string, { hang = true, egress = 
       'previous=""\nfor argument in "$@"; do\n  case "$previous" in -keyout|-out) : > "$argument" ;; esac\n  previous="$argument"\ndone',
     kubectl: [
       'case "$*" in',
+      // Reads the manifest, as kubectl does: a stand-in that exits first
+      // breaks the setup's pipe.
+      "  *'-f -'*) cat > /dev/null ;;",
       `  exec*) exit ${egress} ;;`,
       "  *jsonpath=\\{.status.addresses*) printf '172.18.0.9' ;;",
       "  *jsonpath=\\{.data.Corefile*) printf '.:53 {\\n    forward . /etc/resolv.conf\\n}\\n' ;;",
