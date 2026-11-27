@@ -16,8 +16,11 @@ use serde_json::Value;
 
 /// Object levels a shape shows before it shows a deeper object as `{…}`.
 const MAX_DEPTH: usize = 6;
-/// Keys one object shows. The rest are counted.
+/// Keys one object shows however little room is left. The rest are counted.
 const KEYS_SHOWN: usize = 16;
+/// Keys one object shows instead while [`SHAPES_MAX_BYTES`] has room, in the
+/// steps that the shapes of one failure take in turns.
+const MORE_KEYS_SHOWN: [usize; 4] = [24, 32, 48, 64];
 /// Distinct keys one object tracks. An object with more is a map.
 const KEYS_TRACKED: usize = 256;
 /// Bytes of the longest key that reads as a field name. Field names in the
@@ -118,35 +121,118 @@ pub(crate) fn sketch(received: Vec<ReceivedResult>, unread: u64) -> ToolResultSh
     for result in received {
         let draft = Draft::new(result);
         if let Some(same) = drafts.iter_mut().find(|other| other.same_shape(&draft)) {
-            same.invocations += 1;
+            same.merge(draft);
         } else {
             drafts.push(draft);
         }
+    }
+    for draft in &mut drafts {
+        draft.settle();
     }
     let mut unsketched = unread;
     // Shrink the largest shape a level at a time, then drop the earliest.
     while drafts.iter().map(Draft::bytes).sum::<usize>() > SHAPES_MAX_BYTES {
         let largest = drafts
             .iter_mut()
-            .filter(|draft| draft.depth > 1)
+            .filter(|draft| draft.view.depth > 1)
             .max_by_key(|draft| draft.bytes());
         if let Some(draft) = largest {
-            draft.render(draft.depth - 1);
+            draft.view.depth -= 1;
+            draft.text = draft.render(draft.view);
         } else {
             unsketched += drafts.remove(0).invocations;
         }
     }
+    show_more_keys(&mut drafts);
     ToolResultShapes {
         shapes: drafts
             .into_iter()
             .map(|draft| ToolResultShape {
                 call_path: draft.call_path,
                 invocations: draft.invocations,
-                data: draft.text,
-                parsed_text: draft.parsed_text,
+                data: draft.text.data,
+                parsed_text: draft.text.parsed,
             })
             .collect(),
         unsketched,
+    }
+}
+
+/// Shows keys that `drafts` left out while there is room, which never takes
+/// away what they show: the shallowest level first, since a deeper object is
+/// more often an aside, and the latest result first, since the Program most
+/// often crashes on that one. Every draft takes one step before any takes the
+/// next, so that one shape does not take all the room.
+fn show_more_keys(drafts: &mut [Draft]) {
+    let mut bytes: usize = drafts.iter().map(Draft::bytes).sum();
+    for level in 0..MAX_DEPTH {
+        let mut growing: Vec<_> = drafts.iter_mut().rev().collect();
+        for keys in MORE_KEYS_SHOWN {
+            growing.retain_mut(|draft| {
+                let view = draft.view.with_keys(level, keys);
+                let text = draft.render(view);
+                let grown = bytes - draft.text.bytes() + text.bytes();
+                if grown > SHAPES_MAX_BYTES {
+                    return false;
+                }
+                bytes = grown;
+                draft.view = view;
+                draft.text = text;
+                true
+            });
+        }
+    }
+}
+
+/// How much of a shape its text shows.
+#[derive(Debug, Clone, Copy)]
+struct View {
+    /// Object levels shown.
+    depth: usize,
+    /// Keys one object shows, by its level.
+    keys: [usize; MAX_DEPTH],
+}
+
+impl View {
+    /// What a shape shows before the byte budget shrinks or grows it.
+    const FIRST: Self = Self {
+        depth: MAX_DEPTH,
+        keys: [KEYS_SHOWN; MAX_DEPTH],
+    };
+
+    fn with_keys(mut self, level: usize, keys: usize) -> Self {
+        if let Some(shown) = self.keys.get_mut(level) {
+            *shown = keys;
+        }
+        self
+    }
+
+    fn keys_at(&self, level: usize) -> usize {
+        self.keys.get(level).copied().unwrap_or(KEYS_SHOWN)
+    }
+}
+
+/// The text of one Tool Result Shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShapeText {
+    data: String,
+    parsed: Option<String>,
+}
+
+impl ShapeText {
+    fn of(data: &Shape, parsed: Option<&Shape>, view: View) -> Self {
+        Self {
+            data: data.render(0, view),
+            parsed: parsed.map(|shape| shape.render(0, view)),
+        }
+    }
+
+    const fn bytes(&self) -> usize {
+        self.data.len()
+            + match &self.parsed {
+                Some(parsed) => parsed.len(),
+                None => 0,
+            }
     }
 }
 
@@ -155,9 +241,11 @@ struct Draft {
     invocations: u64,
     data: Shape,
     parsed: Option<Shape>,
-    depth: usize,
-    text: String,
-    parsed_text: Option<String>,
+    /// What the first result alone shows in [`View::FIRST`]. Later results
+    /// that show the same join it.
+    first: ShapeText,
+    view: View,
+    text: ShapeText,
 }
 
 impl Draft {
@@ -177,37 +265,53 @@ impl Draft {
             shape.collapse_maps();
             shape
         });
-        let mut draft = Self {
+        let first = ShapeText::of(&data, parsed.as_ref(), View::FIRST);
+        Self {
             call_path: result.call_path,
             invocations: 1,
             data,
             parsed,
-            depth: MAX_DEPTH,
-            text: String::new(),
-            parsed_text: None,
-        };
-        draft.render(MAX_DEPTH);
-        draft
+            text: first.clone(),
+            first,
+            view: View::FIRST,
+        }
     }
 
-    fn render(&mut self, depth: usize) {
-        self.depth = depth;
-        self.text = self.data.render(0, depth);
-        self.parsed_text = self.parsed.as_ref().map(|shape| shape.render(0, depth));
+    fn render(&self, view: View) -> ShapeText {
+        ShapeText::of(&self.data, self.parsed.as_ref(), view)
     }
 
     /// Whether both have one Call Path and render alike. Shapes that merged a
     /// different number of objects render alike when they show the same, so
-    /// the text decides, not the counts behind it. Both render at full depth
-    /// here, and text that is alike at full depth stays alike when shrunk.
+    /// the text decides, not the counts behind it.
     fn same_shape(&self, other: &Self) -> bool {
-        self.call_path == other.call_path
-            && self.text == other.text
-            && self.parsed_text == other.parsed_text
+        self.call_path == other.call_path && self.first == other.first
+    }
+
+    /// Joins a draft of the same shape. The two can differ in what the first
+    /// view leaves out and more room shows, so both are kept.
+    fn merge(&mut self, other: Self) {
+        self.invocations += other.invocations;
+        self.data.merge(other.data);
+        match (&mut self.parsed, other.parsed) {
+            (Some(parsed), Some(more)) => parsed.merge(more),
+            (parsed @ None, more) => *parsed = more,
+            (Some(_), None) => {}
+        }
+    }
+
+    /// Renders what the merged results show. Their union can pass the limits
+    /// that tell an object keyed by data, so it is checked again.
+    fn settle(&mut self) {
+        self.data.collapse_maps();
+        if let Some(parsed) = &mut self.parsed {
+            parsed.collapse_maps();
+        }
+        self.text = self.render(self.view);
     }
 
     fn bytes(&self) -> usize {
-        self.call_path.len() + self.text.len() + self.parsed_text.as_ref().map_or(0, String::len)
+        self.call_path.len() + self.text.bytes()
     }
 }
 
@@ -336,16 +440,16 @@ impl Shape {
         }
     }
 
-    fn render(&self, level: usize, depth: usize) -> String {
+    fn render(&self, level: usize, view: View) -> String {
         let mut parts = Vec::new();
         if let Some(object) = &self.object {
-            parts.push(object.render(level, depth));
+            parts.push(object.render(level, view));
         }
         if let Some(elements) = &self.array {
             parts.push(if elements.is_never() {
                 "[]".to_string()
             } else {
-                format!("Array<{}>", elements.render(level, depth))
+                format!("Array<{}>", elements.render(level, view))
             });
         }
         for scalar in Scalar::ALL {
@@ -456,6 +560,26 @@ impl ObjectShape {
                 .is_some_and(|first| kinds.all(|kind| kind == Some(first)))
     }
 
+    /// Whether every value is one scalar kind, or null. The keys can be data
+    /// that reads as field names, such as a count for each person, so more
+    /// room does not show more of them.
+    fn is_tally(&self) -> bool {
+        let mut kinds = self.fields.iter().map(|field| {
+            let compound = field.shape.array.is_some() || field.shape.object.is_some();
+            (!compound).then_some(field.shape.scalars & !Scalar::Null.bit())
+        });
+        let Some(Some(mut all)) = kinds.next() else {
+            return false;
+        };
+        for kind in kinds {
+            match kind {
+                Some(kind) => all |= kind,
+                None => return false,
+            }
+        }
+        all.count_ones() <= 1
+    }
+
     fn collapse_maps(&mut self) {
         if self.is_map() {
             self.index.clear();
@@ -474,30 +598,35 @@ impl ObjectShape {
         }
     }
 
-    fn render(&self, level: usize, depth: usize) -> String {
+    fn render(&self, level: usize, view: View) -> String {
         if self.fields.is_empty() && self.record.is_none() && !self.deeper {
             return "{}".to_string();
         }
-        if self.deeper || level >= depth {
+        if self.deeper || level >= view.depth {
             return "{…}".to_string();
         }
         if let Some(values) = &self.record {
-            return format!("Record<string, {}>", values.render(level + 1, depth));
+            return format!("Record<string, {}>", values.render(level + 1, view));
         }
+        let shown = if self.is_tally() {
+            KEYS_SHOWN
+        } else {
+            view.keys_at(level)
+        };
         let mut members: Vec<String> = self
             .fields
             .iter()
-            .take(KEYS_SHOWN)
+            .take(shown)
             .map(|field| {
                 format!(
                     "{}{}: {}",
                     key(&field.name),
                     if field.present < self.seen { "?" } else { "" },
-                    field.shape.render(level + 1, depth)
+                    field.shape.render(level + 1, view)
                 )
             })
             .collect();
-        let more = self.fields.len().saturating_sub(KEYS_SHOWN);
+        let more = self.fields.len().saturating_sub(shown);
         if more > 0 {
             let keys = if more == 1 { "key" } else { "keys" };
             members.push(format!("… {more} more {keys}"));
