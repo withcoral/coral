@@ -292,8 +292,10 @@ impl SignInModes {
 /// The `SameSite` value of a mode's sign-in cookie.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SameSite {
-    /// `Lax`: the browser sends the cookie when another site sends it to
-    /// Coral with a GET, but not with a POST.
+    /// `Lax`: the browser sends the cookie when another site sends the
+    /// browser itself to Coral with a GET, as an identity provider's
+    /// redirect does. It does not send it with a POST from another site,
+    /// nor with another site's image, frame or script request.
     #[default]
     Lax,
     /// `None`: the browser sends the cookie on every request to Coral, also

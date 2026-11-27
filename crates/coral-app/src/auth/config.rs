@@ -148,9 +148,10 @@ impl AuthSettings {
             .map(|web| web.public_url.as_str())
     }
 
-    /// Fetches the secrets the config only points at — the provider client
-    /// secret and the session signing key — and builds the session-token
-    /// issuer keyed by the latter.
+    /// Fetches the secrets the config only points at — the OIDC provider's
+    /// client secret, when the mode is OIDC, and the session signing key —
+    /// and builds the session-token issuer keyed by the latter. A registered
+    /// mode read its own settings when it was built.
     ///
     /// # Errors
     ///
@@ -194,8 +195,9 @@ impl AuthSettings {
 /// Validated auth settings whose runtime dependencies have been resolved.
 ///
 /// [`AuthSettings::resolve_runtime_dependencies`] is the only constructor, so
-/// holding one is proof that the provider secret was fetched from its source —
-/// which is why reading it cannot fail and nothing rechecks runtime readiness.
+/// holding one is proof that the session signing key, and for OIDC the
+/// provider secret, were fetched from their sources — which is why reading
+/// them cannot fail and nothing rechecks runtime readiness.
 pub(crate) struct ResolvedAuthSettings {
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
