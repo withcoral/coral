@@ -57,7 +57,7 @@ jobs:
       KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
       TOOLS: ${{ github.workspace }}/../install-tools
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/npm-install
@@ -99,14 +99,14 @@ jobs:
         with:
           version: v4.3.2
       - if: ${{ inputs.suite == 'helm-install' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ inputs.images-artifact }}
       - name: Load the helm-install suite's images
         if: ${{ inputs.suite == 'helm-install' }}
         run: zstd -dc helm-install-images.tar.zst | docker load
       # Keeps the Reel image's layers and cache mounts between runs.
-      - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+      - uses: useblacksmith/setup-docker-builder@9657a6e02ca6445e6d6ce5ffaf370f4828dea50d # v2.4.0
         with:
           cache-key: reel
       - name: Record the suite
@@ -139,7 +139,7 @@ jobs:
       # keeps passing runs for review.
       - name: Retain review evidence, always for a failed or cancelled run
         if: ${{ always() && (failure() || cancelled() || github.event.repository.private) }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reel-${{ inputs.suite }}-${{ (inputs.suite == 'multi-instance' || inputs.suite == 'helm-install') && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/
