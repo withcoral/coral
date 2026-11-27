@@ -729,6 +729,57 @@ mod tests {
         );
     }
 
+    /// A Run's past span, recorded under the subscriber that Coral's
+    /// telemetry installs, leaves through the configured endpoint.
+    #[test]
+    fn a_past_span_leaves_through_the_configured_endpoint() {
+        in_child_process(
+            "telemetry::tests::a_past_span_leaves_through_the_configured_endpoint",
+            || {
+                use std::time::{Duration, SystemTime};
+
+                use wiremock::matchers::{method, path};
+                use wiremock::{Mock, MockServer, ResponseTemplate};
+
+                let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+                let collector = runtime.block_on(MockServer::start());
+                runtime.block_on(
+                    Mock::given(method("POST"))
+                        .and(path("/v1/traces"))
+                        .respond_with(ResponseTemplate::new(200))
+                        .mount(&collector),
+                );
+                let config = crate::bootstrap::telemetry(&format!(
+                    "[otel]\nendpoint = \"{}\"\n",
+                    collector.uri()
+                ))
+                .expect("telemetry config");
+                super::init_tracing(&config, "instance", "1.2.3+abc1234")
+                    .expect("telemetry starts");
+                let trace = coral_telemetry::RunTrace::parse(
+                    "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+                )
+                .expect("a stored Run Trace");
+                let start = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+                let end = start + Duration::from_secs(1);
+                trace.record_past("coral.run.queue", "coral_run::trace", &"run", start, end);
+                super::shutdown_tracing();
+
+                let received = runtime
+                    .block_on(collector.received_requests())
+                    .expect("the collector records requests");
+                let name = b"coral.run.queue";
+                assert!(
+                    received.iter().any(|request| {
+                        request.url.path() == "/v1/traces"
+                            && request.body.windows(name.len()).any(|bytes| bytes == name)
+                    }),
+                    "the past span did not reach the endpoint"
+                );
+            },
+        );
+    }
+
     /// After Coral's telemetry starts with a trace filter that admits a
     /// dependency at trace level, a `log` record from that dependency
     /// reaches the subscriber at debug level and above, but not at trace

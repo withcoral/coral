@@ -417,6 +417,29 @@ impl RunModule {
             transaction.commit().await?;
             return Ok(Start::Unavailable("the Run started on another stream"));
         }
+        let start = self
+            .recheck_and_start(transaction, &run, claim_id, resumed, started_at)
+            .await?;
+        // This stream's start mark committed, now or in an attempt the
+        // database did not answer. Only an answered attempt returns here, so
+        // each start is recorded once.
+        if resumed || matches!(start, Start::Started(_)) {
+            crate::trace::record_start(&run, started_at.load(Ordering::SeqCst));
+        }
+        Ok(start)
+    }
+
+    /// The rest of [`Self::start_on`] on `run`, which this stream may
+    /// start: the authority recheck, then the start mark, or the start that
+    /// an earlier attempt's mark made when `resumed`.
+    async fn recheck_and_start(
+        &self,
+        mut transaction: coral_db::Transaction<'_>,
+        run: &RunRecord,
+        claim_id: &str,
+        resumed: bool,
+        started_at: &std::sync::atomic::AtomicI64,
+    ) -> Result<Start, Error> {
         let checked_at = self.now()?.max(run.accepted_at_unix_nanos);
         if resumed && run.termination.is_some() {
             // An older build recorded a termination: no Program starts on it.
@@ -426,7 +449,7 @@ impl RunModule {
         // A start mark that landed unanswered may have outlived its
         // deadline meanwhile: the Run times out, unstarted.
         if resumed && run.deadline_passed(checked_at) {
-            self.time_out_before_start(transaction, &run, checked_at)
+            self.time_out_before_start(transaction, run, checked_at)
                 .await?;
             return Ok(Start::Ended(WireEnd::TimedOut));
         }
@@ -454,7 +477,7 @@ impl RunModule {
             Err(error) if error.database_error().is_some() => return Err(error),
             Err(_lost) => {
                 return self
-                    .fail_unstarted(transaction, &run, claim_id, resumed, now)
+                    .fail_unstarted(transaction, run, claim_id, resumed, now)
                     .await;
             }
         };
@@ -464,8 +487,6 @@ impl RunModule {
             let deadline_at_unix_nanos = run
                 .deadline_at_unix_nanos
                 .ok_or_else(|| Error::CorruptData("started Run has no deadline".into()))?;
-            // Its commit went unanswered, so its wait is recorded now.
-            crate::trace::record_start(&run, started_at.load(Ordering::SeqCst));
             return Ok(Start::Started(Box::new((
                 actor,
                 StartedExecution {
@@ -481,7 +502,7 @@ impl RunModule {
         started_at.store(now, Ordering::SeqCst);
         run_repository::start_taken(
             &mut transaction,
-            &run,
+            run,
             claim_id,
             now,
             deadline_at_unix_nanos,
@@ -489,7 +510,6 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
-        crate::trace::record_start(&run, now);
         Ok(Start::Started(Box::new((
             actor,
             StartedExecution {
