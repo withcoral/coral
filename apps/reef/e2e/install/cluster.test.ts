@@ -39,10 +39,11 @@ test(
     const log = join(directory, 'calls.log')
     const path = process.env.PATH
     process.env.PATH = `${await standIns(directory, log)}:${path}`
+    const cancel = new AbortController()
+    let setup: ReturnType<typeof startInstall> | undefined
     try {
-      const cancel = new AbortController()
       const evidence = join(directory, 'evidence')
-      const setup = startInstall({
+      setup = startInstall({
         coralImage: 'coral:local',
         webImage: 'coral-web:local',
         keep: false,
@@ -68,6 +69,9 @@ test(
       assert.ok((await readFile(join(evidence, 'events.txt'), 'utf8')) !== undefined)
       assert.ok(made.includes(`kind delete cluster --name ${cluster}`))
     } finally {
+      // A failure before the cancellation must not leave the hanging kind running.
+      cancel.abort()
+      await setup?.catch(() => {})
       process.env.PATH = path
       await rm(directory, { recursive: true, force: true })
     }
