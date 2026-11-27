@@ -34,13 +34,6 @@ fn settings(raw: &str) -> (ModeSettings, ModeEnvironment) {
     )
 }
 
-fn test_mode(raw: &str) -> Arc<dyn SignInMode> {
-    let (settings, environment) = settings(raw);
-    TestModeFactory
-        .build(&settings, &environment)
-        .unwrap_or_else(|error| panic!("{error}"))
-}
-
 /// A message lists each mode once, and the mode that serves is the last one
 /// registered under its name.
 #[test]
@@ -58,10 +51,9 @@ fn a_later_mode_replaces_one_of_the_same_name() {
     assert!(modes.get("missing").is_none());
 }
 
-/// A mode's name is a segment of its URLs, and a refusal is sent only in the
-/// form that Reef reads: `<code> <time>`.
+/// A mode's name is a segment of its URLs.
 #[test]
-fn names_and_refusals_keep_their_forms() {
+fn names_keep_their_form() {
     for (name, valid) in [
         ("test", true),
         ("a-b_9", true),
@@ -75,34 +67,145 @@ fn names_and_refusals_keep_their_forms() {
     ] {
         assert_eq!(ModeName::is_name(name), valid, "{name}");
     }
-    let long_code = format!("{} 2026-11-26T10:15:42Z", "a".repeat(64));
-    let too_long_code = format!("{} 2026-11-26T10:15:42Z", "a".repeat(65));
-    for (description, valid) in [
-        ("sign_in_refused 2026-11-26T10:15:42Z", true),
-        (&*long_code, true),
-        (&*too_long_code, false),
-        ("sign-in 2026-11-26T10:15:42Z", false),
-        ("Refused 2026-11-26T10:15:42Z", false),
-        ("1refused 2026-11-26T10:15:42Z", false),
-        ("refused 2026-02-30T10:15:42Z", false),
-        ("refused 2026-12-31T23:59:60Z", false),
-        ("refused 2026-11-26T10:15:42", false),
-        ("refused 2026-11-26 10:15:42Z", false),
-        ("refused 2026-11-26T10:15:42+00:00", false),
-        ("refused  2026-11-26T10:15:42Z", false),
-        ("refused 2026-11-26T10:15:42Z extra", false),
-        ("refused", false),
-        ("", false),
+}
+
+const LONGEST_CODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TOO_LONG_CODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// Each refusal sends its OAuth error and a text that is either fixed or in
+/// the form `<code> <time>`, and a code only in the form of one.
+#[test]
+fn a_refusal_names_its_answer() {
+    let now = UnixNanos::new(1_500_000_000);
+    let form = "sign_in_refused 1970-01-01T00:00:01Z";
+    let longest = format!("{LONGEST_CODE} 1970-01-01T00:00:01Z");
+    for (refusal, error, description, checked, code) in [
+        (
+            Refusal::new("sign_in_refused", now),
+            RefusalError::AccessDenied,
+            form,
+            Some(form),
+            Some("sign_in_refused"),
+        ),
+        (
+            Refusal::new(LONGEST_CODE, now),
+            RefusalError::AccessDenied,
+            &*longest,
+            Some(&*longest),
+            Some(LONGEST_CODE),
+        ),
+        (
+            Refusal::denied("provider_denied"),
+            RefusalError::AccessDenied,
+            DENIED,
+            None,
+            Some("provider_denied"),
+        ),
+        (
+            Refusal::failed("token_exchange"),
+            RefusalError::ServerError,
+            "authorization failed",
+            None,
+            Some("token_exchange"),
+        ),
+        (
+            Refusal::invalid("callback_malformed", "callback request is malformed"),
+            RefusalError::InvalidRequest,
+            "callback request is malformed",
+            None,
+            Some("callback_malformed"),
+        ),
     ] {
-        let refusal = Refusal::from_description(description.to_owned());
-        assert_eq!(refusal.checked().is_some(), valid, "{description}");
+        assert_eq!(
+            (
+                refusal.error(),
+                refusal.description(),
+                refusal.checked(),
+                refusal.code()
+            ),
+            (error, description, checked, code),
+            "{refusal:?}"
+        );
     }
-    // The helper writes the form, to the second.
-    let refusal = Refusal::new("sign_in_refused", UnixNanos::new(1_500_000_000));
+    // A code of another form sends none of itself, to the client or the
+    // log.
+    for code in [
+        "",
+        "Refused",
+        "1refused",
+        "sign-in",
+        "refused here",
+        TOO_LONG_CODE,
+    ] {
+        let refusal = Refusal::new(code, now);
+        assert_eq!(
+            (refusal.description(), refusal.checked(), refusal.code()),
+            (DENIED, None, None),
+            "{code}"
+        );
+    }
     assert_eq!(
-        refusal.checked(),
-        Some("sign_in_refused 1970-01-01T00:00:01Z")
+        [
+            RefusalError::AccessDenied,
+            RefusalError::InvalidRequest,
+            RefusalError::ServerError
+        ]
+        .map(RefusalError::as_str),
+        ["access_denied", "invalid_request", "server_error"]
     );
+}
+
+/// A proven person keeps every part of the profile a mode gives, and a
+/// provider that says nothing of the email is not read as one that refused it.
+#[test]
+fn a_proven_person_keeps_its_profile() {
+    let bare = ProvenPerson::subject("https://idp.example.test".to_owned(), "00u1".to_owned());
+    assert_eq!(
+        (
+            bare.display_name(),
+            bare.name(),
+            bare.email(),
+            bare.email_verified(),
+            bare.hosted_domain(),
+            bare.observed_at()
+        ),
+        (None, None, None, None, None, None)
+    );
+    for verified in [None, Some(false), Some(true)] {
+        let person = bare
+            .clone()
+            .with_display_name(Some("Ada L".to_owned()))
+            .with_profile(
+                Some("Ada".to_owned()),
+                Some("ada@example.test".to_owned()),
+                verified,
+                Some("example.test".to_owned()),
+            )
+            .with_observed_at(UnixNanos::new(7));
+        assert_eq!(
+            (
+                person.identifier(),
+                person.display_name(),
+                person.name(),
+                person.email(),
+                person.email_verified(),
+                person.hosted_domain(),
+                person.observed_at()
+            ),
+            (
+                PersonIdentifier::Subject {
+                    issuer: "https://idp.example.test",
+                    subject: "00u1"
+                },
+                Some("Ada L"),
+                Some("Ada"),
+                Some("ada@example.test"),
+                verified,
+                Some("example.test"),
+                Some(UnixNanos::new(7))
+            )
+        );
+    }
 }
 
 #[test]
@@ -185,12 +288,25 @@ fn debug_prints_no_value() {
     }
 }
 
+/// A clock that always reads one instant.
+#[derive(Debug)]
+struct At(UnixNanos);
+
+impl Clock for At {
+    fn now(&self) -> UnixNanos {
+        self.0
+    }
+}
+
 /// A mode outside `ee/` can serve the whole contract: the begin, the two
-/// answers of a request, and a refusal.
+/// answers of a request, a refusal and the first Owner. Its check dates a
+/// refusal by the clock it is given.
 #[tokio::test]
 async fn the_test_mode_begins_names_and_checks() {
     let now = UnixNanos::new(0);
-    let mode = test_mode("sign_in_url = 'https://idp.example.test/start'");
+    let clock = At(UnixNanos::new(1_000_000_000));
+    let mode = super::testing::mode("sign_in_url = 'https://idp.example.test/start'");
+    assert_eq!(mode.first_owner(), None);
     let sign_in = SignInValue::new("value-1".to_owned());
     let begin = mode.begin(&sign_in, now).await.expect("begin");
     assert_eq!(
@@ -206,8 +322,12 @@ async fn the_test_mode_begins_names_and_checks() {
         panic!("the answer names its sign-in");
     };
     assert_eq!(named, sign_in);
-    let person = mode.check(&answer, &sign_in, now).await.expect("a person");
+    let person = mode
+        .check(&answer, &sign_in, &clock)
+        .await
+        .expect("a person");
     assert_eq!(person.identifier(), PersonIdentifier::NameId("00u1"));
+    assert_eq!(person.observed_at(), Some(clock.0));
 
     let unasked = ModeRequest {
         query: "person=00u1",
@@ -228,21 +348,23 @@ async fn the_test_mode_begins_names_and_checks() {
 
     let other = SignInValue::new("value-2".to_owned());
     let refusal = mode
-        .check(&answer, &other, now)
+        .check(&answer, &other, &clock)
         .await
         .expect_err("mismatch");
     assert_eq!(
         refusal.checked(),
-        Some("test_mismatch 1970-01-01T00:00:00Z")
+        Some("test_mismatch 1970-01-01T00:00:01Z")
     );
-    let refusing =
-        test_mode("sign_in_url = 'https://idp.example.test/start'\nrefuse = 'sign_in_refused'");
+    let refusing = super::testing::mode(
+        "sign_in_url = 'https://idp.example.test/start'\nrefuse = true\nfirst_owner = '00u9'",
+    );
     let refusal = refusing
-        .check(&answer, &sign_in, now)
+        .check(&answer, &sign_in, &clock)
         .await
         .expect_err("refused");
+    assert_eq!(refusal.checked(), Some("test_refused 1970-01-01T00:00:01Z"));
     assert_eq!(
-        refusal.checked(),
-        Some("sign_in_refused 1970-01-01T00:00:00Z")
+        refusing.first_owner(),
+        Some(PersonIdentifier::NameId("00u9"))
     );
 }

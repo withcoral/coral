@@ -1,38 +1,57 @@
 //! A sign-in mode that is no real protocol, for tests of the contract and of
 //! core.
 //!
-//! Its settings are `sign_in_url`, which must be `https`, and `refuse`, a
-//! code that refuses every check. Its begin URL is `sign_in_url` with the
-//! sign-in's value as `sign_in` and Coral's URL as `return_to`. A request
-//! names its sign-in by `sign_in` in the query, and its person by `person`.
+//! Its settings are `sign_in_url`, which must be `https`; `refuse`, which
+//! refuses every check with `test_refused`; and `first_owner`, the `NameID`
+//! of the first Owner. Its begin URL is `sign_in_url` with the sign-in's
+//! value as `sign_in` and Coral's URL as `return_to`. A request names its
+//! sign-in by `sign_in` in the query, and its person by `person`.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use coral_db::UnixNanos;
+use coral_db::{Clock, UnixNanos};
 use coral_edition::EnterpriseFeature;
 use serde::Deserialize;
 use url::Url;
 
 use crate::{
-    ModeEnvironment, ModeName, ModeRequest, ModeSettings, Named, ProvenPerson, Refusal,
-    SettingError, SignInMode, SignInModeFactory, SignInValue,
+    ModeEnvironment, ModeName, ModeRequest, ModeSettings, Named, PersonIdentifier, ProvenPerson,
+    Refusal, SettingError, SignInMode, SignInModeFactory, SignInValue,
 };
 
 /// Builds the test mode, named `test`.
 pub struct TestModeFactory;
+
+/// The test mode of `settings`, a TOML table, for a Coral at
+/// `https://coral.example.test/`.
+///
+/// # Panics
+/// When `settings` is not TOML, or the test mode refuses it.
+#[must_use]
+pub fn mode(settings: &str) -> Arc<dyn SignInMode> {
+    let settings = ModeSettings::new(toml::from_str(settings).expect("TOML settings"));
+    let environment =
+        ModeEnvironment::new(Url::parse("https://coral.example.test/").expect("Coral's URL"));
+    TestModeFactory
+        .build(&settings, &environment)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
     sign_in_url: String,
     #[serde(default)]
-    refuse: Option<String>,
+    refuse: bool,
+    #[serde(default)]
+    first_owner: Option<String>,
 }
 
 struct TestMode {
     sign_in_url: Url,
-    refuse: Option<String>,
+    refuse: bool,
+    first_owner: Option<String>,
     coral_url: Url,
 }
 
@@ -59,6 +78,7 @@ impl SignInModeFactory for TestModeFactory {
         Ok(Arc::new(TestMode {
             sign_in_url,
             refuse: settings.refuse,
+            first_owner: settings.first_owner,
             coral_url: environment.coral_url.clone(),
         }))
     }
@@ -87,18 +107,27 @@ impl SignInMode for TestMode {
         &self,
         request: &ModeRequest<'_>,
         sign_in: &SignInValue,
-        now: UnixNanos,
+        clock: &dyn Clock,
     ) -> Result<ProvenPerson, Refusal> {
+        let now = clock.now();
         if values(request, "sign_in").next().as_deref() != Some(sign_in.as_str()) {
             return Err(Refusal::new("test_mismatch", now));
         }
-        if let Some(code) = &self.refuse {
-            return Err(Refusal::new(code, now));
+        if self.refuse {
+            return Err(Refusal::new("test_refused", now));
         }
         values(request, "person")
             .next()
-            .map(|person| ProvenPerson::name_id(person.into_owned()))
+            .map(|person| {
+                ProvenPerson::name_id(person.clone().into_owned())
+                    .with_display_name(Some(person.into_owned()))
+                    .with_observed_at(now)
+            })
             .ok_or_else(|| Refusal::new("test_malformed", now))
+    }
+
+    fn first_owner(&self) -> Option<PersonIdentifier<'_>> {
+        self.first_owner.as_deref().map(PersonIdentifier::NameId)
     }
 }
 
