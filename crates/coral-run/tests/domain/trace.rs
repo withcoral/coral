@@ -263,6 +263,102 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
     );
 }
 
+/// A Run that starts through a take traces its wait from its row, under
+/// the accept span: `coral.run.queue` from its acceptance to its take, then
+/// `coral.run.start` from the take to its start mark.
+#[tokio::test]
+async fn a_taken_run_traces_its_wait_in_the_queue_and_to_its_start() {
+    use super::run_streams::{started_as, taker};
+    capture();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:run-wait", "Trace a Run's wait")
+        .await;
+    // Dated after the acceptance and before the start, on the test clock.
+    let (run_id, _claim, _stream) = started_as(
+        &fixture.runs,
+        (&principal, &workspace_id),
+        "return 1;",
+        &taker(coral_run_executor::Kind::Dialed),
+        || fixture.clock.next.load(Ordering::SeqCst),
+    )
+    .await;
+    let run = fixture.run_record(&workspace_id, &run_id).await;
+    let (accepted_at, taken_at, started_at) = (
+        run.accepted_at_unix_nanos,
+        run.taken_at_unix_nanos.expect("a take"),
+        run.execution_started_at_unix_nanos.expect("a start mark"),
+    );
+    assert!(accepted_at < taken_at && taken_at < started_at);
+
+    let spans = of_run(&run_id);
+    let accept = only(&spans, "coral.run.accept");
+    let (queue, start) = (
+        only(&spans, "coral.run.queue"),
+        only(&spans, "coral.run.start"),
+    );
+    let at = |nanos| coral_db::UnixNanos::new(nanos).to_system_time();
+    assert_eq!(
+        [
+            (queue.start_time, queue.end_time),
+            (start.start_time, start.end_time)
+        ],
+        [
+            (at(accepted_at), at(taken_at)),
+            (at(taken_at), at(started_at))
+        ]
+    );
+    for span in [queue, start] {
+        assert_eq!(
+            (span.span_context.trace_id(), span.parent_span_id),
+            (
+                accept.span_context.trace_id(),
+                accept.span_context.span_id()
+            ),
+            "{}",
+            span.name
+        );
+        assert_eq!(
+            attribute(span, "coral.run.id").as_deref(),
+            Some(run_id.as_str())
+        );
+    }
+}
+
+/// A take dated on another Coral Instance's clock before the acceptance or
+/// after the start is held between them, so the two spans stay end to end.
+#[test]
+fn a_take_dated_outside_the_wait_is_held_inside_it() {
+    capture();
+    let at = |nanos| coral_db::UnixNanos::new(nanos).to_system_time();
+    for (taken_at, held) in [(50, 100), (400, 300)] {
+        let mut run = unstarted_run();
+        run.accepted_at_unix_nanos = 100;
+        run.taken_at_unix_nanos = Some(taken_at);
+        run.trace = Some(
+            coral_telemetry::RunTrace::parse(&format!(
+                "00-{}-0123456789abcdef-01",
+                uuid::Uuid::new_v4().simple()
+            ))
+            .expect("a stored Run Trace"),
+        );
+        crate::trace::record_start(&run, 300);
+        let spans = of_run(&run.id);
+        let (queue, start) = (
+            only(&spans, "coral.run.queue"),
+            only(&spans, "coral.run.start"),
+        );
+        assert_eq!(
+            [
+                (queue.start_time, queue.end_time),
+                (start.start_time, start.end_time)
+            ],
+            [(at(100), at(held)), (at(held), at(300))],
+            "taken at {taken_at}"
+        );
+    }
+}
+
 /// The span status rules. The span that writes a Run's terminal state is an
 /// error only for a Run that failed, timed out or was interrupted. A Tool
 /// Invocation's span is an error for a Coral Failure, an `indeterminate`
@@ -768,6 +864,7 @@ fn unstarted_run() -> crate::lifecycle::RunRecord {
         value_limits: coral_value::ValueLimits::default(),
         trace: None,
         time_limit_nanos: None,
+        taken_at_unix_nanos: None,
         on_run_executor: false,
         on_local_child: false,
         committed_request_number: None,

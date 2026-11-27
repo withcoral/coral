@@ -21,7 +21,7 @@ pub use queue::{Queue, batch_log_processor, batch_span_processor, meter_provider
 pub use request::{
     REQUEST_TARGET, name_request_operation, request_span, trace_grpc_routes, trace_http_routes,
 };
-pub use run::RunTrace;
+pub use run::{PastSpanLayer, RunTrace};
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};

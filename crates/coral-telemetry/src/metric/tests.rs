@@ -131,6 +131,12 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
     ),
     ("coral.run.duration", "histogram", "s", &["run.status"]),
     ("coral.run.phase.duration", "histogram", "s", &["run.phase"]),
+    (
+        "coral.run.start.wait",
+        "histogram",
+        "s",
+        &["run_executor.kind"],
+    ),
     ("coral.run.active", "gauge", "{run}", &[]),
     ("coral.run.waiting", "gauge", "{run}", &[]),
     ("coral.run.waiting.age", "gauge", "s", &[]),
@@ -307,6 +313,7 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         Duration::from_secs(2),
     );
     drop(run_phase(RunPhase::Execute));
+    run_start_wait(RunExecutorKind::Dialed, Duration::from_millis(80));
     let active = run_active();
     run_queue_read(Some(RunQueue {
         waiting: 2,

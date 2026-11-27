@@ -409,6 +409,7 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 - `coral.run.waiting` counts the program runs that wait for a run executor: they have not ended and no run executor has taken them. `coral.run.waiting.age` is the wait of the oldest of them, or zero. `coral.run.held` counts the runs that a run executor has taken and that have not ended.
 - Each Coral process reads these three gauges from the same database every 15 seconds. Between two reads, each collection repeats the last read. If a read fails, the three gauges report no value until a read succeeds. Take their maximum across processes, not their sum.
 - `coral.run_executor.linked` counts the run executors connected to this Coral process. A run executor that reconnects can count twice for a moment. `run_executor.kind` is `local` for a run executor that Coral starts itself and `dialed` for one that you start with `coral run-executor`.
+- `coral.run.start.wait` is the time from the acceptance of a program run to its start on a run executor, with `run_executor.kind` of that run executor. The trace of the run shows the same wait in two spans: `coral.run.queue` until a run executor takes the run, and `coral.run.start` from the take to the start.
 
 | Metric                                   | Kind      | Attributes                                                                   |
 | ---------------------------------------- | --------- | ---------------------------------------------------------------------------- |
@@ -421,6 +422,7 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                                 |
 | `coral.run.duration`                     | Histogram | `run.status`                                                                 |
 | `coral.run.phase.duration`               | Histogram | `run.phase`                                                                  |
+| `coral.run.start.wait`                   | Histogram | `run_executor.kind`                                                          |
 | `coral.run.active`                       | Gauge     | None                                                                         |
 | `coral.run.waiting`                      | Gauge     | None                                                                         |
 | `coral.run.waiting.age`                  | Gauge     | None                                                                         |

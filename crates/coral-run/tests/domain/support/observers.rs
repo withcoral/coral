@@ -563,6 +563,8 @@ pub(crate) struct CommitProbe {
     held: AtomicBool,
     lose: Mutex<Option<oneshot::Receiver<()>>>,
     lost: AtomicBool,
+    lose_start: AtomicBool,
+    start_lost: AtomicBool,
 }
 
 impl CommitProbe {
@@ -574,7 +576,19 @@ impl CommitProbe {
             held: AtomicBool::new(false),
             lose: Mutex::new(None),
             lost: AtomicBool::new(false),
+            lose_start: AtomicBool::new(false),
+            start_lost: AtomicBool::new(false),
         })
+    }
+
+    /// Loses the answer of the next Run stream start, once its start mark
+    /// has landed.
+    pub(crate) fn lose_next_start_answer(&self) {
+        self.lose_start.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn start_lost(&self) -> bool {
+        self.start_lost.load(Ordering::SeqCst)
     }
 
     /// Chunk commit attempts so far, recommits included.
@@ -645,5 +659,11 @@ impl ExecutionObserver for CommitProbe {
             }
             None => false,
         }
+    }
+
+    async fn start_commit_answer_lost(&self) -> bool {
+        let lose = self.lose_start.swap(false, Ordering::SeqCst);
+        self.start_lost.fetch_or(lose, Ordering::SeqCst);
+        lose
     }
 }
