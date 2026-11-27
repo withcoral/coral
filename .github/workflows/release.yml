@@ -50,6 +50,11 @@ env:
   # fails a package whose app-update.yml names another feed.
   DESKTOP_FEED_OWNER: withcoral
   DESKTOP_FEED_NAME: coral-releases
+  # Who signs the images and the chart: this workflow, on the release tag,
+  # which validate requires this run's ref to be. Every cosign verify checks
+  # for it.
+  SIGNER_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+  SIGNER_ISSUER: https://token.actions.githubusercontent.com
 
 # No Rust or npm caches: a release compiles from a clean state, so a poisoned
 # cache cannot reach a signed build.
@@ -455,8 +460,8 @@ jobs:
           chart="${CHART_REPOSITORY#oci://}/coral"
           verify() {
             cosign verify \
-              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG_NAME}" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$SIGNER_IDENTITY" \
+              --certificate-oidc-issuer "$SIGNER_ISSUER" \
               "$1" > /dev/null
           }
           if verify "${chart}:${VERSION}" 2>/dev/null; then
@@ -673,8 +678,8 @@ jobs:
           set -euo pipefail
           grep '^ghcr\.io/withcoral/' chart/images.txt | while read -r image; do
             cosign verify \
-              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG_NAME}" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$SIGNER_IDENTITY" \
+              --certificate-oidc-issuer "$SIGNER_ISSUER" \
               "${image%:*@*}@${image##*@}" > /dev/null
             echo "Verified ${image}"
           done
