@@ -55,7 +55,8 @@ const ENDS_SOON: Duration = Duration::from_hours(24 * 30);
 /// response signed with a certificate past its last instant is refused when
 /// it arrives. Each message names the entry itself, since no server log
 /// layer shows a `coral.local.*` field; the settings hold one or two. The
-/// four messages are literal, as the telemetry source scan requires.
+/// four messages are literal text, by the rule the telemetry source scan
+/// checks outside `ee/`: an exported event is named by its message.
 pub(crate) fn warn_at_start(certificates: &[Certificate], now: UnixNanos) {
     for (index, certificate) in certificates.iter().enumerate() {
         let ended = now > certificate.last_instant;
