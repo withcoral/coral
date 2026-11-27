@@ -12,19 +12,23 @@
 //!
 //! A sign-in begins with an unsigned `AuthnRequest` sent by the
 //! HTTP-Redirect binding, with no `RelayState`, whose ID is `_` and the
-//! sign-in's random value.
+//! sign-in's random value. Coral's metadata document answers a GET at
+//! `/auth/saml/metadata`, its entity ID, with no sign-in. At startup the
+//! mode warns of a certificate past its last day or ending within 30 days.
 
 use std::sync::Arc;
 
 use coral_db::{Clock, UnixNanos};
 use coral_edition::{EditionCheck, EnterpriseFeature, EnterpriseFeatureId};
 use coral_sign_in::{
-    ModeEnvironment, ModeName, ModeRequest, ModeSettings, ModeUrl, Named, PersonIdentifier,
-    ProvenPerson, Refusal, SameSite, SettingError, SignInMode, SignInModeFactory, SignInValue,
+    ModeDocument, ModeEnvironment, ModeName, ModeRequest, ModeSettings, ModeUrl, Named,
+    PersonIdentifier, ProvenPerson, Refusal, SameSite, SettingError, SignInMode, SignInModeFactory,
+    SignInValue,
 };
 use url::Url;
 
 mod certificate;
+mod metadata;
 mod request;
 mod settings;
 mod xml;
@@ -42,8 +46,9 @@ const NAME: ModeName = match ModeName::new("saml") {
     Err(_) => panic!("`saml` has the form of a mode's name"),
 };
 
-/// Coral's entity ID, which is also the URL of its metadata document.
-const METADATA: ModeUrl = ModeUrl::get("metadata");
+/// The segment of Coral's metadata document, whose URL is Coral's entity
+/// ID.
+const METADATA: &str = "metadata";
 
 /// The URL that receives the response: a form of at most 256 KiB.
 const ACS: ModeUrl = ModeUrl::post("acs", 256 * 1024);
@@ -88,10 +93,18 @@ impl SignInModeFactory for SamlModeFactory {
         environment: &ModeEnvironment,
     ) -> Result<Arc<dyn SignInMode>, SettingError> {
         let settings = Settings::check(settings)?;
+        let coral_entity_id = coral_url_at(&environment.coral_url, ModeUrl::get(METADATA));
+        let acs_url = coral_url_at(&environment.coral_url, ACS);
+        let metadata = ModeDocument::new(
+            METADATA,
+            metadata::MEDIA_TYPE,
+            metadata::document(&coral_entity_id, &acs_url),
+        );
         Ok(Arc::new(SamlMode {
             edition: self.edition.clone(),
-            coral_entity_id: coral_url_at(&environment.coral_url, METADATA),
-            acs_url: coral_url_at(&environment.coral_url, ACS),
+            coral_entity_id,
+            acs_url,
+            metadata,
             settings,
         }))
     }
@@ -114,6 +127,8 @@ struct SamlMode {
     coral_entity_id: String,
     /// Coral's URL that receives the response.
     acs_url: String,
+    /// Coral's metadata document.
+    metadata: ModeDocument,
 }
 
 #[async_trait::async_trait]
@@ -122,6 +137,16 @@ impl SignInMode for SamlMode {
     /// none unchecked.
     fn urls(&self) -> Vec<ModeUrl> {
         Vec::new()
+    }
+
+    /// The metadata document, at Coral's entity ID. It answers with no
+    /// sign-in, in every Edition.
+    fn documents(&self) -> Vec<ModeDocument> {
+        vec![self.metadata.clone()]
+    }
+
+    fn started(&self, now: UnixNanos) {
+        certificate::warn_at_start(&self.settings.certificates, now);
     }
 
     /// The Identity Provider's response arrives as a POST from its own site.

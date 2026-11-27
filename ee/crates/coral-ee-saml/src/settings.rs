@@ -43,7 +43,6 @@ pub(crate) struct Settings {
     /// Where Coral sends the request: `https` only.
     pub(crate) sign_in_url: Url,
     /// One or two certificates that sign the Identity Provider's responses.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the startup warnings read it"))]
     pub(crate) certificates: Vec<Certificate>,
     /// The attribute that holds the person's email.
     #[cfg_attr(

@@ -21,12 +21,15 @@ coral-edition.workspace = true
 coral-sign-in.workspace = true
 flate2.workspace = true
 serde.workspace = true
+tracing.workspace = true
 url.workspace = true
 x509-cert.workspace = true
 
 [dev-dependencies]
 coral-edition = { workspace = true, features = ["test-fixtures"] }
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 rcgen.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 toml.workspace = true
+tracing-subscriber.workspace = true

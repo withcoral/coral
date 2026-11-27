@@ -15,13 +15,21 @@ use coral_test_support::ManualClock;
 use url::Url;
 
 use super::SamlModeFactory;
-use super::certificate::Certificate;
 use super::settings::Settings;
 
 const CORAL_URL: &str = "https://coral.example.test/";
 const SIGN_IN_URL: &str = "https://idp.example.test/app/coral/sso/saml";
 /// 43 characters, as a sign-in's random value has.
 const SIGN_IN: &str = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde";
+
+/// The start of the day `(year, month, day)` in UTC.
+fn day_start(year: i32, month: u32, day: u32) -> UnixNanos {
+    let at = chrono::NaiveDate::from_ymd_opt(year, month, day)
+        .and_then(|day| day.and_hms_opt(0, 0, 0))
+        .expect("a day")
+        .and_utc();
+    UnixNanos::new(at.timestamp_nanos_opt().expect("in range"))
+}
 
 /// The instant `2026-11-25T10:15:42.5Z`.
 fn instant() -> UnixNanos {
@@ -257,19 +265,6 @@ fn builds_with_the_defaults() {
     );
 }
 
-/// A certificate's last instant is its `notAfter`, not its first day.
-#[test]
-fn reads_a_certificates_last_instant() {
-    let certificate = Certificate::parse(&certificate_ending(2030, 6, 15)).expect("parses");
-    let last = chrono::NaiveDate::from_ymd_opt(2030, 6, 15)
-        .and_then(|day| day.and_hms_opt(0, 0, 0))
-        .expect("a day")
-        .and_utc()
-        .timestamp_nanos_opt()
-        .expect("in range");
-    assert_eq!(certificate.last_instant(), UnixNanos::new(last));
-}
-
 /// The begin sends the browser to `sign_in_url` with an unsigned
 /// `AuthnRequest`, deflated and in base64, and with no `RelayState`. The
 /// URL keeps its own query, and the request escapes what it repeats.
@@ -375,5 +370,139 @@ async fn refuses_each_sign_in_while_community() {
                 assert_refused(&checked, "saml_malformed");
             }
         }
+    }
+}
+
+/// The metadata document names Coral's entity ID and the URL that receives
+/// the response, at the URL that is the entity ID, in either Edition.
+#[test]
+fn serves_the_metadata_document() {
+    for edition in [Edition::Community, Edition::Enterprise] {
+        let mode = build(
+            &settings_toml(&[certificate_ending(2030, 1, 1)], ""),
+            EditionCheck::new(Arc::new(edition)),
+        )
+        .expect("the mode");
+        let documents = mode.documents();
+        let [document] = documents.as_slice() else {
+            panic!("{edition:?}: one document");
+        };
+        assert_eq!(document.path(super::NAME), "/auth/saml/metadata");
+        assert_eq!(document.media_type(), "application/samlmetadata+xml");
+        assert_eq!(
+            document.body(),
+            "<md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\" \
+             entityID=\"https://coral.example.test/auth/saml/metadata\">\
+             <md:SPSSODescriptor \
+             protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\" \
+             AuthnRequestsSigned=\"false\" WantAssertionsSigned=\"true\">\
+             <md:AssertionConsumerService \
+             Binding=\"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST\" \
+             Location=\"https://coral.example.test/auth/saml/acs\" index=\"0\" isDefault=\"true\"/>\
+             </md:SPSSODescriptor>\
+             </md:EntityDescriptor>"
+        );
+    }
+}
+
+/// What a `fmt` layer writes: the host's own log, with the fields that
+/// never leave it.
+#[derive(Clone, Default)]
+struct HostLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for HostLog {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_poisoned| std::io::Error::other("the host log is poisoned"))?
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// At startup the mode warns once for each certificate past its last
+/// instant and for each that ends within 30 days, naming the entry on the
+/// host only, and for no other. A warning never stops the start: `started`
+/// returns nothing to stop it with.
+#[test]
+fn warns_at_start_by_last_day() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    const PAST: &str = "a SAML signing certificate is past its last day";
+    const ENDING: &str = "a SAML signing certificate ends within 30 days";
+    let pem = certificate_ending(2030, 6, 15);
+    let later = certificate_ending(2031, 6, 15);
+    let last = day_start(2030, 6, 15);
+    let thirty_days = std::time::Duration::from_hours(24 * 30);
+    let nanosecond = std::time::Duration::from_nanos(1);
+    let before = |instant: UnixNanos, span| instant.checked_sub(span).expect("in range");
+    let after = |instant: UnixNanos, span| instant.checked_add(span).expect("in range");
+    for (now, certificates, warnings) in [
+        (
+            before(before(last, thirty_days), nanosecond),
+            vec![pem.clone()],
+            vec![],
+        ),
+        (
+            before(last, thirty_days),
+            vec![pem.clone()],
+            vec![(ENDING, 0)],
+        ),
+        (last, vec![pem.clone()], vec![(ENDING, 0)]),
+        (after(last, nanosecond), vec![pem.clone()], vec![(PAST, 0)]),
+        (
+            after(last, nanosecond),
+            vec![pem.clone(), later.clone()],
+            vec![(PAST, 0)],
+        ),
+        (
+            before(day_start(2031, 6, 15), thirty_days),
+            vec![pem.clone(), later.clone()],
+            vec![(PAST, 0), (ENDING, 1)],
+        ),
+    ] {
+        let clock = ManualClock::starting_at(now);
+        let mode = build(&settings_toml(&certificates, ""), enterprise()).expect("the mode");
+        let exported = coral_telemetry::testing::ExportCapture::default();
+        let host = HostLog::default();
+        {
+            let writer = host.clone();
+            let _subscriber = tracing::subscriber::set_default(
+                tracing_subscriber::registry()
+                    .with(exported.log_layer())
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_ansi(false)
+                            .with_writer(move || writer.clone()),
+                    ),
+            );
+            mode.started(clock.now());
+        }
+        let host = String::from_utf8(host.0.lock().expect("the host log").clone()).expect("text");
+        let lines: Vec<&str> = host.lines().collect();
+        assert_eq!(lines.len(), warnings.len(), "{now:?}: {host}");
+        for (message, entry) in &warnings {
+            let entry = format!("coral.local.certificate=certificates[{entry}]");
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.contains(message) && line.contains(&entry))
+                    .count(),
+                1,
+                "{now:?}: {message} {entry}: {host}"
+            );
+        }
+        let records = exported.log_records();
+        assert_eq!(records.len(), warnings.len(), "{now:?}: {records:?}");
+        assert!(
+            records
+                .iter()
+                .all(|record| !record.contains("certificates[")),
+            "the entry never leaves the host: {records:?}"
+        );
     }
 }

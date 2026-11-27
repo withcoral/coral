@@ -3,6 +3,8 @@
 //! A certificate that the operator pasted, which signs the Identity
 //! Provider's responses.
 
+use std::time::Duration;
+
 use coral_db::UnixNanos;
 use x509_cert::der::Decode as _;
 
@@ -43,10 +45,28 @@ impl Certificate {
             last_instant: UnixNanos::new(0).saturating_add(since_epoch),
         })
     }
+}
 
-    /// The last instant the certificate is valid at.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the startup warnings read it"))]
-    pub(crate) const fn last_instant(&self) -> UnixNanos {
-        self.last_instant
+/// How soon before its last instant a certificate is said to end.
+const ENDS_SOON: Duration = Duration::from_hours(24 * 30);
+
+/// Logs one warning at startup, at `now`, for each of `certificates` that is
+/// past its last instant or ends within 30 days. Neither stops the start: a
+/// response signed with a certificate past its last instant is refused when
+/// it arrives.
+pub(crate) fn warn_at_start(certificates: &[Certificate], now: UnixNanos) {
+    for (index, certificate) in certificates.iter().enumerate() {
+        let entry = format!("certificates[{index}]");
+        if now > certificate.last_instant {
+            tracing::warn!(
+                coral.local.certificate = %entry,
+                "a SAML signing certificate is past its last day, so each response it signs is refused"
+            );
+        } else if certificate.last_instant.saturating_duration_since(now) <= ENDS_SOON {
+            tracing::warn!(
+                coral.local.certificate = %entry,
+                "a SAML signing certificate ends within 30 days"
+            );
+        }
     }
 }
