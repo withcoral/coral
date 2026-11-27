@@ -1,0 +1,22 @@
+# Both routing kinds on, with every routing value set. CI renders and validates
+# the chart with it.
+host: coral.example.com
+config:
+  auth:
+    provider:
+      issuer: https://idp.example.com
+      client_id: coral
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  tls:
+    secretName: coral-tls
+httpRoute:
+  enabled: true
+  annotations:
+    example.com/team: platform
+  parentRefs:
+    - name: eg
+      namespace: envoy-gateway-system

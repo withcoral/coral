@@ -1,0 +1,60 @@
+suite: routing
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+set:
+  ingress.enabled: true
+  httpRoute.enabled: true
+  httpRoute.parentRefs:
+    - name: eg
+templates:
+  - templates/ingress.yaml
+  - templates/httproute.yaml
+tests:
+  # coral's own Service serves gRPC and the Run Executor link, on ports
+  # 14555 and 14557.
+  - it: never routes an Ingress to coral's gRPC
+    template: templates/ingress.yaml
+    asserts:
+      - notEqual:
+          path: spec.rules[*].http.paths[*].backend.service.name
+          value: prod
+      - notEqual:
+          path: spec.rules[*].http.paths[*].backend.service.port.number
+          value: 14555
+      - notEqual:
+          path: spec.rules[*].http.paths[*].backend.service.port.number
+          value: 14557
+
+  - it: never routes an HTTPRoute to coral's gRPC
+    template: templates/httproute.yaml
+    asserts:
+      - notEqual:
+          path: spec.rules[*].backendRefs[*].name
+          value: prod
+      - notEqual:
+          path: spec.rules[*].backendRefs[*].port
+          value: 14555
+      - notEqual:
+          path: spec.rules[*].backendRefs[*].port
+          value: 14557
+
+  # Two routes for / on one host would hide one of the three Services.
+  - it: fails when two hosts are the same
+    # The render stops at the first template that fails.
+    template: templates/ingress.yaml
+    set:
+      hosts.auth: coral.example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: "host, hosts.auth and hosts.mcp must differ: coral.example.com is used twice"
+
+  - it: fails when two hosts differ only by port
+    # The render stops at the first template that fails.
+    template: templates/ingress.yaml
+    set:
+      hosts.mcp: coral.example.com:8443
+    asserts:
+      - failedTemplate:
+          errorPattern: "host, hosts.auth and hosts.mcp must differ: coral.example.com is used twice"

@@ -27,6 +27,92 @@
         }
       }
     },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "className",
+        "annotations",
+        "tls"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/definitions/annotations"
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "secretName"
+          ],
+          "properties": {
+            "secretName": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "httpRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "annotations",
+        "parentRefs"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "annotations": {
+          "$ref": "#/definitions/annotations"
+        },
+        "parentRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "description": "A Gateway API ParentReference.",
+            "properties": {
+              "group": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sectionName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            }
+          }
+        }
+      }
+    },
     "global": {
       "type": "object",
       "additionalProperties": false,
@@ -375,6 +461,12 @@
           "type": "integer",
           "minimum": 1
         }
+      }
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
       }
     }
   }

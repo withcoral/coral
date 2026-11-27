@@ -12,6 +12,30 @@ hosts:
   # Defaults to mcp.<host>.
   mcp: ""
 
+# Routing to the three hosts, for your own ingress controller or Gateway. Both
+# are off by default: route the Services yourself, or turn one on. Neither
+# routes coral's gRPC, which stays on the cluster network. "Routing" in the
+# Kubernetes docs lists the streaming settings your controller needs.
+ingress:
+  enabled: false
+  # Your IngressClass, such as nginx or alb. Empty means the cluster's default.
+  className: ""
+  # Passed through as written, such as cert-manager.io/cluster-issuer.
+  annotations: {}
+  tls:
+    # An existing TLS Secret that covers the three hosts. Empty means TLS ends
+    # at your load balancer.
+    secretName: ""
+
+# A Gateway API HTTPRoute for each host. Your Gateway's listeners hold the TLS
+# certificates.
+httpRoute:
+  enabled: false
+  annotations: {}
+  # Required when enabled. The Gateways to attach to, such as
+  # [{name: eg, namespace: envoy-gateway-system}].
+  parentRefs: []
+
 global:
   # Replaces the registry host of every image, and keeps each repository path.
   imageRegistry: ""

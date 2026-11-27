@@ -36,6 +36,29 @@ app.kubernetes.io/component: {{ index . 1 }}
 {{- .Values.hosts.mcp | default (printf "mcp.%s" .Values.host) -}}
 {{- end -}}
 
+{{/*
+What routing sends to each host: the host without a port, and the Service and
+port behind it. coral's gRPC Service is never among them.
+*/}}
+{{- define "coral.routes" -}}
+{{- $fullname := include "coral.fullname" . -}}
+{{- $routes := list
+  (list .Values.host "web" (include "coral.port.web" .))
+  (list (include "coral.host.auth" .) "auth" (include "coral.port.auth" .))
+  (list (include "coral.host.mcp" .) "mcp" (include "coral.port.mcp" .)) -}}
+{{- $seen := dict -}}
+{{- range $routes }}
+{{- $host := regexReplaceAll ":[0-9]+$" (index . 0) "" }}
+{{- if hasKey $seen $host }}
+{{- fail (printf "host, hosts.auth and hosts.mcp must differ: %s is used twice" $host) }}
+{{- end }}
+{{- $_ := set $seen $host true }}
+- host: {{ $host | quote }}
+  service: {{ printf "%s-%s" $fullname (index . 1) | quote }}
+  port: {{ index . 2 }}
+{{- end -}}
+{{- end -}}
+
 {{/* Ports. Coral's listeners bind them; the Services expose them. */}}
 {{- define "coral.port.grpc" -}}14555{{- end -}}
 {{- define "coral.port.mcp" -}}14556{{- end -}}

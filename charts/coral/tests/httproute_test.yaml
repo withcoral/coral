@@ -1,0 +1,122 @@
+suite: httpRoute
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+set:
+  httpRoute.parentRefs:
+    - name: eg
+templates:
+  - templates/httproute.yaml
+tests:
+  - it: renders no HTTPRoute by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders one HTTPRoute for each host
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+          namespace: envoy-gateway-system
+    asserts:
+      - hasDocuments:
+          count: 3
+      - isKind:
+          of: HTTPRoute
+      - equal:
+          path: spec.parentRefs
+          value:
+            - name: eg
+              namespace: envoy-gateway-system
+
+  - it: sends each host to its Service
+    set:
+      httpRoute.enabled: true
+    asserts:
+      - equal:
+          path: spec.hostnames
+          value:
+            - coral.example.com
+        documentSelector:
+          path: metadata.name
+          value: prod-web
+      - equal:
+          path: spec.rules
+          value:
+            - backendRefs:
+                - name: prod-web
+                  port: 3000
+        documentSelector:
+          path: metadata.name
+          value: prod-web
+      - equal:
+          path: spec.hostnames
+          value:
+            - auth.coral.example.com
+        documentSelector:
+          path: metadata.name
+          value: prod-auth
+      - equal:
+          path: spec.rules
+          value:
+            - backendRefs:
+                - name: prod-auth
+                  port: 8779
+        documentSelector:
+          path: metadata.name
+          value: prod-auth
+      - equal:
+          path: spec.hostnames
+          value:
+            - mcp.coral.example.com
+        documentSelector:
+          path: metadata.name
+          value: prod-mcp
+      - equal:
+          path: spec.rules
+          value:
+            - backendRefs:
+                - name: prod-mcp
+                  port: 14556
+        documentSelector:
+          path: metadata.name
+          value: prod-mcp
+
+  - it: names each route after the release and its host
+    set:
+      httpRoute.enabled: true
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: ^prod-(web|auth|mcp)$
+
+  - it: passes the annotations through as written
+    set:
+      httpRoute.enabled: true
+      httpRoute.annotations:
+        example.com/team: platform
+    asserts:
+      - equal:
+          path: metadata.annotations
+          value:
+            example.com/team: platform
+
+  - it: fails without a Gateway to attach to
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs: []
+    asserts:
+      - failedTemplate:
+          errorPattern: httpRoute.parentRefs is required
+
+  - it: refuses a parentRef field the Gateway API does not have
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+          gateway: eg
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties 'gateway' not allowed"
