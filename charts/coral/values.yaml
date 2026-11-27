@@ -40,6 +40,8 @@ global:
   # Replaces the registry host of every image, and keeps each repository path.
   imageRegistry: ""
 
+# Secrets of type kubernetes.io/dockerconfigjson that sign in to your
+# registry, such as [{name: registry-internal}]. Every pod uses them.
 imagePullSecrets: []
 
 # Each secret is a key in a Secret you create. The chart never creates one.

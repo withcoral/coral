@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Checks the Helm chart in charts/coral: lint, the values schema, a render of
-# each values file in ci/ and each size example in examples/, kubeconform on
+# each values file in ci/ and each example in examples/, kubeconform on
 # the oldest and newest Kubernetes minors the chart supports, and the
 # helm-unittest suites.
 #
@@ -49,7 +49,7 @@ check() {
 for values in "$chart"/ci/*.yaml; do
   check "$values"
 done
-# The size examples hold sizes only, so they go on top of the least values.
+# Each example holds only its own keys, so it goes on top of the least values.
 for example in "$chart"/examples/*.yaml; do
   check "$chart/ci/default-values.yaml" "$example"
 done
