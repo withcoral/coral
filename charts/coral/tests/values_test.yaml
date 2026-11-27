@@ -20,10 +20,10 @@ tests:
 
   - it: fails on an unknown nested key
     set:
-      coral.extraEnv: []
+      coral.sidecars: []
     asserts:
       - failedTemplate:
-          errorPattern: additional properties 'extraEnv' not allowed
+          errorPattern: additional properties 'sidecars' not allowed
 
   - it: fails without host
     set:

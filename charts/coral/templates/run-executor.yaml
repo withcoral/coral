@@ -26,6 +26,10 @@ spec:
       labels:
         {{- include "coral.labels" . | nindent 8 }}
         app.kubernetes.io/component: run-executor
+      {{- with .Values.runExecutors.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -57,6 +61,9 @@ spec:
               containerPort: {{ include "coral.port.runExecutorHealth" . }}
           env:
             {{- include "coral.secretEnv" (list . "CORAL_RUN_EXECUTOR_TOKEN" "runExecutors.token" .Values.runExecutors.token) | nindent 12 }}
+            {{- with .Values.runExecutors.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           readinessProbe:
             grpc:
               port: {{ include "coral.port.runExecutorHealth" . }}

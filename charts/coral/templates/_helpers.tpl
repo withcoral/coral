@@ -237,3 +237,30 @@ capabilities:
   drop:
     - ALL
 {{- end -}}
+
+{{/*
+A volume that holds a CA bundle as ca.crt, or nothing when the bundle has no
+key. Call with (list "values.path" $bundle "volume-name").
+*/}}
+{{- define "coral.caBundleVolume" -}}
+{{- $path := index . 0 -}}
+{{- $bundle := index . 1 -}}
+{{- if $bundle.key -}}
+{{- if and $bundle.configMapName $bundle.secretName -}}
+{{- fail (printf "%s: set configMapName or secretName, not both" $path) -}}
+{{- end -}}
+- name: {{ index . 2 }}
+{{- if $bundle.configMapName }}
+  configMap:
+    name: {{ $bundle.configMapName | quote }}
+{{- else if $bundle.secretName }}
+  secret:
+    secretName: {{ $bundle.secretName | quote }}
+{{- else }}
+{{- fail (printf "%s: set configMapName or secretName to name where the key is" $path) -}}
+{{- end }}
+    items:
+      - key: {{ $bundle.key | quote }}
+        path: ca.crt
+{{- end -}}
+{{- end -}}

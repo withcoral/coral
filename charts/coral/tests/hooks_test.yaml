@@ -1,0 +1,201 @@
+suite: hooks
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+  - templates/run-executor.yaml
+  - templates/serviceaccount.yaml
+tests:
+  - it: passes coral's hooks through as written
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      coral.podAnnotations:
+        reloader.stakater.com/auto: "true"
+      coral.extraEnv:
+        - name: HTTPS_PROXY
+          value: http://proxy.internal:3128
+      coral.extraEnvFrom:
+        - configMapRef:
+            name: proxy-settings
+      coral.extraVolumes:
+        - name: tools
+          emptyDir: {}
+      coral.extraVolumeMounts:
+        - name: tools
+          mountPath: /opt/tools
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+          value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HTTPS_PROXY
+            value: http://proxy.internal:3128
+      - equal:
+          path: spec.template.spec.containers[0].envFrom
+          value:
+            - configMapRef:
+                name: proxy-settings
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tools
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tools
+            mountPath: /opt/tools
+
+  - it: runs coral as its own service account, with its annotations
+    template: templates/serviceaccount.yaml
+    documentSelector:
+      path: metadata.name
+      value: prod
+    set:
+      coral.serviceAccount.annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.annotations
+          value:
+            eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral
+      - equal:
+          path: automountServiceAccountToken
+          value: false
+
+  - it: names coral's service account on its pods
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: prod
+
+  - it: passes web's hooks through as written
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      web.podAnnotations:
+        reloader.stakater.com/auto: "true"
+      web.extraEnv:
+        - name: HTTPS_PROXY
+          value: http://proxy.internal:3128
+      web.extraEnvFrom:
+        - configMapRef:
+            name: proxy-settings
+      web.extraVolumes:
+        - name: tools
+          emptyDir: {}
+      web.extraVolumeMounts:
+        - name: tools
+          mountPath: /opt/tools
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+          value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HTTPS_PROXY
+            value: http://proxy.internal:3128
+      - equal:
+          path: spec.template.spec.containers[0].envFrom
+          value:
+            - configMapRef:
+                name: proxy-settings
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tools
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tools
+            mountPath: /opt/tools
+
+  - it: runs web as its own service account, with its annotations
+    template: templates/serviceaccount.yaml
+    documentSelector:
+      path: metadata.name
+      value: prod-web
+    set:
+      web.serviceAccount.annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.annotations
+          value:
+            eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral
+      - equal:
+          path: automountServiceAccountToken
+          value: false
+
+  - it: names web's service account on its pods
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: prod-web
+
+  - it: passes the Run Executors' annotations and plain env through
+    template: templates/run-executor.yaml
+    set:
+      runExecutors.podAnnotations:
+        example.com/team: platform
+      runExecutors.extraEnv:
+        - name: TZ
+          value: UTC
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            example.com/team: platform
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TZ
+            value: UTC
+
+  # A Run Executor holds no secret but its token, and no volume.
+  - it: refuses a Run Executor env var read from a Secret
+    template: templates/run-executor.yaml
+    set:
+      runExecutors.extraEnv:
+        - name: STOLEN
+          valueFrom:
+            secretKeyRef:
+              name: prod
+              key: CORAL_CREDENTIALS_KEY
+    asserts:
+      - failedTemplate:
+          errorPattern: /runExecutors/extraEnv/0
+
+  - it: has no Run Executor volume hook
+    template: templates/run-executor.yaml
+    set:
+      runExecutors.extraVolumes:
+        - name: tools
+          emptyDir: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: additional properties 'extraVolumes' not allowed

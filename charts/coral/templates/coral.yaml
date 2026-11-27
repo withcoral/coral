@@ -24,7 +24,11 @@ spec:
       annotations:
         # A values change that changes config.toml rolls the pods.
         checksum/config: {{ include "coral.configToml" . | sha256sum }}
+        {{- with .Values.coral.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
+      serviceAccountName: {{ $fullname }}
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -35,6 +39,28 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      {{- if .Values.tls.extraCABundle.key }}
+      # coral's TLS reads one bundle, so this writes the image's roots and the
+      # extra CA into one file, which replaces the image's.
+      initContainers:
+        - name: ca-bundle
+          image: {{ include "coral.image" (list . .Values.coral.image) }}
+          imagePullPolicy: {{ .Values.coral.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - cat /etc/ssl/certs/ca-certificates.crt /etc/coral/extra-ca/ca.crt > /etc/coral/ca-bundle/ca-certificates.crt
+          volumeMounts:
+            - name: extra-ca
+              mountPath: /etc/coral/extra-ca
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /etc/coral/ca-bundle
+          resources:
+            {{- toYaml .Values.coral.resources | nindent 12 }}
+          securityContext:
+            {{- include "coral.containerSecurityContext" . | nindent 12 }}
+      {{- end }}
       containers:
         - name: coral
           image: {{ include "coral.image" (list . .Values.coral.image) }}
@@ -62,13 +88,42 @@ spec:
             {{- if .Values.runExecutors.previousToken.key }}
             {{- include "coral.secretEnv" (list . "CORAL_RUN_EXECUTOR_PREVIOUS_TOKEN" "runExecutors.previousToken" .Values.runExecutors.previousToken) | nindent 12 }}
             {{- end }}
+            {{- if .Values.database.tls.caBundle.key }}
+            - name: PGSSLROOTCERT
+              value: /etc/coral/database-ca/ca.crt
+            {{- end }}
+            {{- if not .Values.usageReports.enabled }}
+            - name: CORAL_DISABLE_USAGE_DATA
+              value: "1"
+            {{- end }}
             {{- if .Values.secrets.license.enabled }}
             {{- include "coral.secretEnv" (list . "CORAL_LICENSE" "secrets.license" .Values.secrets.license) | nindent 12 }}
             {{- end }}
+            {{- with .Values.coral.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.coral.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             # The image writes config.toml here from CORAL_CONFIG.
             - name: state
               mountPath: /var/lib/coral
+            {{- if .Values.database.tls.caBundle.key }}
+            - name: database-ca
+              mountPath: /etc/coral/database-ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tls.extraCABundle.key }}
+            - name: ca-bundle
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-certificates.crt
+              readOnly: true
+            {{- end }}
+            {{- with .Values.coral.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           startupProbe:
             grpc:
               port: {{ include "coral.port.grpc" . }}
@@ -89,6 +144,15 @@ spec:
       volumes:
         - name: state
           emptyDir: {}
+        {{- include "coral.caBundleVolume" (list "database.tls.caBundle" .Values.database.tls.caBundle "database-ca") | nindent 8 }}
+        {{- if .Values.tls.extraCABundle.key }}
+        {{- include "coral.caBundleVolume" (list "tls.extraCABundle" .Values.tls.extraCABundle "extra-ca") | nindent 8 }}
+        - name: ca-bundle
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.coral.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 ---
 # gRPC for coral-web and the Run Executor link. Never exposed outside the
 # cluster.

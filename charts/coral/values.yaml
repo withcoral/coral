@@ -66,6 +66,32 @@ secrets:
     secretName: ""
     key: CORAL_LICENSE
 
+database:
+  tls:
+    # A CA to verify the database server's certificate with, for
+    # sslmode=verify-full against a private CA. Name a ConfigMap or a Secret,
+    # and the key that holds the PEM bundle. An empty key uses the image's
+    # roots.
+    caBundle:
+      configMapName: ""
+      secretName: ""
+      key: ""
+
+tls:
+  # A CA that coral and coral-web trust on top of their images' roots, when
+  # they call HTTPS hosts. Set it when the Install's own hosts serve a
+  # certificate from a private CA: both call them from inside the cluster to
+  # sign users in. Name a ConfigMap or a Secret, and the key that holds the
+  # PEM bundle. Restart the pods after the CA changes.
+  extraCABundle:
+    configMapName: ""
+    secretName: ""
+    key: ""
+
+usageReports:
+  # Off stops Coral sending Usage Reports.
+  enabled: true
+
 # Coral's config.toml, merged on top of the settings the chart writes. The
 # render fails if this sets a key the chart owns. Set at least
 # auth.provider.issuer and auth.provider.client_id.
@@ -102,6 +128,20 @@ coral:
       timeoutSeconds: 5
       failureThreshold: 6
 
+  # Annotations on the pods, such as reloader.stakater.com/auto: "true".
+  podAnnotations: {}
+  # The pods run as their own ServiceAccount, named <release>. Its annotations
+  # can give the pods cloud access, such as eks.amazonaws.com/role-arn for
+  # IRSA. EKS Pod Identity binds to the ServiceAccount's name.
+  serviceAccount:
+    annotations: {}
+  # More env vars, envFrom sources, volumes and volume mounts for the
+  # coral container, as Kubernetes writes them.
+  extraEnv: []
+  extraEnvFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
 web:
   image:
     registry: ghcr.io
@@ -129,6 +169,20 @@ web:
       timeoutSeconds: 5
       failureThreshold: 6
 
+  # Annotations on the pods, such as reloader.stakater.com/auto: "true".
+  podAnnotations: {}
+  # The pods run as their own ServiceAccount, named <release>-web. Its annotations
+  # can give the pods cloud access, such as eks.amazonaws.com/role-arn for
+  # IRSA. EKS Pod Identity binds to the ServiceAccount's name.
+  serviceAccount:
+    annotations: {}
+  # More env vars, envFrom sources, volumes and volume mounts for the
+  # coral-web container, as Kubernetes writes them.
+  extraEnv: []
+  extraEnvFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
 # Run Executors run programs in their own pods, from the coral image. Their
 # pods are always locked down, and no value loosens them.
 runExecutors:
@@ -137,6 +191,11 @@ runExecutors:
   maxRunsHeld: 8
   # Time a stopping Run Executor has to finish the Runs it holds.
   terminationGracePeriodSeconds: 300
+  # Annotations on the pods.
+  podAnnotations: {}
+  # More env vars, as {name, value} only: a Run Executor reads no secret but
+  # its token, and has no volumes.
+  extraEnv: []
   # Required. At least 32 characters. Coral and every Run Executor read it.
   token:
     secretName: ""

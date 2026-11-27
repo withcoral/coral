@@ -1,0 +1,85 @@
+suite: database CA
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+tests:
+  - it: trusts only the default roots by default
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PGSSLROOTCERT
+          any: true
+
+  - it: verifies the database with a CA from a ConfigMap
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      database.tls.caBundle:
+        configMapName: rds-ca
+        key: global-bundle.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PGSSLROOTCERT
+            value: /etc/coral/database-ca/ca.crt
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: database-ca
+            configMap:
+              name: rds-ca
+              items:
+                - key: global-bundle.pem
+                  path: ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: database-ca
+            mountPath: /etc/coral/database-ca
+            readOnly: true
+
+  - it: verifies the database with a CA from a Secret
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      database.tls.caBundle:
+        secretName: db-ca
+        key: ca.crt
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: database-ca
+            secret:
+              secretName: db-ca
+              items:
+                - key: ca.crt
+                  path: ca.crt
+
+  - it: fails on a CA bundle that names both a ConfigMap and a Secret
+    set:
+      database.tls.caBundle:
+        configMapName: rds-ca
+        secretName: db-ca
+        key: ca.crt
+    asserts:
+      - failedTemplate:
+          errorPattern: "database.tls.caBundle: set configMapName or secretName, not both"
+
+  - it: fails on a CA bundle with a key and no source
+    set:
+      database.tls.caBundle:
+        key: ca.crt
+    asserts:
+      - failedTemplate:
+          errorPattern: "database.tls.caBundle: set configMapName or secretName"

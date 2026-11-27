@@ -1,0 +1,68 @@
+# Every hook, both CA bundles and Usage Reports off. CI renders and validates
+# the chart with it.
+host: coral.example.com
+config:
+  auth:
+    provider:
+      issuer: https://idp.example.com
+      client_id: coral
+usageReports:
+  enabled: false
+database:
+  tls:
+    caBundle:
+      configMapName: rds-ca
+      key: global-bundle.pem
+tls:
+  extraCABundle:
+    secretName: internal-ca
+    key: ca.crt
+coral:
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral
+  extraEnv:
+    - name: HTTPS_PROXY
+      value: http://proxy.internal:3128
+    - name: AWS_REGION
+      valueFrom:
+        configMapKeyRef:
+          name: aws-settings
+          key: region
+  extraEnvFrom:
+    - configMapRef:
+        name: proxy-settings
+  extraVolumes:
+    - name: aws-config
+      configMap:
+        name: aws-config
+  extraVolumeMounts:
+    - name: aws-config
+      mountPath: /etc/aws
+      readOnly: true
+web:
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+  serviceAccount:
+    annotations:
+      example.com/owner: platform
+  extraEnv:
+    - name: HTTPS_PROXY
+      value: http://proxy.internal:3128
+  extraEnvFrom:
+    - configMapRef:
+        name: proxy-settings
+  extraVolumes:
+    - name: scratch
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: scratch
+      mountPath: /scratch
+runExecutors:
+  podAnnotations:
+    example.com/team: platform
+  extraEnv:
+    - name: TZ
+      value: UTC

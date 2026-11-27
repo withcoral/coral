@@ -1,0 +1,108 @@
+suite: extra CA
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+tests:
+  - it: trusts only the images' roots by default
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.initContainers
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: NODE_EXTRA_CA_CERTS
+          any: true
+
+  - it: adds the CA to coral-web's roots
+    set:
+      tls.extraCABundle:
+        configMapName: internal-ca
+        key: root.pem
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: NODE_EXTRA_CA_CERTS
+            value: /etc/coral/extra-ca/ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: extra-ca
+            mountPath: /etc/coral/extra-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: extra-ca
+            configMap:
+              name: internal-ca
+              items:
+                - key: root.pem
+                  path: ca.crt
+
+  # coral's TLS reads one bundle, and a bundle with only the CA would stop
+  # it reaching the OIDC provider and public providers.
+  - it: gives coral the image's roots plus the CA
+    set:
+      tls.extraCABundle:
+        configMapName: internal-ca
+        key: root.pem
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].command
+          value:
+            - sh
+            - -c
+            - cat /etc/ssl/certs/ca-certificates.crt /etc/coral/extra-ca/ca.crt > /etc/coral/ca-bundle/ca-certificates.crt
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: ghcr.io/withcoral/coral:1.10.0
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: ca-bundle
+            mountPath: /etc/ssl/certs/ca-certificates.crt
+            subPath: ca-certificates.crt
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: ca-bundle
+            emptyDir: {}
+
+  - it: locks the bundle's init container down like coral
+    set:
+      tls.extraCABundle:
+        configMapName: internal-ca
+        key: root.pem
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      - notExists:
+          path: spec.template.spec.initContainers[0].resources.limits.cpu
