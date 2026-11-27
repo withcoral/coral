@@ -336,6 +336,41 @@ async fn each_started_run_measures_its_wait_once_and_a_reopen_none() {
     assert_eq!(waits(), measured, "a reopen measures no wait");
 }
 
+/// Catches: a start whose answer the database lost that is not measured
+/// when its retry finds the start mark landed, or is measured twice.
+#[tokio::test]
+async fn a_start_whose_answer_was_lost_measures_its_wait_once() {
+    use coral_run_executor::Kind;
+    let (metrics, _guard) = measured();
+    let probe = CommitProbe::new();
+    let fixture = TestModules::with_execution_adapters(
+        Arc::new(ImmediateEngine),
+        Arc::new(RejectingUpstream),
+        Arc::new(NoopInvocationObserver),
+        probe.clone(),
+    )
+    .await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:lost-start", "Measure a retried start")
+        .await;
+    probe.lose_next_start_answer();
+    let (run_id, _claim, _stream) = started_as(
+        &fixture.runs,
+        (&principal, &workspace_id),
+        "return 1;",
+        &taker(Kind::Dialed),
+        || 1,
+    )
+    .await;
+    assert!(probe.start_lost(), "the first start's answer was lost");
+    let run = fixture.run_record(&workspace_id, &run_id).await;
+    assert!(run.execution_started(), "the start mark landed");
+    assert_eq!(
+        counts(&metrics, "coral.run.start.wait"),
+        owned(&[("run_executor.kind=dialed", 1)])
+    );
+}
+
 /// Catches: outputs a Run Executor rejected that Coral does not count by
 /// kind and count, or an unspecified kind or a count of none that does not
 /// break the protocol.

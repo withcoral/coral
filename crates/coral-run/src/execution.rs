@@ -118,6 +118,12 @@ pub(crate) trait ExecutionObserver: Send + Sync {
         false
     }
 
+    /// A Run stream's start mark landed; `true` loses its answer, so the
+    /// stream resolves the start as one the database never answered.
+    async fn start_commit_answer_lost(&self) -> bool {
+        false
+    }
+
     /// The loop's task dequeued one message.
     fn loop_message_dequeued(&self) {}
 

@@ -510,6 +510,10 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
+        #[cfg(test)]
+        if self.execution_observer.start_commit_answer_lost().await {
+            return Err(Error::Database(coral_db::Error::WriterBusy));
+        }
         Ok(Start::Started(Box::new((
             actor,
             StartedExecution {
