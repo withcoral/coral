@@ -23,11 +23,14 @@ tests:
       - notExists:
           path: spec.template.spec.priorityClassName
 
-  - it: places each component's pods where its values say
+
+  # Only coral's values are set, so a template that read another
+  # component's would place nothing and fail.
+  - it: places coral's pods where its own values say
+    template: templates/coral.yaml
     documentSelector:
       path: kind
       value: Deployment
-      matchMany: true
     set:
       coral.nodeSelector:
         pool: coral
@@ -44,39 +47,7 @@ tests:
                   - key: kubernetes.io/arch
                     operator: In
                     values: [amd64]
-      coral.priorityClassName: coral-high
-      web.nodeSelector:
-        pool: coral
-      web.tolerations:
-        - key: dedicated
-          operator: Equal
-          value: coral
-          effect: NoSchedule
-      web.affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/arch
-                    operator: In
-                    values: [amd64]
-      web.priorityClassName: coral-high
-      runExecutors.nodeSelector:
-        pool: coral
-      runExecutors.tolerations:
-        - key: dedicated
-          operator: Equal
-          value: coral
-          effect: NoSchedule
-      runExecutors.affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/arch
-                    operator: In
-                    values: [amd64]
-      runExecutors.priorityClassName: coral-high
+      coral.priorityClassName: coral-priority
     asserts:
       - equal:
           path: spec.template.spec.nodeSelector
@@ -90,8 +61,115 @@ tests:
               value: coral
               effect: NoSchedule
       - equal:
-          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
-          value: kubernetes.io/arch
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values: [amd64]
       - equal:
           path: spec.template.spec.priorityClassName
-          value: coral-high
+          value: coral-priority
+
+  # Only web's values are set, so a template that read another
+  # component's would place nothing and fail.
+  - it: places web's pods where its own values say
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      web.nodeSelector:
+        pool: web
+      web.tolerations:
+        - key: dedicated
+          operator: Equal
+          value: web
+          effect: NoSchedule
+      web.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: [amd64]
+      web.priorityClassName: web-priority
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            pool: web
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: web
+              effect: NoSchedule
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values: [amd64]
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: web-priority
+
+  # Only runExecutors's values are set, so a template that read another
+  # component's would place nothing and fail.
+  - it: places runExecutors's pods where its own values say
+    template: templates/run-executor.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      runExecutors.nodeSelector:
+        pool: runExecutors
+      runExecutors.tolerations:
+        - key: dedicated
+          operator: Equal
+          value: runExecutors
+          effect: NoSchedule
+      runExecutors.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: [amd64]
+      runExecutors.priorityClassName: runExecutors-priority
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            pool: runExecutors
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: runExecutors
+              effect: NoSchedule
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values: [amd64]
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: runExecutors-priority

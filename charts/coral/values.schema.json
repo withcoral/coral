@@ -798,7 +798,12 @@
     "topologySpreadConstraints": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "maxSkew",
+          "topologyKey",
+          "whenUnsatisfiable"
+        ]
       },
       "description": "Replaces the chart's soft spread across nodes and zones; [] turns it off. Strings may use {{ .Release.Name }}."
     }

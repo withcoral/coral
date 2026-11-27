@@ -130,3 +130,14 @@ tests:
     asserts:
       - notExists:
           path: spec.template.spec.topologySpreadConstraints
+
+  # Kubernetes needs all three; the render catches a missing one before apply.
+  - it: refuses a spread entry without a topology key
+    template: templates/coral.yaml
+    set:
+      coral.topologySpreadConstraints:
+        - maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+    asserts:
+      - failedTemplate:
+          errorPattern: "missing property 'topologyKey'"
