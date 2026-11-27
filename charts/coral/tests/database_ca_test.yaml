@@ -82,4 +82,4 @@ tests:
         key: ca.crt
     asserts:
       - failedTemplate:
-          errorPattern: "database.tls.caBundle: set configMapName or secretName"
+          errorPattern: "database.tls.caBundle: set configMapName or secretName to name where the key is"

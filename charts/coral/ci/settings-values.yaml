@@ -1,5 +1,5 @@
-# Every hook, both CA bundles and Usage Reports off. CI renders and validates
-# the chart with it.
+# Every hook, both CA bundles, and Usage Reports off. CI renders and
+# validates the chart with it.
 host: coral.example.com
 config:
   auth:

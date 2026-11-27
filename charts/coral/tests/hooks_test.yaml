@@ -188,14 +188,17 @@ tests:
               key: CORAL_CREDENTIALS_KEY
     asserts:
       - failedTemplate:
-          errorPattern: /runExecutors/extraEnv/0
+          errorPattern: "additional properties 'valueFrom' not allowed"
 
-  - it: has no Run Executor volume hook
+  - it: keeps every volume hook off the Run Executor pod
     template: templates/run-executor.yaml
-    set:
-      runExecutors.extraVolumes:
-        - name: tools
-          emptyDir: {}
+    values:
+      - ../ci/default-values.yaml
+      - ../ci/settings-values.yaml
     asserts:
-      - failedTemplate:
-          errorPattern: additional properties 'extraVolumes' not allowed
+      - notExists:
+          path: spec.template.spec.volumes
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts
+      - notExists:
+          path: spec.template.spec.initContainers

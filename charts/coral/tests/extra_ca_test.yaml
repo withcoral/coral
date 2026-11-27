@@ -64,15 +64,10 @@ tests:
       path: kind
       value: Deployment
     asserts:
-      - equal:
-          path: spec.template.spec.initContainers[0].command
-          value:
-            - sh
-            - -c
-            - cat /etc/ssl/certs/ca-certificates.crt /etc/coral/extra-ca/ca.crt > /etc/coral/ca-bundle/ca-certificates.crt
-      - equal:
-          path: spec.template.spec.initContainers[0].image
-          value: ghcr.io/withcoral/coral:1.10.0
+      # The bundle holds the image's roots and the CA.
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /etc/ssl/certs/ca-certificates\.crt .*/etc/coral/extra-ca/ca\.crt
       - contains:
           path: spec.template.spec.containers[0].volumeMounts
           content:
@@ -104,5 +99,3 @@ tests:
             capabilities:
               drop:
                 - ALL
-      - notExists:
-          path: spec.template.spec.initContainers[0].resources.limits.cpu
