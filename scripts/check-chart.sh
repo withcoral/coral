@@ -37,7 +37,7 @@ for values in "$chart"/ci/*.yaml; do
   for version in "${kube_versions[@]}"; do
     helm template coral "$chart" -f "$values" --kube-version "$version" \
       | kubeconform -strict -summary -kubernetes-version "$version" \
-        -schema-location default -schema-location "$crd_schemas" "${cache[@]}" -
+        -schema-location default -schema-location "$crd_schemas" ${cache[@]+"${cache[@]}"} -
   done
 done
 
