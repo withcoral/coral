@@ -348,3 +348,13 @@ attribute! {
         Skipped => "skipped",
     }
 }
+
+attribute! {
+    /// Which credential admitted a Run Executor, for `run_executor.kind`.
+    RunExecutorKind {
+        /// A local child that this Coral Instance started.
+        Local => "local",
+        /// A Run Executor that dialed in with an operator token.
+        Dialed => "dialed",
+    }
+}

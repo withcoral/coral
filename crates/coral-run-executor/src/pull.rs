@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use coral_db::Database;
-use coral_telemetry::safe;
+use coral_telemetry::{metric, safe};
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -84,6 +84,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The kind as `run_executor.kind` reports it.
+    const fn metric(self) -> metric::RunExecutorKind {
+        match self {
+            Self::Local => metric::RunExecutorKind::Local,
+            Self::Dialed => metric::RunExecutorKind::Dialed,
+        }
+    }
+
     /// How a row records the kind.
     #[must_use]
     pub const fn as_storage_str(self) -> &'static str {
@@ -295,6 +303,8 @@ struct Held {
     kept_for_compiles: u32,
     /// Each compile in flight, by number.
     compiles: HashMap<u64, InFlight>,
+    /// Counts the stream on `coral.run_executor.linked` while it is held.
+    _linked: metric::LevelGuard,
 }
 
 /// A compile sent and not yet answered.
@@ -838,6 +848,7 @@ impl PullStreams {
             kept_for_takes: 0,
             kept_for_compiles: 0,
             compiles: HashMap::new(),
+            _linked: metric::run_executor_linked(kind.metric()),
         };
         let mut held_streams = lock(&self.held);
         // Read under the lock `drain` walks the streams in: a stream that

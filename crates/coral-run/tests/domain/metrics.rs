@@ -13,7 +13,7 @@ use coral_telemetry::testing::{MetricCapture, MetricPoint};
 /// first default it reads: a thread that read before the global span
 /// capture was installed would keep none, and its spans would then join
 /// parents the capture never saw. So the capture is installed first.
-fn measured() -> (MetricCapture, tracing::subscriber::DefaultGuard) {
+pub(super) fn measured() -> (MetricCapture, tracing::subscriber::DefaultGuard) {
     super::trace::capture();
     let capture = MetricCapture::default();
     let guard = tracing::subscriber::set_default(capture.subscriber());
