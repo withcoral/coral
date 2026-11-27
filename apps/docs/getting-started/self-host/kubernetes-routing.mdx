@@ -1,0 +1,123 @@
+---
+title: "Routing traffic to Coral on Kubernetes"
+sidebarTitle: "Kubernetes routing"
+description: "Route Coral's three hosts with an Ingress or a Gateway API HTTPRoute, and set your controller up for streaming responses."
+---
+
+Coral serves three hosts over HTTPS. The [Helm chart](/getting-started/self-host/kubernetes) can render the routing for them, or you can route them yourself.
+
+| Host                | Service          | Port    | Serves  |
+| ------------------- | ---------------- | ------- | ------- |
+| `<coral-host>`      | `<release>-web`  | `3000`  | The UI  |
+| `auth.<coral-host>` | `<release>-auth` | `8779`  | Sign-in |
+| `mcp.<coral-host>`  | `<release>-mcp`  | `14556` | MCP     |
+
+If you set `hosts.auth` or `hosts.mcp`, the routing uses those hosts instead.
+
+Never route to the `<release>` Service. It serves Coral's gRPC API and the Run Executors' connection over plaintext HTTP/2. Each Run Executor request carries its token, so keep this traffic on the cluster's private network. The chart's routing never sends traffic to it.
+
+## Streaming
+
+The UI and MCP stream their responses, and a stream can stay open for a long time. Set up your controller or load balancer like this:
+
+- Turn off response buffering.
+- Set a read timeout of at least one hour.
+
+Without these settings, users see responses arrive late or stop part of the way through.
+
+## Choose how to route
+
+The chart can render one of two kinds of routing. Both are off by default.
+
+- **An Ingress**, with `ingress.enabled: true`. It works with any ingress controller.
+- **Gateway API HTTPRoutes**, with `httpRoute.enabled: true`. The chart renders one HTTPRoute for each host and attaches each one to the Gateways that you name in `httpRoute.parentRefs`.
+
+The chart adds no settings for a specific controller. Put your controller's settings in `ingress.annotations` or `httpRoute.annotations`, and set your IngressClass in `ingress.className`.
+
+To route the hosts yourself, leave both off and send each host to the Service in the table above.
+
+## TLS
+
+With an Ingress, do one of these:
+
+- Set `ingress.tls.secretName` to a TLS Secret that covers the three hosts. The chart never creates this Secret.
+- Leave `ingress.tls.secretName` empty, and end TLS at your load balancer.
+
+With HTTPRoutes, your Gateway's listeners hold the certificates.
+
+Coral's public URLs always use `https`, so serve each host over HTTPS.
+
+## Examples
+
+### ingress-nginx with cert-manager
+
+cert-manager creates the TLS Secret that `ingress.tls.secretName` names, from the issuer in the annotation:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  tls:
+    secretName: coral-tls
+```
+
+Other controllers that are based on nginx have similar annotations. Look for the ones that turn off proxy buffering and set the proxy read timeout.
+
+### AWS Load Balancer Controller
+
+The Application Load Balancer ends TLS with a certificate from AWS Certificate Manager, so leave `ingress.tls.secretName` empty. It does not buffer responses. Raise its idle timeout to one hour:
+
+```yaml
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account>:certificate/<id>
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+```
+
+The certificate must cover the three hosts.
+
+### Envoy Gateway
+
+Attach the routes to your Gateway:
+
+```yaml
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: eg
+      namespace: envoy-gateway-system
+```
+
+The Gateway needs an HTTPS listener for the three hosts, and must allow routes from Coral's namespace. Envoy does not buffer responses. To give each request up to one hour, apply a `BackendTrafficPolicy` to the routes. This example uses the release name `coral`:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: coral-web
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: coral-auth
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: coral-mcp
+  timeout:
+    http:
+      requestTimeout: 3600s
+```

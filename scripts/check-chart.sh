@@ -12,6 +12,9 @@ chart=charts/coral
 # supports.
 kube_versions=(1.35.0 1.37.0)
 read -r -a unittest <<<"${HELM_UNITTEST:-helm unittest}"
+# Kubernetes' own schemas don't cover HTTPRoute, a CRD: this catalog does. It
+# is pinned to a commit so that a change upstream can't fail a check.
+crd_schemas='https://raw.githubusercontent.com/datreeio/CRDs-catalog/b50f3fbc45169a14b6d2d3f767b32fd96ef4a3fa/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
 cd "$(dirname "$0")/.."
 
@@ -26,7 +29,8 @@ for values in "$chart"/ci/*.yaml; do
   fi
   for version in "${kube_versions[@]}"; do
     helm template coral "$chart" -f "$values" --kube-version "$version" \
-      | kubeconform -strict -summary -kubernetes-version "$version" -
+      | kubeconform -strict -summary -kubernetes-version "$version" \
+        -schema-location default -schema-location "$crd_schemas" -
   done
 done
 

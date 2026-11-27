@@ -21,7 +21,7 @@ To try Coral without a Postgres server, use [Docker Compose](/getting-started/se
 - **Kubernetes 1.35 or later**, and Helm 3.8 or later.
 - **Postgres**, with pgvector 0.7 or later and `pg_trgm`. Create both extensions in Coral's database before you install, or give Coral's database role permission to create them. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector). If your server does not have pgvector, set `semantic_search_enabled: false` under `config.search` in your values.
 - **An OIDC provider.** Register `https://auth.<coral-host>/auth/oidc/callback` as the redirect URI. If you set `hosts.auth`, register `https://<hosts.auth>/auth/oidc/callback` instead.
-- **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller and cert-manager.
+- **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller or a Gateway, and cert-manager. See [Kubernetes routing](/getting-started/self-host/kubernetes-routing).
 
 The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pods need no network access to get it.
 
@@ -84,68 +84,24 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
    helm install coral ./coral/charts/coral --namespace coral -f values.yaml --wait --timeout 20m
    ```
 
-5. Route each host to its Service. The chart names each object after the release, and creates them in the `coral` namespace.
+5. Route the three hosts. To have the chart render an Ingress or Gateway API HTTPRoutes, set `ingress` or `httpRoute` in your values. Or route each host to its Service yourself. The UI and MCP stream their responses, so your controller needs some settings. See [Kubernetes routing](/getting-started/self-host/kubernetes-routing).
 
-   | Host                | Service      | Port    |
-   | ------------------- | ------------ | ------- |
-   | `<coral-host>`      | `coral-web`  | `3000`  |
-   | `auth.<coral-host>` | `coral-auth` | `8779`  |
-   | `mcp.<coral-host>`  | `coral-mcp`  | `14556` |
-
-   The UI and MCP stream their responses. Turn off response buffering, and set a read timeout of at least one hour. For example, with ingress-nginx and cert-manager:
+   For example, with ingress-nginx and cert-manager:
 
    ```yaml
-   apiVersion: networking.k8s.io/v1
-   kind: Ingress
-   metadata:
-     name: coral
-     namespace: coral
+   ingress:
+     enabled: true
+     className: nginx
      annotations:
        cert-manager.io/cluster-issuer: letsencrypt
        nginx.ingress.kubernetes.io/proxy-buffering: "off"
        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-   spec:
-     ingressClassName: nginx
+       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
      tls:
-       - hosts:
-           - <coral-host>
-           - auth.<coral-host>
-           - mcp.<coral-host>
-         secretName: coral-tls
-     rules:
-       - host: <coral-host>
-         http:
-           paths:
-             - path: /
-               pathType: Prefix
-               backend:
-                 service:
-                   name: coral-web
-                   port:
-                     number: 3000
-       - host: auth.<coral-host>
-         http:
-           paths:
-             - path: /
-               pathType: Prefix
-               backend:
-                 service:
-                   name: coral-auth
-                   port:
-                     number: 8779
-       - host: mcp.<coral-host>
-         http:
-           paths:
-             - path: /
-               pathType: Prefix
-               backend:
-                 service:
-                   name: coral-mcp
-                   port:
-                     number: 14556
+       secretName: coral-tls
    ```
 
-   Do not route to the `coral` Service. It serves Coral's gRPC API and the Run Executors' connection over plaintext HTTP/2. Each Run Executor request carries its token, so keep this traffic on the cluster's private network.
+   Run `helm upgrade` with the same arguments as `helm install` to apply a change to your values.
 
 6. Open the Coral UI at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`, or `https://<hosts.mcp>` if you set `hosts.mcp`.
 

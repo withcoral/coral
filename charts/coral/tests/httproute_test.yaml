@@ -1,0 +1,86 @@
+suite: httpRoute
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/httproute.yaml
+tests:
+  - it: renders no HTTPRoute by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders one HTTPRoute for each host
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+          namespace: envoy-gateway-system
+    asserts:
+      - hasDocuments:
+          count: 3
+      - isKind:
+          of: HTTPRoute
+      - equal:
+          path: spec.parentRefs
+          value:
+            - name: eg
+              namespace: envoy-gateway-system
+
+  - it: sends each host to its Service
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+    documentSelector:
+      path: metadata.name
+      value: prod-mcp
+    asserts:
+      - equal:
+          path: spec.hostnames
+          value:
+            - mcp.coral.example.com
+      - equal:
+          path: spec.rules
+          value:
+            - backendRefs:
+                - name: prod-mcp
+                  port: 14556
+
+  - it: names each route after the release and its host
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+      hosts.auth: login.example.org:8443
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: ^prod-(web|auth|mcp)$
+      - contains:
+          path: spec.hostnames
+          content: login.example.org
+        documentSelector:
+          path: metadata.name
+          value: prod-auth
+
+  - it: passes the annotations through as written
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+      httpRoute.annotations:
+        example.com/team: platform
+    asserts:
+      - equal:
+          path: metadata.annotations
+          value:
+            example.com/team: platform
+
+  - it: fails without a Gateway to attach to
+    set:
+      httpRoute.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: httpRoute.parentRefs is required

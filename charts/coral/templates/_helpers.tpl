@@ -36,6 +36,26 @@ app.kubernetes.io/component: {{ index . 1 }}
 {{- .Values.hosts.mcp | default (printf "mcp.%s" .Values.host) -}}
 {{- end -}}
 
+{{/*
+What routing sends to each host: the host without a port, and the Service and
+port behind it. coral's gRPC Service is never among them.
+*/}}
+{{- define "coral.routes" -}}
+{{- $fullname := include "coral.fullname" . -}}
+- name: web
+  host: {{ regexReplaceAll ":[0-9]+$" .Values.host "" }}
+  service: {{ $fullname }}-web
+  port: {{ include "coral.port.web" . }}
+- name: auth
+  host: {{ regexReplaceAll ":[0-9]+$" (include "coral.host.auth" .) "" }}
+  service: {{ $fullname }}-auth
+  port: {{ include "coral.port.auth" . }}
+- name: mcp
+  host: {{ regexReplaceAll ":[0-9]+$" (include "coral.host.mcp" .) "" }}
+  service: {{ $fullname }}-mcp
+  port: {{ include "coral.port.mcp" . }}
+{{- end -}}
+
 {{/* Ports. Coral's listeners bind them; the Services expose them. */}}
 {{- define "coral.port.grpc" -}}14555{{- end -}}
 {{- define "coral.port.mcp" -}}14556{{- end -}}

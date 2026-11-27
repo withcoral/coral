@@ -1,0 +1,114 @@
+suite: ingress
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/ingress.yaml
+tests:
+  - it: renders no Ingress by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: routes each host to its Service
+    set:
+      ingress.enabled: true
+    asserts:
+      - isKind:
+          of: Ingress
+      - equal:
+          path: metadata.name
+          value: prod
+      - equal:
+          path: spec.rules
+          value:
+            - host: coral.example.com
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: prod-web
+                        port:
+                          number: 3000
+            - host: auth.coral.example.com
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: prod-auth
+                        port:
+                          number: 8779
+            - host: mcp.coral.example.com
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: prod-mcp
+                        port:
+                          number: 14556
+
+  - it: passes the class and annotations through as written
+    set:
+      ingress.enabled: true
+      ingress.className: nginx
+      ingress.annotations:
+        cert-manager.io/cluster-issuer: letsencrypt
+        nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    asserts:
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: metadata.annotations
+          value:
+            cert-manager.io/cluster-issuer: letsencrypt
+            nginx.ingress.kubernetes.io/proxy-buffering: "off"
+
+  - it: adds no class, annotations or TLS of its own
+    set:
+      ingress.enabled: true
+    asserts:
+      - notExists:
+          path: spec.ingressClassName
+      - notExists:
+          path: metadata.annotations
+      - notExists:
+          path: spec.tls
+
+  - it: serves the three hosts with the named TLS Secret
+    set:
+      ingress.enabled: true
+      ingress.tls.secretName: coral-tls
+    asserts:
+      - equal:
+          path: spec.tls
+          value:
+            - secretName: coral-tls
+              hosts:
+                - coral.example.com
+                - auth.coral.example.com
+                - mcp.coral.example.com
+
+  - it: routes the host overrides, without their ports
+    set:
+      ingress.enabled: true
+      host: coral.example.com:8443
+      hosts.auth: login.example.org:8443
+      hosts.mcp: agents.example.org
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: coral.example.com
+      - equal:
+          path: spec.rules[1].host
+          value: login.example.org
+      - equal:
+          path: spec.rules[2].host
+          value: agents.example.org

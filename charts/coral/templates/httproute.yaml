@@ -1,0 +1,27 @@
+{{- if .Values.httpRoute.enabled -}}
+{{- $parentRefs := required "httpRoute.parentRefs is required: name the Gateway to attach the routes to" (.Values.httpRoute.parentRefs | default nil) -}}
+{{- range $i, $route := include "coral.routes" . | fromYamlArray }}
+{{- if $i }}
+---
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $route.service }}
+  labels:
+    {{- include "coral.labels" $ | nindent 4 }}
+  {{- with $.Values.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $parentRefs | nindent 4 }}
+  hostnames:
+    - {{ $route.host }}
+  rules:
+    - backendRefs:
+        - name: {{ $route.service }}
+          port: {{ $route.port }}
+{{- end }}
+{{- end }}
