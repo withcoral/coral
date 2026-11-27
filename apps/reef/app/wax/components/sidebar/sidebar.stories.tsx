@@ -24,12 +24,12 @@ function Example({ brandLabel, minimized }: { brandLabel?: string; minimized: bo
           isMinimized={isMinimized}
           onToggle={() => setIsMinimized(!isMinimized)}
         >
-          {(state) => (
+          {(rail) => (
             <SidebarButton
               as={Link}
               to="/"
               icon="LayoutGrid"
-              isMinimized={state.isMinimized}
+              isMinimized={rail}
               isActive
               aria-current="page"
               aria-label="Overview"
@@ -75,8 +75,9 @@ export const Expanded: Story = {
     if (!(await resizeViewport(1280, 800))) return
     const canvas = within(canvasElement)
     const sidebar = canvas.getByRole('navigation', { name: 'Coral' })
+    // The top bar is a `header` inside `main`, so it has no role to find it by.
     await expect(centre(within(sidebar).getByRole('link', { name: 'Coral' }))).toBe(
-      centre(canvas.getByRole('banner')),
+      centre(canvasElement.querySelector('main header')!),
     )
     await expect(sidebar.getBoundingClientRect().width).toBe(220)
 

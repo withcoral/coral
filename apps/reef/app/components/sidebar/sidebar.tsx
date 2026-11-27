@@ -197,7 +197,7 @@ export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
       isMinimized={isMinimized}
       onToggle={toggleSidebar}
     >
-      {(state) => <SidebarContents {...props} back={back} isMinimized={state.isMinimized} />}
+      {(minimized) => <SidebarContents {...props} back={back} isMinimized={minimized} />}
     </WaxSidebar>
   )
 }

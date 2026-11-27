@@ -12,14 +12,6 @@ import {
 
 import * as styles from './sidebar.css'
 
-/** How the sidebar shows now, which its contents follow. */
-export interface SidebarState {
-  /** The sidebar is a rail of icons. The drawer on a phone always shows the labels. */
-  isMinimized: boolean
-  /** The sidebar is the drawer on a phone. */
-  mobile: boolean
-}
-
 interface SidebarProps {
   /** Names the app beside the brand, such as "console". The landmark and the brand's link take the name too. */
   brandLabel?: string
@@ -29,8 +21,12 @@ interface SidebarProps {
   isMinimized: boolean
   /** The person collapsed or expanded the sidebar, with the toggle or its shortcut. */
   onToggle: () => void
-  /** The pages and the menus under the masthead. */
-  children: (state: SidebarState) => ReactNode
+  /**
+   * The pages and the menus under the masthead. `isMinimized` says if the
+   * sidebar shows as a rail of icons now. The drawer on a phone never does,
+   * also for a person who collapsed the sidebar.
+   */
+  children: (isMinimized: boolean) => ReactNode
 }
 
 /**
@@ -73,8 +69,12 @@ function Navigation({
   resized,
   toggle,
   children,
-}: Pick<SidebarProps, 'brandLabel' | 'home' | 'children'> &
-  SidebarState & { resized: boolean; toggle: () => void }) {
+}: Pick<SidebarProps, 'brandLabel' | 'home' | 'isMinimized' | 'children'> & {
+  /** The sidebar is the drawer on a phone. */
+  mobile: boolean
+  resized: boolean
+  toggle: () => void
+}) {
   const label = brandLabel ? `Coral ${brandLabel}` : 'Coral'
   const toggleLabel = isMinimized ? 'Expand sidebar' : 'Collapse sidebar'
   return (
@@ -118,7 +118,7 @@ function Navigation({
           </KeyboardShortcut>
         )}
       </div>
-      {children({ isMinimized, mobile })}
+      {children(isMinimized)}
     </nav>
   )
 }
