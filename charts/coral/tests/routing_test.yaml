@@ -39,3 +39,22 @@ tests:
       - notEqual:
           path: spec.rules[*].backendRefs[*].port
           value: 14557
+
+  # Two routes for / on one host would hide one of the three Services.
+  - it: fails when two hosts are the same
+    # The render stops at the first template that fails.
+    template: templates/ingress.yaml
+    set:
+      hosts.auth: coral.example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: "host, hosts.auth and hosts.mcp must differ: coral.example.com is used twice"
+
+  - it: fails when two hosts differ only by port
+    # The render stops at the first template that fails.
+    template: templates/ingress.yaml
+    set:
+      hosts.mcp: coral.example.com:8443
+    asserts:
+      - failedTemplate:
+          errorPattern: "host, hosts.auth and hosts.mcp must differ: coral.example.com is used twice"

@@ -79,13 +79,34 @@
           "type": "array",
           "items": {
             "type": "object",
+            "additionalProperties": false,
             "required": [
               "name"
             ],
+            "description": "A Gateway API ParentReference.",
             "properties": {
+              "group": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
               "name": {
                 "type": "string",
                 "minLength": 1
+              },
+              "sectionName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
               }
             }
           }

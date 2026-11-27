@@ -12,26 +12,26 @@ metadata:
   {{- end }}
 spec:
   {{- with .Values.ingress.className }}
-  ingressClassName: {{ . }}
+  ingressClassName: {{ . | quote }}
   {{- end }}
   {{- with .Values.ingress.tls.secretName }}
   tls:
-    - secretName: {{ . }}
+    - secretName: {{ . | quote }}
       hosts:
         {{- range $routes }}
-        - {{ .host }}
+        - {{ .host | quote }}
         {{- end }}
   {{- end }}
   rules:
     {{- range $routes }}
-    - host: {{ .host }}
+    - host: {{ .host | quote }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ .service }}
+                name: {{ .service | quote }}
                 port:
                   number: {{ .port }}
     {{- end }}

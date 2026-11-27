@@ -4,21 +4,19 @@ release:
 values:
   - ../ci/default-values.yaml
 set:
-  httpRoute.enabled: true
   httpRoute.parentRefs:
     - name: eg
 templates:
   - templates/httproute.yaml
 tests:
   - it: renders no HTTPRoute by default
-    set:
-      httpRoute.enabled: false
     asserts:
       - hasDocuments:
           count: 0
 
   - it: renders one HTTPRoute for each host
     set:
+      httpRoute.enabled: true
       httpRoute.parentRefs:
         - name: eg
           namespace: envoy-gateway-system
@@ -34,6 +32,8 @@ tests:
               namespace: envoy-gateway-system
 
   - it: sends each host to its Service
+    set:
+      httpRoute.enabled: true
     asserts:
       - equal:
           path: spec.hostnames
@@ -85,6 +85,8 @@ tests:
           value: prod-mcp
 
   - it: names each route after the release and its host
+    set:
+      httpRoute.enabled: true
     asserts:
       - matchRegex:
           path: metadata.name
@@ -92,6 +94,7 @@ tests:
 
   - it: passes the annotations through as written
     set:
+      httpRoute.enabled: true
       httpRoute.annotations:
         example.com/team: platform
     asserts:
@@ -102,7 +105,18 @@ tests:
 
   - it: fails without a Gateway to attach to
     set:
+      httpRoute.enabled: true
       httpRoute.parentRefs: []
     asserts:
       - failedTemplate:
           errorPattern: httpRoute.parentRefs is required
+
+  - it: refuses a parentRef field the Gateway API does not have
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: eg
+          gateway: eg
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties 'gateway' not allowed"

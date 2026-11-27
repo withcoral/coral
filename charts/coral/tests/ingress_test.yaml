@@ -112,3 +112,29 @@ tests:
       - equal:
           path: spec.rules[2].host
           value: agents.example.org
+
+  # A value YAML would read as a boolean or a number must stay a string.
+  - it: keeps every routed string a string
+    set:
+      ingress.enabled: true
+      host: "true"
+      hosts.auth: "1"
+      hosts.mcp: "null"
+      ingress.className: "123"
+      ingress.tls.secretName: "false"
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: "true"
+      - equal:
+          path: spec.rules[1].host
+          value: "1"
+      - equal:
+          path: spec.ingressClassName
+          value: "123"
+      - equal:
+          path: spec.tls[0].secretName
+          value: "false"
+      - equal:
+          path: spec.tls[0].hosts
+          value: ["true", "1", "null"]

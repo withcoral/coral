@@ -7,7 +7,7 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: {{ $route.service }}
+  name: {{ $route.service | quote }}
   labels:
     {{- include "coral.labels" $ | nindent 4 }}
   {{- with $.Values.httpRoute.annotations }}
@@ -18,10 +18,10 @@ spec:
   parentRefs:
     {{- toYaml $parentRefs | nindent 4 }}
   hostnames:
-    - {{ $route.host }}
+    - {{ $route.host | quote }}
   rules:
     - backendRefs:
-        - name: {{ $route.service }}
+        - name: {{ $route.service | quote }}
           port: {{ $route.port }}
 {{- end }}
 {{- end }}

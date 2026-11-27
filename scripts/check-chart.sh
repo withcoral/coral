@@ -17,7 +17,8 @@ read -r -a unittest <<<"${HELM_UNITTEST:-helm unittest}"
 cache=()
 if [[ -n "${KUBECONFORM_CACHE:-}" ]]; then
   mkdir -p "$KUBECONFORM_CACHE"
-  cache=(-cache "$KUBECONFORM_CACHE")
+  # Absolute, since the script changes directory below.
+  cache=(-cache "$(cd "$KUBECONFORM_CACHE" && pwd)")
 fi
 # Kubernetes' own schemas don't cover HTTPRoute, a CRD: this catalog does. It
 # is pinned to a commit so that a change upstream can't fail a check.

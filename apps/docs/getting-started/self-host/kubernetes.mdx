@@ -21,7 +21,7 @@ To try Coral without a Postgres server, use [Docker Compose](/getting-started/se
 - **Kubernetes 1.35 or later**, and Helm 3.8 or later.
 - **Postgres**, with pgvector 0.7 or later and `pg_trgm`. Create both extensions in Coral's database before you install, or give Coral's database role permission to create them. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector). If your server does not have pgvector, set `semantic_search_enabled: false` under `config.search` in your values.
 - **An OIDC provider.** Register `https://auth.<coral-host>/auth/oidc/callback` as the redirect URI. If you set `hosts.auth`, register `https://<hosts.auth>/auth/oidc/callback` instead.
-- **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller or a Gateway, and cert-manager. See [Routing](#routing).
+- **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller or a Gateway, with certificates from cert-manager or your load balancer. See [Routing](#routing).
 
 The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pods need no network access to get it.
 
@@ -201,7 +201,7 @@ httpRoute:
       namespace: envoy-gateway-system
 ```
 
-The Gateway needs an HTTPS listener for the three hosts, and must allow routes from Coral's namespace. Envoy does not buffer responses. To give each request up to one hour, apply a `BackendTrafficPolicy` to the routes.:
+The Gateway needs an HTTPS listener for the three hosts, and must allow routes from Coral's namespace. Envoy does not buffer responses. To let each request run, and each stream stay quiet, for up to one hour, apply a `BackendTrafficPolicy` to the routes:
 
 ```yaml
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -223,6 +223,7 @@ spec:
   timeout:
     http:
       requestTimeout: 3600s
+      streamIdleTimeout: 3600s
 ```
 
 ## Run Executors
