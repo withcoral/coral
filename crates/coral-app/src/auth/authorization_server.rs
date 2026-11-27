@@ -554,7 +554,7 @@ impl AuthorizationServerHttpState {
 
     /// The attributes of every sign-in cookie: this server's, with the
     /// sign-in mode's `SameSite`.
-    pub(super) fn sign_in_cookie(&self) -> sign_in_cookie::Attributes {
+    pub(super) fn sign_in_cookie_attributes(&self) -> sign_in_cookie::Attributes {
         sign_in_cookie::Attributes::new(self.secure_cookies(), self.sign_in_mode.same_site())
     }
 }

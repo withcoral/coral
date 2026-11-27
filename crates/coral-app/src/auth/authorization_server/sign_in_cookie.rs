@@ -160,7 +160,8 @@ pub(super) fn evicted_by_new_sign_in(headers: &HeaderMap, attributes: Attributes
         .collect()
 }
 
-/// Splits a sign-in cookie name into its start time and state tag.
+/// Splits a sign-in cookie name into its start time and the tag of its
+/// sign-in's value.
 fn parse(name: &[u8], attributes: Attributes) -> Option<(u64, &[u8])> {
     let rest = name
         .strip_prefix(prefix(attributes).as_bytes())?

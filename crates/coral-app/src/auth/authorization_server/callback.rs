@@ -69,7 +69,7 @@ async fn finish(
         // The web interface begins a sign-in for the person the browser
         // brings; with none, the mode's refusal is the answer.
         Named::NoSignIn(refusal) => {
-            return match state.settings.authorization_server().fresh_sign_in() {
+            return match state.settings.authorization_server().fresh_sign_in_url() {
                 Some(page) => see_other(page),
                 None => direct_refusal(&refusal),
             };
@@ -77,7 +77,7 @@ async fn finish(
         Named::Refused(refusal) => return direct_refusal(&refusal),
     };
     // A browser that did not start this sign-in has no cookie for it.
-    let attributes = state.sign_in_cookie();
+    let attributes = state.sign_in_cookie_attributes();
     let Some((cookie_name, sealed)) = sign_in_cookie::find(headers, sign_in.as_str(), attributes)
     else {
         return direct_refusal(&state.sign_in_mode.no_sign_in_cookie(arrived));
@@ -448,7 +448,7 @@ mod tests {
     }
 
     /// The `Cookie` a browser holds after starting the sign-in named by
-    /// `oidc_state` for `session`.
+    /// `sign_in` for `session`.
     fn browser_cookie(
         state: &AuthorizationServerHttpState,
         sign_in: &str,
@@ -458,7 +458,7 @@ mod tests {
         let sealed = session
             .seal(state.settings.handshake_keys(), sign_in, now + 300)
             .expect("sealed session");
-        let name = sign_in_cookie::name(sign_in, now, state.sign_in_cookie());
+        let name = sign_in_cookie::name(sign_in, now, state.sign_in_cookie_attributes());
         HeaderValue::from_str(&format!("{name}={sealed}")).expect("cookie")
     }
 
@@ -1780,7 +1780,7 @@ mod tests {
     }
 
     /// POSTs `body` to `path` chunked, so no `Content-Length` announces
-    /// its size, and returns the status line.
+    /// its size, and returns the whole response as text.
     async fn post_chunked(
         server: &super::super::RunningCoralAuthorizationServer,
         path: &str,
@@ -1810,7 +1810,7 @@ mod tests {
         .await
         .expect("the server answers")
         .expect("response");
-        response.lines().next().unwrap_or_default().to_owned()
+        response
     }
 
     /// The test mode's POST is read up to its limit. A longer body, with or
@@ -1848,15 +1848,19 @@ mod tests {
             ),
             (Some("invalid_request"), Some("request body is too large"))
         );
-        assert_eq!(
-            post_chunked(
-                &server,
-                "/auth/test/answer",
-                &cookie,
-                &posted_answer("value-1", limit + 1)
-            )
-            .await,
-            "HTTP/1.1 413 Payload Too Large"
+        // Core's answer, not axum's own plain-text one.
+        let chunked = post_chunked(
+            &server,
+            "/auth/test/answer",
+            &cookie,
+            &posted_answer("value-1", limit + 1),
+        )
+        .await;
+        assert!(
+            chunked.starts_with("HTTP/1.1 413 Payload Too Large\r\n")
+                && chunked.contains("content-type: application/json\r\n")
+                && chunked.contains(r#""error_description":"request body is too large""#),
+            "{chunked}"
         );
 
         let at_limit = post(posted_answer("value-1", limit)).await.expect("post");
@@ -1965,12 +1969,14 @@ mod tests {
                 );
                 assert!(logs.is_empty(), "{web} {method}: {logs}");
             }
-            for raw in [
-                "sign_in=value-1&sign_in=value-2",
-                "sign_in=value-2&person=00u1",
+            for (raw, code) in [
+                ("sign_in=value-1&sign_in=value-2", "test_malformed "),
+                ("sign_in=value-2&person=00u1", "test_no_sign_in "),
             ] {
                 let (response, _logs) = mode_answer(state.clone(), "value-1", raw).await;
                 assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{web} {raw}");
+                let description = sent_description(response).await.unwrap_or_default();
+                assert!(description.starts_with(code), "{web} {raw}: {description}");
             }
         }
     }
@@ -1992,21 +1998,24 @@ mod tests {
     #[tokio::test]
     async fn once_found_the_sign_in_cookie_is_cleared_with_every_answer() {
         let database = database().await;
-        for (settings, held, status, description) in [
+        for (settings, sign_in, held, status, description) in [
             (
                 "refuse = true",
+                "value-1",
                 Held::Sealed,
                 StatusCode::FOUND,
                 "test_refused 1970-01-01T00:00:00Z",
             ),
             (
                 "",
+                "value-2",
                 Held::Expired,
                 StatusCode::BAD_REQUEST,
                 "test_no_sign_in 1970-01-01T00:05:01Z",
             ),
             (
                 "",
+                "value-3",
                 Held::Unsealed,
                 StatusCode::BAD_REQUEST,
                 "test_no_sign_in 1970-01-01T00:00:00Z",
@@ -2015,9 +2024,9 @@ mod tests {
             let clock = Arc::new(ManualClock::starting_at(UnixNanos::new(0)));
             let mut app = mode_state(&database, super::super::test_state::test_mode(settings));
             app.clock = clock.clone();
-            let name = sign_in_cookie::name("value-1", 0, app.sign_in_cookie());
+            let name = sign_in_cookie::name(sign_in, 0, app.sign_in_cookie_attributes());
             let cookie = match held {
-                Held::Sealed | Held::Expired => browser_cookie(&app, "value-1", &session()),
+                Held::Sealed | Held::Expired => browser_cookie(&app, sign_in, &session()),
                 Held::Unsealed => {
                     HeaderValue::from_str(&format!("{name}=unsealed")).expect("cookie")
                 }
@@ -2027,12 +2036,8 @@ mod tests {
             }
             let mut headers = HeaderMap::new();
             headers.append(header::COOKIE, cookie);
-            let response = mode_get(
-                State(app),
-                RawQuery(Some("sign_in=value-1&person=00u1".to_owned())),
-                headers,
-            )
-            .await;
+            let answer = format!("sign_in={sign_in}&person=00u1");
+            let response = mode_get(State(app), RawQuery(Some(answer.clone())), headers).await;
             assert_eq!(response.status(), status, "{held:?}");
             assert!(
                 response
@@ -2042,18 +2047,22 @@ mod tests {
                     .any(|value| value.as_bytes().starts_with(format!("{name}=;").as_bytes())),
                 "{held:?}: the cookie is cleared"
             );
-            if status == StatusCode::FOUND {
-                assert!(
-                    !redirect_query(&response)
-                        .iter()
-                        .any(|(key, _)| key == "code"),
-                    "{held:?}"
-                );
-            }
             assert_eq!(
                 sent_description(response).await.as_deref(),
                 Some(description),
                 "{held:?}"
+            );
+
+            // No answer issued a code: the same sign-in, begun again in this
+            // browser, still issues its one code.
+            let mut again = mode_state(&database, super::super::test_state::test_mode(""));
+            again.clock = clock.clone();
+            let (response, _logs) = mode_answer(again, sign_in, &answer).await;
+            assert!(
+                redirect_query(&response)
+                    .iter()
+                    .any(|(key, _)| key == "code"),
+                "{held:?}: {response:?}"
             );
         }
     }

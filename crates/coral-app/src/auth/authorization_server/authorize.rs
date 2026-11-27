@@ -100,7 +100,9 @@ pub(super) async fn oauth_authorize_get(
         return trusted.error("invalid_request", inputs);
     }
     let sealed_len = sign_in.sealed_len();
-    if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.sign_in_cookie())) {
+    if !sealed_len
+        .is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.sign_in_cookie_attributes()))
+    {
         return trusted.error("invalid_request", "authorization request is too large");
     }
     // A trusted client proceeds as if the user had already pressed Allow.
@@ -221,7 +223,7 @@ async fn provider_sign_in(
         Err(refusal) => return trusted.refused(&refusal),
     };
     let keys = state.settings.handshake_keys();
-    let attributes = state.sign_in_cookie();
+    let attributes = state.sign_in_cookie_attributes();
     // The sign-in starts when the mode's answer arrives, not when the
     // request did.
     let now = state.clock.now().whole_seconds();
@@ -492,8 +494,9 @@ mod tests {
                 HeaderValue::from_str(pair.expect("name and value")).expect("cookie"),
             );
         }
-        let (_name, sealed) = sign_in_cookie::find(&cookies, oidc_state, state.sign_in_cookie())
-            .expect("sign-in cookie");
+        let (_name, sealed) =
+            sign_in_cookie::find(&cookies, oidc_state, state.sign_in_cookie_attributes())
+                .expect("sign-in cookie");
         let now = state.clock.now().whole_seconds();
         SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
             .expect("sealed sign-in")
@@ -1666,14 +1669,17 @@ mod tests {
             let name = sign_in_cookie::name(
                 &format!("held-{started_at}"),
                 started_at,
-                auth_state.sign_in_cookie(),
+                auth_state.sign_in_cookie_attributes(),
             );
             headers.append(
                 header::COOKIE,
                 HeaderValue::from_str(&format!("{name}=sealed")).expect("cookie"),
             );
         }
-        let evicted = sign_in_cookie::evicted_by_new_sign_in(&headers, auth_state.sign_in_cookie());
+        let evicted = sign_in_cookie::evicted_by_new_sign_in(
+            &headers,
+            auth_state.sign_in_cookie_attributes(),
+        );
         assert!(!evicted.is_empty(), "the setup must reach the cap");
         let response =
             oauth_authorize_get(State(auth_state), RawQuery(Some(encode(&pairs()))), headers).await;

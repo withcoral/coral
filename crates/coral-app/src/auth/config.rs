@@ -91,7 +91,7 @@ impl AuthSettings {
         let issuer = listener.validate(auth.is_some())?;
         let web_client = web.and_then(WebClient::from_settings);
         // Any web interface, `http` on loopback too, begins a sign-in.
-        let fresh_sign_in = web.map(|web| web.public_url.page_url(FRESH_SIGN_IN));
+        let fresh_sign_in_url = web.map(|web| web.public_url.page_url(FRESH_SIGN_IN_PATH));
         let Some(AuthSection(mut auth)) = auth else {
             return Ok(None);
         };
@@ -114,7 +114,7 @@ impl AuthSettings {
             issuer,
             trusted_clients: std::mem::take(&mut auth.trusted_clients),
             web_client,
-            fresh_sign_in,
+            fresh_sign_in_url,
         };
         Ok(Some(Self {
             auth,
@@ -473,7 +473,7 @@ pub(crate) struct AuthorizationServerSettings {
     web_client: Option<WebClient>,
     /// The web interface's sign-in page, with the mark that asks it to begin
     /// a sign-in although the browser holds a session.
-    fresh_sign_in: Option<String>,
+    fresh_sign_in_url: Option<String>,
 }
 
 impl AuthorizationServerSettings {
@@ -484,8 +484,8 @@ impl AuthorizationServerSettings {
     /// The web interface's sign-in page, with the mark that asks it to begin
     /// a sign-in although the browser holds a session, or `None` in a
     /// deployment with no web interface.
-    pub(super) fn fresh_sign_in(&self) -> Option<&str> {
-        self.fresh_sign_in.as_deref()
+    pub(super) fn fresh_sign_in_url(&self) -> Option<&str> {
+        self.fresh_sign_in_url.as_deref()
     }
 
     /// Reports whether this request may skip the approval page: the web
@@ -567,10 +567,7 @@ fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> 
 
 /// The web interface's sign-in page, with the mark that makes it begin a
 /// sign-in although the browser holds a session.
-const FRESH_SIGN_IN: &str = "/login?fresh=1";
-
-/// The mode every build has, which `[auth.provider]` selects with no `mode`.
-const OIDC_MODE: &str = oidc_mode::NAME.as_str();
+const FRESH_SIGN_IN_PATH: &str = "/login?fresh=1";
 
 /// The sign-in mode that `[auth.provider]` selects, with its settings
 /// checked: OIDC with its provider `P`, which the server builds into a mode
@@ -595,11 +592,14 @@ fn provider_choice(
         Some(toml::Value::String(mode)) => Some(mode),
         Some(_) => return Err(missing_mode(None, modes)),
     };
+    // `oidc` is the mode every build has, and a missing `mode` selects it.
+    let oidc = oidc_mode::NAME.as_str();
     let name = match mode.as_deref() {
-        None | Some(OIDC_MODE) => {
+        Some(name) if name != oidc => name,
+        _ => {
             let mut provider: OidcProviderSettings =
                 ModeSettings::new(table).decode().map_err(|error| {
-                    not_a_setting(OIDC_MODE, &error).unwrap_or_else(|| {
+                    not_a_setting(oidc, &error).unwrap_or_else(|| {
                         // The text that a decode error of the whole file has.
                         AuthServerError::Config(format!(
                             "server configuration is invalid: {}",
@@ -610,7 +610,6 @@ fn provider_choice(
             provider.validate()?;
             return Ok(SignIn::Oidc(Box::new(provider)));
         }
-        Some(name) => name,
     };
     let Some(factory) = modes.get(name) else {
         return Err(missing_mode(Some(name), modes));
@@ -649,9 +648,10 @@ fn at_provider(error: &SettingError) -> String {
 /// string it holds, if any. It repeats the value only when it has the form of
 /// a mode's name, since an operator can paste a secret under the wrong key.
 fn missing_mode(value: Option<&str>, modes: &SignInModes) -> AuthServerError {
-    let mut names: Vec<&str> = modes.names().filter(|name| *name != OIDC_MODE).collect();
+    let oidc = oidc_mode::NAME.as_str();
+    let mut names: Vec<&str> = modes.names().filter(|name| *name != oidc).collect();
     names.sort_unstable();
-    let names = std::iter::once(OIDC_MODE)
+    let names = std::iter::once(oidc)
         .chain(names)
         .map(|name| format!("`{name}`"))
         .collect::<Vec<_>>()
@@ -766,7 +766,6 @@ mod tests {
         }
     }
 
-    /// A config directory holding the session signing key the fixture names.
     impl ResolvedAuthSettings {
         /// The OIDC provider that the settings configure.
         pub(in crate::auth) fn provider(&self) -> &ResolvedOidcProvider {
@@ -777,6 +776,7 @@ mod tests {
         }
     }
 
+    /// A config directory holding the session signing key the fixture names.
     fn signing_key_dir() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");
         let key = coral_test_support::p256_pkcs8();
