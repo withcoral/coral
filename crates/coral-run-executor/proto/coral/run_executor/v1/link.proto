@@ -471,8 +471,11 @@ message Open {
   string claim_id = 2;
   // The Run Executor's protocol level.
   uint32 protocol_level = 3;
-  // Each request that waits for its InvocationResult. Coral answers again
-  // each one the committed watermark covers, from what it recorded.
+  // Each request that waits for its InvocationResult, once, in ascending
+  // number order, every number above zero, and each Complete after the
+  // Perform it completes. Coral answers again each one the committed
+  // watermark covers, from what it recorded. On the reopen of a started
+  // Run, any other list breaks the protocol.
   repeated Awaited awaited = 4;
 }
 

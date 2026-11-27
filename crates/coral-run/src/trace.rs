@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_catalog::ExecutionBinding;
+use coral_db::UnixNanos;
 
 use coral_telemetry::RunTrace;
 use coral_telemetry::{metric, safe};
@@ -117,6 +118,40 @@ pub(crate) fn record_run_accepted(principal: &coral_workspace::Principal) {
         coral_workspace::PrincipalKind::User => metric::PrincipalKind::User,
         coral_workspace::PrincipalKind::Agent => metric::PrincipalKind::Agent,
     });
+}
+
+/// Records the wait of `run`, taken and now started at `started_at` (Unix
+/// nanoseconds): under its Run Trace, `coral.run.queue` from its acceptance
+/// to its take and `coral.run.start` from the take to the start, and the
+/// whole wait as `coral.run.start.wait`. Another Coral Instance's clock may
+/// have dated the acceptance or the take, so the start is held at or after
+/// the acceptance, and the take between the two.
+pub(crate) fn record_start(run: &RunRecord, started_at: i64) {
+    let accepted = UnixNanos::new(run.accepted_at_unix_nanos);
+    let started = UnixNanos::new(started_at).max(accepted);
+    let kind = if run.on_local_child {
+        coral_run_executor::Kind::Local
+    } else {
+        coral_run_executor::Kind::Dialed
+    };
+    metric::run_start_wait(kind.metric(), started.saturating_duration_since(accepted));
+    let (Some(trace), Some(taken)) = (&run.trace, run.taken_at_unix_nanos) else {
+        return;
+    };
+    let taken = UnixNanos::new(taken).clamp(accepted, started);
+    let run_id = run.held_id();
+    for (name, start, end) in [
+        ("coral.run.queue", accepted, taken),
+        ("coral.run.start", taken, started),
+    ] {
+        trace.record_past(
+            name,
+            module_path!(),
+            &run_id,
+            start.to_system_time(),
+            end.to_system_time(),
+        );
+    }
 }
 
 /// How a Run's committed terminal write ended it, as its end records it.

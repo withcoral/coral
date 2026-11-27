@@ -1,513 +1,522 @@
 ---
 title: "Deploying Coral with Kubernetes"
 sidebarTitle: "Kubernetes"
+description: "Deploy Coral in your Kubernetes cluster, with SQLite or Postgres as its database, behind an ingress controller and cert-manager."
 ---
 
-Deploy Coral in your Kubernetes cluster. This guide assumes that your cluster has an ingress controller, and cert-manager or an equivalent to issue TLS certificates. You can terminate TLS in another way if you need to.
+Install Coral in your Kubernetes cluster with Coral's Helm chart. The chart runs three components:
 
-`<coral-host>` is the placeholder for the domain of your Coral deployment.
+- `coral`, the server.
+- `coral-web`, the Coral UI, with an Envoy sidecar.
+- Run Executors, which run programs in their own pods.
 
-The [configuration reference](/reference/configuration) describes the configuration options.
+The chart never creates a database or a Secret. You give it both.
 
-The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pod needs no network access to get it. If you set a memory limit on the `coral` container, add about 360 MiB for semantic search. If you set [`embedder_cores`](/reference/configuration#search) above 1, add about 200 MiB for each thread after the first.
+To try Coral without a Postgres server, use [Docker Compose](/getting-started/self-host/docker-compose) instead.
 
-## Common setup
+`<coral-host>` is the placeholder for the domain of your Coral deployment. `<version>` is the Coral version you install, such as `1.10.0`. The chart's version is Coral's version.
 
-1. Create the namespace, the secrets, the services and the `coral-web` deployment. Save this manifest to `common.yaml`. Coral's gRPC server is plaintext, and this manifest does not expose it outside the cluster.
+## Prerequisites
 
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: coral
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: coral-secrets
-  namespace: coral
-type: Opaque
-stringData:
-  # openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 -w0
-  CORAL_SESSION_SIGNING_KEY: "..."
-  # From your OIDC provider's application settings.
-  CORAL_OIDC_CLIENT_SECRET: "..."
-  # openssl rand -hex 32
-  CORAL_WEB_SESSION_SECRET: "..."
-  # Postgres only. openssl rand -base64 32
-  CORAL_CREDENTIALS_KEY: "..."
-  # Postgres only. Connection URL to the postgres server
-  CORAL_DATABASE_URL: "postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: coral
-  namespace: coral
-spec:
-  selector:
-    app: coral
-  ports:
-    - name: grpc
-      port: 14555
-    - name: mcp
-      port: 14556
-    - name: auth
-      port: 8779
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: coral-web
-  namespace: coral
-spec:
-  selector:
-    app: coral-web
-  ports:
-    - name: http
-      port: 3000
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: coral-web
-  namespace: coral
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: coral-web
-  template:
-    metadata:
-      labels:
-        app: coral-web
-    spec:
-      securityContext:
-        runAsNonRoot: true
-      containers:
-        - name: coral-web
-          image: ghcr.io/withcoral/coral-web:latest
-          ports:
-            - name: http
-              containerPort: 3000
-          env:
-            - name: CORAL_ENDPOINT
-              value: http://coral:14555
-            - name: CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT # Plaintext connection to coral container
-              value: "1"
-            - name: CORAL_WEB_AUTH_MODE
-              value: required
-            - name: CORAL_WEB_PUBLIC_URL
-              value: https://<coral-host>
-            - name: CORAL_WEB_AUTH_ISSUER
-              value: https://auth.<coral-host>
-            - name: CORAL_WEB_SESSION_SECRET # to sign session cookies
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_WEB_SESSION_SECRET
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: http
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-          securityContext:
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: coral
-  namespace: coral
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt
-    # ingress-nginx only: Disable buffering to support MCP and the UI stream responses.
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-spec:
-  ingressClassName: nginx # Adjust to the IngressClass of your ingress controller
-  tls:
-    - hosts:
-        - <coral-host>
-        - auth.<coral-host>
-        - mcp.<coral-host>
-      secretName: coral-tls
-  rules:
-    - host: <coral-host>
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: coral-web
-                port:
-                  name: http
-    - host: auth.<coral-host>
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: coral
-                port:
-                  name: auth
-    - host: mcp.<coral-host>
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: coral
-                port:
-                  name: mcp
-```
+- **Kubernetes 1.35 or later**, and Helm 3.8 or later.
+- **Postgres**, with pgvector 0.7 or later and `pg_trgm`. Create both extensions in Coral's database before you install, or give Coral's database role permission to create them. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector). If your server does not have pgvector, set `semantic_search_enabled: false` under `config.search` in your values. Coral connects with `sslmode=verify-full`: if a private CA signs your server's certificate, see [Postgres with a private CA](#postgres-with-a-private-ca).
+- **An OIDC provider.** Register `https://auth.<coral-host>/auth/oidc/callback` as the redirect URI. If you set `hosts.auth`, register `https://<hosts.auth>/auth/oidc/callback` instead.
+- **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller or a Gateway, with certificates from cert-manager or your load balancer. See [Routing](#routing).
 
-## Coral deployment
+The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pods need no network access to get it.
 
-Choose SQLite or Postgres as Coral's database.
+## Install
 
-<Tabs>
-<Tab title="With SQLite">
+1. Create the namespace:
 
-2. Create the config and the Coral server deployment. A PVC stores the SQLite data and the credential encryption key. Save this manifest to `coral.yaml`.
+   ```shell
+   kubectl create namespace coral
+   ```
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: coral-config
-  namespace: coral
-data:
-  config.toml: |
-    [listeners.grpc]
-    bind = "0.0.0.0:14555"
+2. Create the Secret. By default, the chart reads every secret from a Secret with the same name as the Helm release. This guide names the release `coral`.
 
-    [listeners.mcp]
-    bind = "0.0.0.0:14556"
-    public_url = "https://mcp.<coral-host>"
+   | Key                         | Value                                                                                                                       |
+   | --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+   | `CORAL_DATABASE_URL`        | Connection URL of the Postgres database, such as `postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full` |
+   | `CORAL_CREDENTIALS_KEY`     | Encrypts provider credentials. Generate it with `openssl rand -base64 32`. Keep a copy with your database backups.         |
+   | `CORAL_SESSION_SIGNING_KEY` | Signs sign-in tokens. Generate it with the command below.                                                                   |
+   | `CORAL_OIDC_CLIENT_SECRET`  | The client secret from your OIDC provider                                                                                   |
+   | `CORAL_WEB_SESSION_SECRET`  | Signs the UI's session cookies. Generate it with `openssl rand -hex 32`.                                                    |
+   | `CORAL_RUN_EXECUTOR_TOKEN`  | Lets Run Executors connect to Coral. At least 32 characters. Generate it with `openssl rand -hex 32`.                      |
+   | `CORAL_LICENSE`             | Optional. Your License, for the [Enterprise Edition](/reference/editions). Also set `secrets.license.enabled: true`.        |
 
-    [listeners.auth]
-    bind = "0.0.0.0:8779"
-    public_url = "https://auth.<coral-host>"
+   For example:
 
-    [listeners.web]
-    public_url = "https://<coral-host>"
+   ```shell
+   kubectl -n coral create secret generic coral \
+     --from-literal=CORAL_DATABASE_URL='postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full' \
+     --from-literal=CORAL_CREDENTIALS_KEY="$(openssl rand -base64 32)" \
+     --from-literal=CORAL_SESSION_SIGNING_KEY="$(openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 | tr -d '\n')" \
+     --from-literal=CORAL_OIDC_CLIENT_SECRET='...' \
+     --from-literal=CORAL_WEB_SESSION_SECRET="$(openssl rand -hex 32)" \
+     --from-literal=CORAL_RUN_EXECUTOR_TOKEN="$(openssl rand -hex 32)"
+   ```
 
-    [auth.session]
-    signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+   To keep a secret in another Secret or under another key, set its `secretName` and `key` in your values. For example, `secrets.databaseUrl.secretName: coral-database`.
 
-    [auth.provider]
-    issuer = "https://your-idp.example.com"
-    client_id = "..."
-    client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
-    bootstrap_owner_subject = "..."
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: coral-state
-  namespace: coral
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: coral
-  namespace: coral
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: coral
-  template:
-    metadata:
-      labels:
-        app: coral
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        fsGroup: 65532
-      containers:
-        - name: coral
-          image: ghcr.io/withcoral/coral:latest
-          ports:
-            - name: grpc
-              containerPort: 14555
-            - name: mcp
-              containerPort: 14556
-            - name: auth
-              containerPort: 8779
-          env:
-            - name: CORAL_CONFIG
-              valueFrom:
-                configMapKeyRef:
-                  name: coral-config
-                  key: config.toml
-            - name: CORAL_SESSION_SIGNING_KEY # Used to sign JWT tokens
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_SESSION_SIGNING_KEY
-            - name: CORAL_OIDC_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_OIDC_CLIENT_SECRET
-          volumeMounts:
-            - name: state
-              mountPath: /var/lib/coral
-          # Coral updates its database before it listens.
-          startupProbe:
-            grpc:
-              port: 14555
-            periodSeconds: 5
-            failureThreshold: 60
-          readinessProbe:
-            grpc:
-              port: 14555
-              service: coral.readiness
-          livenessProbe:
-            grpc:
-              port: 14555
-          securityContext:
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-      volumes:
-        - name: state
-          persistentVolumeClaim:
-            claimName: coral-state
-```
+3. Write your values to `values.yaml`:
 
-</Tab>
-<Tab title="With Postgres">
+   ```yaml
+   host: <coral-host>
 
-Your Postgres server needs pgvector 0.7 or later. Coral creates the `vector` extension at startup only when its database role may create it; otherwise, create it first. If your server does not have pgvector, add `semantic_search_enabled = false` under `[search]` in the `config.toml` key of the `coral-config` ConfigMap in step 2, then restart the `coral` Deployment. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
+   # Coral's config.toml. See the configuration reference.
+   config:
+     auth:
+       provider:
+         issuer: https://your-idp.example.com
+         client_id: "..."
+         bootstrap_owner_subject: "..."
+   ```
 
-2. Create the config and the Coral server deployment. Save this manifest to `coral.yaml`.
+   The chart writes the listeners, the database, the secrets and the Run Executor settings of `config.toml`. Set any other [Coral setting](/reference/configuration) under `config`. The install fails if `config` sets a key that the chart writes, or if your values have a key that the chart does not know. The chart's [`values.yaml`](https://github.com/withcoral/coral/blob/main/charts/coral/values.yaml) lists every value.
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: coral-config
-  namespace: coral
-data:
-  config.toml: |
-    [listeners.grpc]
-    bind = "0.0.0.0:14555"
+   By default, sign-in uses `auth.<coral-host>` and MCP uses `mcp.<coral-host>`. To use other hosts, set `hosts.auth` and `hosts.mcp`.
 
-    [listeners.mcp]
-    bind = "0.0.0.0:14556"
-    public_url = "https://mcp.<coral-host>"
+4. Get the chart and install it:
 
-    [listeners.auth]
-    bind = "0.0.0.0:8779"
-    public_url = "https://auth.<coral-host>"
+   ```shell
+   git clone --depth 1 --branch v<version> https://github.com/withcoral/coral.git
+   helm install coral ./coral/charts/coral --namespace coral -f values.yaml --wait --timeout 20m
+   ```
 
-    [listeners.web]
-    public_url = "https://<coral-host>"
+5. Route the three hosts. To have the chart render an Ingress or Gateway API HTTPRoutes, set `ingress` or `httpRoute` in your values. Or route each host to its Service yourself. The UI and MCP stream their responses, so your controller needs some settings. See [Routing](#routing).
 
-    [database]
-    backend = "postgres"
-    url_env = "CORAL_DATABASE_URL"
+   Run `helm upgrade` with the same arguments as `helm install` to apply a change to your values.
 
-    [credentials]
-    key_env = "CORAL_CREDENTIALS_KEY"
+6. Open the Coral UI at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`, or `https://<hosts.mcp>` if you set `hosts.mcp`.
 
-    [auth.session]
-    signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+### Install without Helm
 
-    [auth.provider]
-    issuer = "https://your-idp.example.com"
-    client_id = "..."
-    client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
-    bootstrap_owner_subject = "..."
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: coral
-  namespace: coral
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: coral
-  template:
-    metadata:
-      labels:
-        app: coral
-    spec:
-      securityContext:
-        runAsNonRoot: true
-      containers:
-        - name: coral
-          image: ghcr.io/withcoral/coral:latest
-          ports:
-            - name: grpc
-              containerPort: 14555
-            - name: mcp
-              containerPort: 14556
-            - name: auth
-              containerPort: 8779
-          env:
-            - name: CORAL_CONFIG
-              valueFrom:
-                configMapKeyRef:
-                  name: coral-config
-                  key: config.toml
-            - name: CORAL_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_DATABASE_URL
-            - name: CORAL_CREDENTIALS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_CREDENTIALS_KEY
-            - name: CORAL_SESSION_SIGNING_KEY # Used to sign JWT tokens
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_SESSION_SIGNING_KEY
-            - name: CORAL_OIDC_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: coral-secrets
-                  key: CORAL_OIDC_CLIENT_SECRET
-          volumeMounts:
-            - name: state
-              mountPath: /var/lib/coral
-          # Coral updates its database before it listens.
-          startupProbe:
-            grpc:
-              port: 14555
-            periodSeconds: 5
-            failureThreshold: 60
-          readinessProbe:
-            grpc:
-              port: 14555
-              service: coral.readiness
-          livenessProbe:
-            grpc:
-              port: 14555
-          securityContext:
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-      volumes:
-        - name: state
-          emptyDir: {}
-```
-
-If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral deployment, so that Coral can trust the certificate. For example, with AWS RDS:
-
-- Download the CA bundle and put it in a ConfigMap:
-  ```bash
-  curl -sSo rds-ca.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
-  kubectl -n coral create configmap rds-ca --from-file=rds-ca.pem
-  ```
-- Mount it on the Coral pod:
-
-  ```yaml
-          volumeMounts:
-            - name: state
-              mountPath: /var/lib/coral
-            - name: rds-ca
-              mountPath: /etc/coral/rds-ca.pem
-              subPath: rds-ca.pem
-              readOnly: true
-      volumes:
-        - name: state
-          emptyDir: {}
-        - name: rds-ca
-          configMap:
-            name: rds-ca
-  ```
-
-- Refer to the CA bundle in Coral's database secret:
-  ```yaml
-  CORAL_DATABASE_URL: "postgres://coral:PASSWORD@<rds-endpoint>:5432/coral?sslmode=verify-full&sslrootcert=/etc/coral/rds-ca.pem"
-  ```
-
-</Tab>
-</Tabs>
-
-### Apply
-
-3. Apply your Kubernetes manifests:
+To apply plain manifests with your own tools, render them with `helm template`:
 
 ```shell
-kubectl apply -f common.yaml
-kubectl apply -f coral.yaml
+helm template coral ./coral/charts/coral --namespace coral -f values.yaml > coral.yaml
+kubectl -n coral apply -f coral.yaml
 ```
 
-4. Wait for the deployments to become stable. Then open the Coral UI in your browser at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`.
+Render again from the new chart for each upgrade.
+
+### Postgres with a private CA
+
+Coral needs `sslmode=verify-full` in `CORAL_DATABASE_URL` for a remote database, so it checks the server's certificate. If a private CA signs that certificate, such as Amazon RDS's CA, give the chart the CA's PEM bundle:
+
+1. Put the bundle in a ConfigMap or a Secret. For Amazon RDS:
+
+   ```shell
+   curl -fsSLo global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+   kubectl -n coral create configmap rds-ca --from-file=global-bundle.pem
+   ```
+
+2. Name it in your values:
+
+   ```yaml
+   database:
+     tls:
+       caBundle:
+         configMapName: rds-ca
+         key: global-bundle.pem
+   ```
+
+   For a Secret, set `secretName` instead of `configMapName`.
+
+The chart mounts the bundle in the `coral` pods and sets `PGSSLROOTCERT` to it.
+
+## Routing
+
+Coral serves three hosts over HTTPS. The chart can render the routing for them, or you can route them yourself.
+
+| Host                | Service      | Port    | Serves  |
+| ------------------- | ------------ | ------- | ------- |
+| `<coral-host>`      | `coral-web`  | `3000`  | The UI  |
+| `auth.<coral-host>` | `coral-auth` | `8779`  | Sign-in |
+| `mcp.<coral-host>`  | `coral-mcp`  | `14556` | MCP     |
+
+If you set `hosts.auth` or `hosts.mcp`, the routing uses those hosts instead.
+
+Never route to the `coral` Service. It serves Coral's gRPC API and the Run Executors' connection over plaintext HTTP/2. Each Run Executor request carries its token, so keep this traffic on the cluster's private network. The chart's routing never sends traffic to it.
+
+### Streaming
+
+The UI and MCP stream their responses, and a stream can stay open for a long time. Set up your controller or load balancer like this:
+
+- Turn off response buffering.
+- Set a read timeout of at least one hour.
+
+Without these settings, users see responses arrive late or stop part of the way through.
+
+### Choose how to route
+
+The chart can render one of two kinds of routing. Both are off by default.
+
+- **An Ingress**, with `ingress.enabled: true`. It works with any ingress controller.
+- **Gateway API HTTPRoutes**, with `httpRoute.enabled: true`. The chart renders one HTTPRoute for each host and attaches each one to the Gateways that you name in `httpRoute.parentRefs`.
+
+The chart adds no settings for a specific controller. Put your controller's settings in `ingress.annotations` or `httpRoute.annotations`, and set your IngressClass in `ingress.className`.
+
+To route the hosts yourself, leave both off and send each host to the Service in the table above.
+
+### TLS
+
+With an Ingress, do one of these:
+
+- Set `ingress.tls.secretName` to a TLS Secret that covers the three hosts. The chart never creates this Secret.
+- Leave `ingress.tls.secretName` empty, and end TLS at your load balancer.
+
+With HTTPRoutes, your Gateway's listeners hold the certificates.
+
+Coral's public URLs always use `https`, so serve each host over HTTPS.
+
+#### A private CA for your hosts
+
+To sign users in, `coral` and `coral-web` call Coral's own hosts from inside the cluster, and check their certificates. If a private CA signs those certificates, sign-in fails until both trust it. Put the CA's PEM bundle in a ConfigMap or a Secret, and name it in your values:
+
+```yaml
+tls:
+  extraCABundle:
+    configMapName: internal-ca
+    key: ca.crt
+```
+
+The pods trust this CA as well as the public CAs, so they still reach your OIDC provider. Restart the pods after you change the CA.
+
+### Examples
+
+#### ingress-nginx with cert-manager
+
+cert-manager creates the TLS Secret that `ingress.tls.secretName` names, from the issuer in the annotation:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  tls:
+    secretName: coral-tls
+```
+
+Other controllers that are based on nginx have similar annotations. Look for the ones that turn off proxy buffering and set the proxy read timeout.
+
+#### AWS Load Balancer Controller
+
+The Application Load Balancer ends TLS with a certificate from AWS Certificate Manager, so leave `ingress.tls.secretName` empty. It does not buffer responses. Raise its idle timeout to one hour:
+
+```yaml
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account>:certificate/<id>
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+```
+
+The certificate must cover the three hosts.
+
+#### Envoy Gateway
+
+Attach the routes to your Gateway:
+
+```yaml
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: eg
+      namespace: envoy-gateway-system
+```
+
+The Gateway needs an HTTPS listener for the three hosts, and must allow routes from Coral's namespace. Envoy does not buffer responses. To let each request run, and each stream stay quiet, for up to one hour, apply a `BackendTrafficPolicy` to the routes:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: coral-web
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: coral-auth
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: coral-mcp
+  timeout:
+    http:
+      requestTimeout: 3600s
+      streamIdleTimeout: 3600s
+```
+
+## Secrets
+
+### Rotate a secret
+
+The pods read their secrets when they start. After you change a Secret, restart the pods:
+
+```shell
+kubectl -n coral rollout restart deployment/coral deployment/coral-web deployment/coral-run-executor
+```
+
+To restart them each time a Secret changes, install a controller such as [Reloader](https://github.com/stakater/Reloader). Reloader reads its annotation on each Deployment, not on the pods, so add it with `kubectl`:
+
+```shell
+kubectl -n coral annotate deployment coral coral-web coral-run-executor reloader.stakater.com/auto="true"
+```
+
+Do not rotate `CORAL_CREDENTIALS_KEY`: Coral cannot read the credentials it encrypted with the old key. To rotate the Run Executor token, see [Run Executors](#run-executors).
+
+### Keep secrets in External Secrets Operator
+
+The chart reads a Secret, so any tool that writes one works. With [External Secrets Operator](https://external-secrets.io), an `ExternalSecret` can write the chart's Secret from your secret manager.
+
+This example reads Coral's keys from a JSON secret, `coral/prod`, in AWS Secrets Manager. It builds `CORAL_DATABASE_URL` from the user name and password that Amazon RDS keeps in its own secret. It assumes a `ClusterSecretStore` named `aws-secrets-manager`:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  target:
+    # The Secret that the chart reads: the release's name.
+    name: coral
+    template:
+      engineVersion: v2
+      # Keep the keys from dataFrom, and add the database URL.
+      mergePolicy: Merge
+      data:
+        CORAL_DATABASE_URL: "postgres://{{ .username | urlquery | replace \"+\" \"%20\" }}:{{ .password | urlquery | replace \"+\" \"%20\" }}@coral.abc123.eu-west-2.rds.amazonaws.com:5432/coral?sslmode=verify-full"
+  data:
+    - secretKey: username
+      remoteRef:
+        key: rds!db-0123abcd-4567-89ef-0123-456789abcdef
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: rds!db-0123abcd-4567-89ef-0123-456789abcdef
+        property: password
+  # A JSON object with CORAL_CREDENTIALS_KEY, CORAL_SESSION_SIGNING_KEY,
+  # CORAL_OIDC_CLIENT_SECRET, CORAL_WEB_SESSION_SECRET and
+  # CORAL_RUN_EXECUTOR_TOKEN, and CORAL_LICENSE if you have a License.
+  dataFrom:
+    - extract:
+        key: coral/prod
+```
+
+`urlquery` escapes the special characters in the user name and password, and `replace` turns the `+` it writes for a space into `%20`, so the URL stays valid. Amazon RDS needs its CA: see [Postgres with a private CA](#postgres-with-a-private-ca).
+
+## Cloud access and other settings
+
+Each of `coral` and `web` takes these values, as Kubernetes writes them:
+
+- `extraEnv`, `extraEnvFrom`, `extraVolumes` and `extraVolumeMounts`, for the container.
+- `podAnnotations`, for the pods.
+- `serviceAccount.annotations`. Each runs as its own ServiceAccount: `coral` for `coral`, and `coral-web` for `coral-web`.
+
+An `extraEnv` entry cannot set a variable that the chart sets, such as `CORAL_ENDPOINT`. Use the chart's value for it instead.
+
+Run Executors take only `extraEnv`, with a `name` and a `value`. They run as their own ServiceAccount, `coral-run-executor`, with no annotations. A Run Executor reads no Secret but its token's, and has no volume. Do not put a secret in its `extraEnv`.
+
+### AWS access with EKS Pod Identity
+
+A [secret store](/reference/configuration#secret_stores) in AWS Secrets Manager needs AWS credentials in the `coral` pods. On EKS, use Pod Identity:
+
+1. Create an IAM role that Pod Identity can assume, and that can read the secrets. See [Give the role least privilege](/reference/configuration#give-the-role-least-privilege).
+2. Associate the role with the `coral` ServiceAccount:
+
+   ```shell
+   aws eks create-pod-identity-association --cluster-name <cluster> \
+     --namespace coral --service-account coral \
+     --role-arn arn:aws:iam::111122223333:role/coral-secrets
+   ```
+
+3. Add the store to your values. Secret stores need the [Enterprise Edition](/reference/editions), so add `CORAL_LICENSE` to the Secret and set `secrets.license.enabled: true` too.
+
+   ```yaml
+   config:
+     secret_stores:
+       - name: prod-aws
+         kind: aws-secrets-manager
+         account_id: "111122223333"
+         region: eu-west-2
+   ```
+
+4. Run `helm upgrade`. The new `coral` pods get credentials from Pod Identity.
+
+To use IAM roles for service accounts (IRSA) instead, replace steps 1 and 2. Create a role that trusts your cluster's OIDC provider for the `coral` ServiceAccount in the `coral` namespace, and that can read the secrets. A role that trusts Pod Identity does not work for IRSA. Then set the role on the ServiceAccount:
+
+```yaml
+coral:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral-secrets
+```
+
+### Usage Reports
+
+Coral sends an anonymous [usage report](/reference/configuration#usage-data) each day. To stop it, set `usageReports.enabled: false`.
+
+## Run Executors
+
+Run Executors run your users' programs, each in its own pod, apart from Coral's secrets. Each pod holds only its token. It runs as a non-root user on a read-only file system, with no capabilities, no service account token and no volumes. No value changes this.
+
+- `runExecutors.replicas` sets the number of pods. The default is 2.
+- `runExecutors.maxRunsHeld` sets the most runs that one pod holds at once. The default is 8. If you raise it, raise the pod's memory limit too: see [Run Executor memory](#run-executor-memory).
+- Each Run Executor gives a program a 128 MiB heap, and its compiler 512 MiB. To change them, set `CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES` and `CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES`, in bytes, in `runExecutors.extraEnv`. `execution_heap_bytes` and `compiler_heap_bytes` under `config.runtime` do not reach the Run Executors' pods.
+
+To rotate the token without downtime:
+
+1. Add the new token to the Secret under a new key, such as `CORAL_RUN_EXECUTOR_TOKEN_NEW`.
+2. Set `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW`, and run `helm upgrade --wait`. Coral then accepts both tokens.
+3. Set `runExecutors.token.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW` and `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN`, and run `helm upgrade --wait`. The Run Executors then use the new token. Do not start step 4 until the upgrade finishes.
+4. Set `runExecutors.previousToken.key` to `""`, and run `helm upgrade`. Then remove the old key from the Secret.
+
+## Sizing
+
+The chart's defaults suit a small production install. Each component runs 2 replicas:
+
+| Component     | Replicas | CPU request | Memory |
+| ------------- | -------- | ----------- | ------ |
+| `coral`       | 2        | 500m        | 2Gi    |
+| `coral-web`   | 2        | 250m        | 768Mi  |
+| Run Executors | 2        | 250m        | 3Gi    |
+
+Each `coral-web` pod also runs an [Envoy sidecar](#the-envoy-sidecar), with a 50m CPU request and 64Mi of memory.
+
+Each container requests CPU and has no CPU limit, so it can use spare CPU on its node. Its memory request equals its limit, so when memory runs short, the node evicts it only after pods that use more than they request. Change any of these under `resources` for the component.
+
+To size up, copy the values from one of the examples in [`charts/coral/examples`](https://github.com/withcoral/coral/tree/main/charts/coral/examples). These are starting points, not tested limits.
+
+| Size | `coral` | `coral-web` | Run Executors | Runs at once | Postgres       | Postgres connections |
+| ---- | ------- | ----------- | ------------- | ------------ | -------------- | -------------------- |
+| S    | 2       | 2           | 2             | 16           | 2 vCPU, 4 GiB  | about 40             |
+| M    | 3       | 3           | 4             | 32           | 4 vCPU, 8 GiB  | about 55             |
+| L    | 4       | 4           | 8             | 64           | 8 vCPU, 16 GiB | about 70             |
+
+To run more programs at once, add Run Executor replicas before you raise `maxRunsHeld`.
+
+### Run Executor memory
+
+Each Run Executor holds up to `maxRunsHeld` runs, and one compiler. Give its pod at least this much memory:
+
+```text
+maxRunsHeld × (program heap + 64 MiB) + compiler heap + 64 MiB + 512 MiB
+```
+
+V8 adds 64 MiB to each heap when Coral stops it. The last 512 MiB is for the process itself. With the defaults, a 128 MiB program heap and a 512 MiB compiler heap, that is 8 × 192 MiB + 576 MiB + 512 MiB = 2,624 MiB. So the default limit is 3Gi. To change the heaps, see [Run Executors](#run-executors).
+
+### Postgres
+
+- Use at least 2 vCPU and 4 GiB. For production, run it across 2 or more zones.
+- Allow (`coral` replicas + 1) × 11 connections, plus headroom. Each `coral` pod opens 11, and an upgrade runs one more pod for a while. Run Executors never connect.
+- Start with 20 GiB of storage, and turn on automatic growth. The search index grows with your data.
+
+### Node drains and spread
+
+- A PodDisruptionBudget lets a node drain take one pod at a time from each component with 2 or more replicas. To turn them off, set `podDisruptionBudget.enabled: false`.
+- Each component spreads its pods across nodes and zones when it can. To change the spread, replace `topologySpreadConstraints` for the component. To turn it off, set it to `[]`.
+- To choose the nodes a component runs on, set its `nodeSelector`, `tolerations`, `affinity` or `priorityClassName`.
+
+## The Envoy sidecar
+
+Each `coral-web` pod runs an Envoy sidecar. Envoy sends each of the pod's gRPC requests to the next `coral` pod in turn. It finds the pods through the `coral-headless` Service. Without Envoy, a `coral-web` pod keeps one connection to the `coral` Service. One `coral` pod then takes all of that pod's load.
+
+Envoy picks a `coral` pod when a request starts. A long request, such as a live update stream, stays on its pod. After you add `coral` pods, these requests move only when they reconnect.
+
+The sidecar uses the upstream `envoyproxy/envoy` image, pinned by digest. To pull it from your own registry, set `global.imageRegistry` or `web.envoy.image`. To size it, set `web.envoy.resources`.
+
+If your service mesh spreads gRPC requests, turn the sidecar off with `web.envoy.enabled: false`. `coral-web` then calls the `coral` Service directly.
 
 ## Upgrade
 
-Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first.
+Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first, and the release notes of every release between yours and the new one.
 
-1. Back up Coral's state.
-   - **Postgres.** Take a dump or a snapshot of the database, and keep the `coral-secrets` values with it.
-   - **SQLite.** Snapshot the `coral-state` volume with your storage's snapshot tool. To copy its files instead, stop Coral first and wait for its pod to go:
-
-     ```shell
-     kubectl -n coral scale deployment/coral --replicas=0
-     kubectl -n coral wait --for=delete pod -l app=coral --timeout=2m
-     ```
-
-2. Deploy the new version. With the `latest` tags of this guide, restart both Deployments:
+1. Back up the database with a dump or a snapshot. Keep `CORAL_CREDENTIALS_KEY` with it.
+2. Get the new chart and upgrade:
 
    ```shell
-   kubectl -n coral rollout restart deployment/coral deployment/coral-web
+   git clone --depth 1 --branch v<version> https://github.com/withcoral/coral.git
+   helm upgrade coral ./coral/charts/coral --namespace coral -f values.yaml --wait --timeout 20m
    ```
 
-   If you pin a version, such as `ghcr.io/withcoral/coral:1.6.0`, change both image tags in your manifests and apply them instead:
+   Do not use `--atomic`. Coral updates its database when it starts, and `--atomic` rolls the chart back after that update.
+
+   The pods roll one at a time, and each old pod stops only after its replacement is ready. Each new `coral` pod updates the database before it serves. The chart gives it 15 minutes. For a large database, raise `coral.probes.startup.failureThreshold`.
+
+3. To go back one release, run `helm rollback coral --namespace coral`. To go back further, restore your backup.
+
+A change to your values rolls the pods when you run `helm upgrade`. To pick up a changed Secret, see [Rotate a secret](#rotate-a-secret).
+
+## Air-gapped and restricted egress
+
+You can run Coral in a cluster that cannot reach the internet. Pull the images from your own registry. Then allow only the destinations in [What needs outside access](#what-needs-outside-access) that you use.
+
+### Pull images from your registry
+
+1. On a machine with internet access, get the chart with `git clone`, as in [Install](#install). Copy the chart's folder to a machine that can reach your cluster.
+2. Copy these images to your registry. Keep each repository path, so that `ghcr.io/withcoral/coral` becomes `<registry>/withcoral/coral`.
+   - `ghcr.io/withcoral/coral:<version>`
+   - `ghcr.io/withcoral/coral-web:<version>`
+3. If your nodes need credentials to pull, create a pull Secret:
 
    ```shell
-   kubectl apply -f common.yaml -f coral.yaml
+   kubectl -n coral create secret docker-registry registry-internal \
+     --docker-server=<registry> --docker-username='...' --docker-password='...'
    ```
 
-3. If you stopped Coral for the backup, start it again:
+4. Copy the values from `coral/charts/coral/examples/values-airgapped.yaml` in your clone into your `values.yaml`. Set `global.imageRegistry` to your registry's host, and add a port if it needs one. Set `imagePullSecrets` to your pull Secret, or to `[]` if you have none.
+5. Install as in [Install](#install).
 
-   ```shell
-   kubectl -n coral scale deployment/coral --replicas=1
-   ```
+`global.imageRegistry` replaces only the registry host of each image. To change the path, the tag or the digest of one image, set `repository`, `tag` or `digest` under `coral.image` or `web.image`. When you set a digest, the chart pulls by the digest and ignores the tag.
 
-4. Check the rollout:
+### What needs outside access
 
-   ```shell
-   kubectl -n coral rollout status deployment/coral
-   ```
+| Destination                                                  | Called by              | When                                                                                                                  |
+| ------------------------------------------------------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Your Postgres server                                         | `coral`                | Always                                                                                                                |
+| Your OIDC provider                                           | `coral`                | When a user signs in                                                                                                  |
+| `auth.<coral-host>`, or `hosts.auth`                         | `coral`, `coral-web`   | When a user signs in. The pods call it through your routing, so they must reach its address.                          |
+| Each provider's API, and its OAuth authorization server      | `coral`                | When a program calls a provider's tool, and when a user connects an account                                           |
+| An OpenAPI document or MCP server URL                        | `coral`                | When a user adds a provider from a URL                                                                                |
+| An MCP client's client ID URL                                | `coral`                | When an MCP client that names itself by a URL signs in. Coral reads the client's metadata document from that URL.    |
+| Your [secret stores](/reference/configuration#secret_stores) | `coral`                | When a provider reads a credential from a store                                                                       |
+| AWS STS, and the pod's AWS credential address                | `coral`                | When `coral` uses AWS, such as for AWS Secrets Manager, with EKS Pod Identity or IRSA                                 |
+| Your OpenTelemetry Collector                                 | Every component        | Only if you send telemetry to it. Telemetry is off by default.                                                        |
+| `telemetry.withcoral.com`, port 443                          | `coral`                | Once a day, for [usage reports](/reference/configuration#usage-data). Set `usageReports.enabled: false` to stop them. |
+| `api.github.com`, port 443                                   | `coral`                | Only if you set `updates.check: true` under `config`. The check is off by default.                                    |
+
+Run Executors connect only to `coral`'s Service, and to your Collector if you send their telemetry to it. The `coral` image holds the model for semantic search, so Coral downloads nothing at startup.
+
+`coral` ignores `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, and connects to each destination directly. Allow each one in your firewall. AWS calls are the one exception: for AWS credentials and STS, `coral` uses `HTTPS_PROXY` and `NO_PROXY`.
 
 ## Offering a Coral plugin
 
-The onboarding prompt can tell some MCP clients to look for a Coral plugin. To offer one, list those clients in `AGENTS_WITH_AVAILABLE_PLUGINS` on `coral-web`, separated by commas:
+The onboarding prompt can tell some MCP clients to look for a Coral plugin. To offer one, list those clients in `web.agentsWithAvailablePlugins`:
 
 ```yaml
-        - name: coral-web
-          env:
-            - name: AGENTS_WITH_AVAILABLE_PLUGINS
-              value: "claude, chatgpt"
+web:
+  agentsWithAvailablePlugins: [claude, chatgpt]
 ```
 
 - A listed client that can find and install plugins looks for the plugin. It installs the plugin only after your user confirms. Then it adds the MCP server through the plugin.
 - A listed client adds the MCP server directly if it cannot find or install the plugin, or if your user declines. Every other client adds it directly too.
 - The list only advertises a plugin. Coral does not check that the plugin exists.
-- Leave the variable unset to offer no plugin.
-- `coral-web` reads the variable at startup. List at most 8 names. Each name has up to 32 letters, digits, and single spaces, dots, hyphens or underscores between them. Any other value stops `coral-web` from starting.
+- List at most 8 names. Each name has up to 32 letters, digits, and single spaces, dots, hyphens or underscores between them. Any other value stops `coral-web` from starting.

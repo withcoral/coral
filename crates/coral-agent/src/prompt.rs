@@ -3,9 +3,8 @@
 
 use coral_catalog::{ListedProvider, ListedProviderState};
 
-/// The tools the Sub-agent's model has: `exec`, `wait`, `cancel`, `search`
-/// and `end_task`.
-pub(crate) const TOOLS: [ToolText; 5] = [
+/// The tools the Sub-agent's model has: `exec`, `wait`, `cancel` and `search`.
+pub(crate) const TOOLS: [ToolText; 4] = [
     ToolText {
         name: "exec",
         description: EXEC_DESCRIPTION,
@@ -25,11 +24,6 @@ pub(crate) const TOOLS: [ToolText; 5] = [
         name: "search",
         description: SEARCH_DESCRIPTION,
         parameters: SEARCH_PARAMETERS,
-    },
-    ToolText {
-        name: "end_task",
-        description: END_TASK_DESCRIPTION,
-        parameters: END_TASK_PARAMETERS,
     },
 ];
 
@@ -86,7 +80,6 @@ const TOOLS_PROGRAMS_AND_LEAD: &str = "\
 - exec: run one TypeScript async-function body as a new run. Include this thread's task_id.
 - wait: read a run whose state is `running` or that has more output.
 - cancel: stop a run.
-- end_task: record the outcome once the work is done or cannot continue, then reply with your answer.
 - A tool result over 20 KiB is truncated.
 
 ## Programs
@@ -102,7 +95,7 @@ const TOOLS_PROGRAMS_AND_LEAD: &str = "\
 - The lead holds context you lack, including the user's conversation. It can reply after your turn or message you during it; a message during a turn arrives before your next step. This thread persists across turns.
 - One lead message costs about as much time as two of your steps.
 - A run with `required_actions` waits for a person; the lead shows them.
-- Make no change the brief does not specify exactly. The current date is in the brief. Do not add custom tools.
+- Make no change the brief does not specify exactly. The current date and time are in the brief. Do not add custom tools.
 ";
 
 const EXEC_DESCRIPTION: &str = "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.";
@@ -121,32 +114,6 @@ A decline or a missed `deadline_at` reaches the program as `coral.ToolError`, an
 For `account_connection`, ask only when the entry appears.";
 
 const CANCEL_DESCRIPTION: &str = "Request cancellation of one program run.";
-
-const END_TASK_DESCRIPTION: &str = "Record whether your work succeeded or failed. The lead's Task stays open: the lead ends it. Then reply with your answer, with no tool call.";
-
-const END_TASK_PARAMETERS: &str = r#"{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "properties": {
-    "task_id": {
-      "description": "The task_id of the Task this call continues.",
-      "type": "string",
-      "pattern": "^([a-z]{1,20}(-[a-z]{1,20}){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
-      "maxLength": 104
-    },
-    "outcome": {
-      "description": "Whether the work succeeded.",
-      "type": "string",
-      "enum": ["success", "failure"]
-    },
-    "feedback": {
-      "description": "Optional notes on how the work went.",
-      "type": ["string", "null"]
-    }
-  },
-  "required": ["task_id", "outcome"],
-  "additionalProperties": false
-}"#;
 
 const EXEC_PARAMETERS: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -2,7 +2,7 @@ import { useDeferredValue, useState } from 'react'
 import { CatalogToolbar } from '@/components/catalog'
 import { Table } from '@/wax/components'
 import * as styles from './accounts.css'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 
 /** A short list reads at a glance; a filter only helps a long one. */
 const FILTER_FROM = 8

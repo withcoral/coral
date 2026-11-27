@@ -9,7 +9,7 @@ use coral_workspace::WorkspaceId;
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 
 use super::run_row::UndecodableRun;
-use super::{ProgramRunRecords, running_without_worker_claim};
+use super::{ProgramRunRecords, running_without_worker_claim, taken};
 use crate::types::HeldRunId;
 use crate::{CoralInstanceId, Error, RunId};
 
@@ -117,11 +117,7 @@ async fn held_runs(
                     ProgramRunRecords::RunExecutorId,
                 ])
                 .from(ProgramRunRecords::Table)
-                .cond_where(
-                    running_without_worker_claim()
-                        .add(Expr::col(ProgramRunRecords::ExecutionClaimId).is_not_null())
-                        .add(condition),
-                )
+                .cond_where(taken().add(condition))
                 .order_by(order, Order::Asc)
                 .order_by(ProgramRunRecords::Id, Order::Asc)
                 .limit(limit)

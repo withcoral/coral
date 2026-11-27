@@ -14,6 +14,7 @@ use crate::{Error, RunId};
 mod acceptance;
 mod events;
 mod ledger;
+mod queue;
 mod retention;
 mod run_row;
 mod stream;
@@ -28,6 +29,7 @@ pub(crate) use events::{
     NewEvent, PendingEvent, PendingEventKind, event_page_in_transaction, output_page_in_transaction,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
+pub(crate) use queue::queue_counts;
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use run_row::UndecodableRun;
@@ -183,7 +185,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
 }
 
 /// The columns `RunRow` decodes, shared by Run reads and retention's hold.
-const RUN_COLUMNS: [ProgramRunRecords; 31] = [
+const RUN_COLUMNS: [ProgramRunRecords; 32] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,
     ProgramRunRecords::PrincipalId,
@@ -213,6 +215,7 @@ const RUN_COLUMNS: [ProgramRunRecords; 31] = [
     ProgramRunRecords::ChunkSequence,
     ProgramRunRecords::TimeLimitNanos,
     ProgramRunRecords::RunExecutorKind,
+    ProgramRunRecords::TakenAtUnixNanos,
     ProgramRunRecords::CommittedRequestNumber,
     ProgramRunRecords::LastCommitAtUnixNanos,
 ];
@@ -241,6 +244,12 @@ fn running_without_worker_claim() -> Condition {
     Condition::all()
         .add(Expr::col(ProgramRunRecords::State).eq(Expr::cust("'running'")))
         .add(Expr::col(ProgramRunRecords::WorkerClaimId).is_null())
+}
+
+/// A Run a take claimed for a Run Executor, started or not, that has not
+/// ended.
+fn taken() -> Condition {
+    running_without_worker_claim().add(Expr::col(ProgramRunRecords::ExecutionClaimId).is_not_null())
 }
 
 /// [`running_without_worker_claim`] for the Run row a query names `alias`.

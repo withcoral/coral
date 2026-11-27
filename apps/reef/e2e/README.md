@@ -23,6 +23,9 @@ npm run test:e2e --prefix apps/reef -- --database postgres
 npm run test:e2e --prefix apps/reef -- --suite local-mode
 npm run test:e2e --prefix apps/reef -- --suite desktop
 npm run test:e2e --prefix apps/reef -- --suite multi-instance
+# The Helm chart on a kind cluster. Needs kind, kubectl, Helm and the images:
+# make docker-build reef-docker-build
+npm run test:e2e --prefix apps/reef -- --suite helm-install
 # Remaining arguments reach Vitest unchanged; select a file or test name.
 npm run test:e2e --prefix apps/reef -- providers/catalog/
 # Film each session: record a slowed-down video for review. Runs record no video otherwise.
@@ -44,6 +47,7 @@ npm run e2e:serve --prefix apps/reef
 | `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios | `scenarios/local-mode/**/*.test.ts`     |
 | `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                    | `scenarios/desktop/**/*.test.ts`        |
 | `multi-instance` | Two Coral Instances and two dialed Run Executors on one Postgres database share its waiting Runs       | `scenarios/multi-instance/**/*.test.ts` |
+| `helm-install`   | An Install from the Helm chart on kind signs a user in, adds a provider and runs a program             | `scenarios/helm-install/**/*.test.ts`   |
 
 `main` is the default; `--suite main` selects it explicitly. `local-mode` means the
 no-sign-in deployment, not tests running on your machine.
@@ -51,7 +55,8 @@ no-sign-in deployment, not tests running on your machine.
 `--database sqlite` is the main suite's default. `--database postgres` changes its
 storage configuration, not its scenario selection. Both run all discovered product
 files. Database selection is unavailable for the focused suites: local and Desktop
-use SQLite, and multi-instance uses Postgres.
+use SQLite, and multi-instance uses Postgres. The helm-install suite's Install runs on
+a Postgres in its cluster.
 Single-User and multi-User stories belong together. Provider OAuth is ordinary
 product coverage, separate from the Coral sign-in used to arrange actors.
 
@@ -220,6 +225,12 @@ hops resolve the same fixture hostname as Coral; MCP streaming and cancellation
 use ordinary direct connections, without a reverse proxy, except on the
 multi-instance suite.
 
+The helm-install suite is the exception to the first three rules. Its container
+joins kind's shared `kind` network instead of its own, trusts the install CA
+that the host mounts read-only, and its Install runs in the cluster, not in the
+container. cloud-provider-kind, which the host also starts, mounts the Docker
+socket to run the Gateway's load balancer.
+
 Cargo registry/git/target and npm build caches survive image rebuilds. Reef builds
 inside each run. The cost is a Linux build even on macOS; native builds cannot be reused. Linux
 container evidence proves the Linux Electron app, not native macOS, Windows or
@@ -262,13 +273,17 @@ scenarios. Recordings, traces, screenshots, logs and source snapshots survive fa
 runs and interruption without moving to another path. Signals stop the owned container;
 its init process reaps children. The runner removes its container and network on normal
 completion or failure. An uncatchable host kill can leave resources named
-`coral-reel-<uuid>`; its evidence remains at the printed run paths.
+`coral-reel-<uuid>`; its evidence remains at the printed run paths. A helm-install suite run can also
+leave a kind cluster named `reel-<8 hex>`, containers named `reel-<8 hex>-ccm`
+and `kindccm-<id>` (labelled `io.x-k8s.cloud-provider-kind.cluster`), and a
+temporary folder `reel-install-*` that holds the run's CA key and Secret.
 Inspect and recover only that invocation's resources.
 Never prune unrelated work. Podman disables SELinux labeling for this test container
 rather than relabeling host artifact directories; no host CA or interface changes occur.
 
 Supported host options are `REEL_CONTAINER_ENGINE` (`docker` or `podman`),
-`REEL_SELF_CHECK=1`, and `E2E_FILM=1`. Other developer credentials, database URLs,
+`REEL_SELF_CHECK=1`, and `E2E_FILM=1`, and for the helm-install suite
+`REEL_INSTALL_CORAL_IMAGE`, `REEL_INSTALL_WEB_IMAGE` and `REEL_KEEP_INSTALL=1`. Other developer credentials, database URLs,
 fixture settings and TLS-disable variables do not cross into the container.
 Viewer settings remain `E2E_RESULTS_PORT` and `E2E_RESULTS_ORIGIN` as described above.
 
@@ -365,12 +380,55 @@ and an MCP client on 2026-07-28 answers an approval prompt through the instance
 that does not hold the Run. A native run needs `psql` on `PATH`; the container
 has it.
 
+## The Helm chart on kind
+
+`--suite helm-install` installs `charts/coral` on a kind cluster and drives the
+Install from outside, as a user and an MCP client would. Its one journey signs
+in, creates a workspace, adds a provider and runs a program that calls it over
+MCP. The program proves that the Run Executor pods work. It reaches the Install
+only through its public hosts: the chart's HTTPRoutes on Envoy Gateway, over
+TLS. It never inspects pods beyond what Kubernetes reports.
+
+It runs in the container only, with Docker. Before the container starts,
+`install/cluster.ts` sets up the cluster on the host:
+
+- A throwaway CA signs the Gateway's certificate for `coral.reel.test`,
+  `auth.coral.reel.test` and `mcp.coral.reel.test`, the identity provider's for
+  `idp.reel.test`, and Postgres's. The chart gets the CA through
+  `tls.extraCABundle` and `database.tls.caBundle`, so the run proves both.
+- A kind cluster on the newest Kubernetes the chart supports, with
+  cloud-provider-kind, which gives the Gateway an address on kind's Docker
+  network, and Envoy Gateway, which serves it. CoreDNS maps the three hosts to
+  that address.
+- A test-only Postgres with pgvector, which Coral reaches with
+  `sslmode=verify-full`.
+- The chart, with the images it is given: `coral:local` and `coral-web:local`
+  by default, or `REEL_INSTALL_CORAL_IMAGE` and `REEL_INSTALL_WEB_IMAGE`. Build
+  them with `make docker-build reef-docker-build`.
+
+The container then joins kind's network as `idp.reel.test` and `sidecar`, and
+trusts the CA. The identity provider and the provider fixtures run in it; pods
+resolve those names through Docker's DNS, and the browser reaches the Install's
+hosts at the Gateway's address. The owner's subject and the client secret are
+made on the host, because the chart needs them before the identity provider
+starts. Coral fetches the identity provider's metadata only when a user signs
+in.
+
+At the end the host saves the workloads, Gateways and HTTPRoutes, every event,
+and every pod's log, in every namespace, under
+`install/cluster/` in the run directory, then deletes the cluster. Set
+`REEL_KEEP_INSTALL=1` to keep it; Reel prints its kubeconfig. The Install's
+logs are in that folder, not beside the scenario.
+
 ## Authenticated multi-User fixture
 
 The main suite boots the maintained `oidc-provider` package in memory,
 with per-run keys and synthetic accounts. Its development-adapter warning is
 intentional: this test IdP must disappear at teardown. It is not a Coral auth
-replacement and must never be exposed outside loopback.
+replacement and must never be exposed outside loopback. In the helm-install
+suite, Coral runs in a cluster and cannot reach the container's loopback, so the
+identity provider serves HTTPS at `idp.reel.test` from the disposable container,
+on kind's network, with a certificate from the run's throwaway CA.
 
 Reef and Coral run their normal OAuth/OIDC paths: discovery, authorization,
 PKCE, signed ID-token validation, User provisioning,
@@ -469,6 +527,7 @@ scenarios/
     parity/
   desktop/
   multi-instance/
+  helm-install/
 ```
 
 Group `scenarios/main/` by the product behavior being proved:
@@ -739,3 +798,8 @@ only because a CI run's tokens belong to its own Coral, which ends with the job,
 and no workflow secret reaches the suite: never pass one to `reel.yml`. A private
 repository also uploads passing runs.
 No recordings or traces are published to Pages or a public trace viewer.
+
+CI runs the helm-install suite, as `reel-helm-install`, on every change to the chart, to
+migrations, to `.proto` files, to workflows, or to Reel outside the other
+suites' scenarios. It installs
+the images that the `images` job built in the same run.

@@ -1,4 +1,4 @@
-import type { FilterQuery } from '@/utils/filter-query'
+import type { FilterQuery } from '@/wax/utils/filter-query'
 import { LINE_TERMINATOR } from '@/wax/components/code-block/lines'
 
 import type { JsonNode } from './json-structure'

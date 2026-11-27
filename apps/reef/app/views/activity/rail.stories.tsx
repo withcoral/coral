@@ -14,7 +14,7 @@ import { ActionReviewSession } from '../actions/review'
 import { activityPage, approvalContext, approvalRequest, run, workspace } from './fixtures'
 import { leavesActivityReview } from './navigation'
 import type { ActivityPage, ActivityRow } from './types'
-import { emulateReducedMotion, resizeViewport } from '../../../.storybook/browser'
+import { emulateReducedMotion, resizeViewport } from '@/wax/storybook/browser'
 
 const at = '2026-09-18T14:02:00.000Z'
 const tasks = [1, 2, 3].map((index): ActivityRow & { kind: 'task' } => ({

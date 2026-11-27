@@ -1,0 +1,97 @@
+suite: extra CA
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+tests:
+  - it: trusts only the images' roots by default
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: extra-ca
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: NODE_EXTRA_CA_CERTS
+          any: true
+
+  - it: adds the CA to coral-web's roots
+    set:
+      tls.extraCABundle:
+        configMapName: internal-ca
+        key: root.pem
+    template: templates/web.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: NODE_EXTRA_CA_CERTS
+            value: /etc/coral/extra-ca/ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: extra-ca
+            mountPath: /etc/coral/extra-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: extra-ca
+            configMap:
+              name: internal-ca
+              items:
+                - key: root.pem
+                  path: ca.crt
+
+  # coral's TLS loads both variables: the image's own bundle and the CA.
+  # Either one alone would replace the image's roots, and coral would stop
+  # reaching the OIDC provider and public providers.
+  - it: gives coral the image's roots plus the CA
+    set:
+      tls.extraCABundle:
+        configMapName: internal-ca
+        key: root.pem
+    template: templates/coral.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SSL_CERT_FILE
+            value: /etc/ssl/certs/ca-certificates.crt
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SSL_CERT_DIR
+            value: /etc/coral/extra-ca
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: extra-ca
+            mountPath: /etc/coral/extra-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: extra-ca
+            configMap:
+              name: internal-ca
+              items:
+                - key: root.pem
+                  path: ca.crt
+      - notExists:
+          path: spec.template.spec.initContainers

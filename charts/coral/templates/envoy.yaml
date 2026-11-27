@@ -1,0 +1,13 @@
+{{- if .Values.web.envoy.enabled -}}
+# coral-web's Envoy sidecar config.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "coral.fullname" . }}-envoy
+  labels:
+    {{- include "coral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+data:
+  envoy.yaml: |
+    {{- include "coral.envoyConfig" . | nindent 4 }}
+{{- end }}

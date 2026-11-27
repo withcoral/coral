@@ -2,7 +2,7 @@ import { Icon } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
 import type { TreeNode } from '@/wax/components/tree'
 
-import { countLabel } from '@/utils/count-label'
+import { countLabel } from '@/wax/utils/count-label'
 import type { LiveToolView, ToolNodeView, ReviewToolView, SetupView } from './types'
 
 /**

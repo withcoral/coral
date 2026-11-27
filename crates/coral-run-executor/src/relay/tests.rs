@@ -1,25 +1,28 @@
 //! The relay through the database. On Postgres the rows cross Coral
-//! Instances, each with its own connection; on SQLite the one Coral
-//! Instance relays its own calls while its Run Executors are full.
+//! Instances, each with its own connection; on SQLite they share the one
+//! database handle. The requester holds no pull stream: a Coral Instance
+//! that holds one waits for its own room.
 
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 use coral_db::{Database, DatabaseSystem};
+use coral_telemetry::testing::{MetricCapture, process_spans};
 use coral_test_support::TestDatabase;
+use opentelemetry::trace::Status;
 use tokio::task::JoinHandle;
+use tracing::Instrument as _;
 
 use super::CompileRelay;
+use crate::compile_trace::tests::{RUN_EXECUTOR, compile_span_under, run_executor_fields, traced};
+use crate::compile_trace::traced_compile;
 use crate::pull::tests::{
-    Sent, busy_stream as open_busy, compiled, dialed_stream as open, fill_compile, up,
+    answer, busy_stream as open_busy, compile_42, compiled, dialed_stream as open, fill_compile,
+    in_line, next_compile, up,
 };
 use crate::relay_repository::{Take, count, take_oldest};
-use crate::wire::v1::{PullResponse, pull_response};
-use crate::{
-    BuiltinTools, CompileError, CompilerClient, PullStreamCompiler, PullStreams, StreamId,
-    Unavailable,
-};
+use crate::{CompileError, CompilerClient, PullStreamCompiler, PullStreams, Unavailable};
 
 /// One Coral Instance: its pull streams, its compiler client, and its
 /// pickup, stopped when it drops.
@@ -67,7 +70,7 @@ fn relaying(
 }
 
 /// The requester, and `N` Coral Instances that serve its rows: on
-/// Postgres each one its own, on SQLite the requester itself.
+/// Postgres each with its own connection, on SQLite on the requester's.
 async fn instances<const N: usize>(database: &TestDatabase) -> (Arc<Instance>, [Arc<Instance>; N]) {
     instances_answering(database, super::ANSWER_RESERVE).await
 }
@@ -87,7 +90,7 @@ async fn instances_answering<const N: usize>(
                 let peer = database.connect_peer().await.expect("a peer connection");
                 instance(Arc::new(peer), &format!("server-{index}"))
             }
-            DatabaseSystem::Sqlite => requester.clone(),
+            DatabaseSystem::Sqlite => instance(database.database(), &format!("server-{index}")),
         });
     }
     let Ok(others) = others.try_into() else {
@@ -96,39 +99,24 @@ async fn instances_answering<const N: usize>(
     (requester, others)
 }
 
-/// The number of the next `Compile` sent on `stream`.
-async fn next_compile(sent: &mut Sent) -> u64 {
-    let next = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
-    let Ok(Some(Ok(PullResponse {
-        message: Some(pull_response::Message::Compile(compile)),
-    }))) = next
-    else {
-        panic!("a Compile within 5 s");
-    };
-    compile.number
-}
-
-/// Answers the next `Compile` sent on `stream` with the package `42`.
-async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent) {
-    let number = next_compile(sent).await;
-    streams
-        .receive(stream, up(compiled(number)))
-        .expect("the answer");
-}
-
 /// Compiles `return 42;` on `compiler` within `time_left`.
 fn compiling(
     compiler: &PullStreamCompiler,
     time_left: Duration,
 ) -> JoinHandle<Result<String, CompileError>> {
     let compiler = compiler.clone();
-    tokio::spawn(async move {
-        let builtin_tools = BuiltinTools::default();
-        let program = compiler
-            .compile(time_left, "return 42;", &[], &builtin_tools, None)
-            .await?;
-        Ok(program.javascript().to_owned())
-    })
+    tokio::spawn(async move { compile_42(&compiler, time_left).await })
+}
+
+/// [`compiling`] as one traced compile under `request`.
+fn compiling_under(
+    request: tracing::Span,
+    compiler: &PullStreamCompiler,
+    time_left: Duration,
+) -> JoinHandle<Result<String, CompileError>> {
+    let compiler = compiler.clone();
+    let compile = async move { compile_42(&compiler, time_left).await };
+    tokio::spawn(traced_compile(compile, CompileError::code).instrument(request))
 }
 
 /// Waits until `rows` rows are waiting, looking again on each change
@@ -160,13 +148,12 @@ async fn a_compile_with_no_room_here_is_served_where_there_is_room() {
     let (stream, mut sent) = open_busy(&server.streams);
 
     // Ready waits on a probe until a Coral Instance has room. Room
-    // elsewhere holds nothing here; room that showed here is held, and
-    // freed as the held client drops.
+    // elsewhere holds nothing here.
     let ready = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
     server.streams.let_go(stream);
     let held = ready.await.unwrap().map(|held| held.is_some());
-    assert_eq!(held, Ok(Arc::ptr_eq(&requester, &server)));
+    assert_eq!(held, Ok(false));
     assert_eq!(
         count(&database.database()).await.unwrap(),
         0,
@@ -222,13 +209,17 @@ async fn two_coral_instances_with_room_serve_two_rows_once_each() {
     assert_eq!(count(&database.database()).await.unwrap(), 0);
 }
 
+// Catches also: a relayed compile that nobody took left without
+// `coral.compile.relayed`, or naming a Run Executor.
 #[tokio::test]
 async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
+    process_spans();
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let (requester, [server]) = instances(&database).await;
     let (_stream, mut sent) = open_busy(&server.streams);
 
-    let call = compiling(&requester.compiler, Duration::from_secs(2));
+    let request = tracing::info_span!("a request whose row nobody serves");
+    let call = compiling_under(request, &requester.compiler, Duration::from_secs(2));
     rows_reach(&database.database(), 1).await;
     assert_eq!(
         call.await.unwrap(),
@@ -240,17 +231,28 @@ async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
         "the row is gone"
     );
     assert!(sent.try_recv().is_err(), "nothing was sent");
+    let span = compile_span_under("a request whose row nobody serves").await;
+    assert_eq!(
+        run_executor_fields(&span),
+        [None, None, Some("true".into())]
+    );
 }
 
+// Catches also: a span that names the Run Executor of a call that the
+// Coral Instance serving it timed out on, which never answered.
 #[tokio::test]
 async fn a_row_served_whose_compile_runs_out_of_time_fails_as_timed_out_and_is_gone() {
+    process_spans();
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     // The served compile ends a second early, so its timed-out answer is
     // read well before the requester gives up on the taker.
     let (requester, [server]) = instances_answering(&database, Duration::from_secs(1)).await;
-    let (stream, mut sent) = open_busy(&server.streams);
+    // A Run Executor that a span could name, busy until the row waits.
+    let (stream, mut sent) = server.streams.scripted(RUN_EXECUTOR, 0);
+    fill_compile(&server.streams, stream);
 
-    let call = compiling(&requester.compiler, Duration::from_secs(3));
+    let request = tracing::info_span!("a request whose served row runs out of time");
+    let call = compiling_under(request, &requester.compiler, Duration::from_secs(3));
     rows_reach(&database.database(), 1).await;
     server.streams.let_go(stream);
     let sent = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
@@ -263,6 +265,11 @@ async fn a_row_served_whose_compile_runs_out_of_time_fails_as_timed_out_and_is_g
         count(&database.database()).await.unwrap(),
         0,
         "the row is gone"
+    );
+    let span = compile_span_under("a request whose served row runs out of time").await;
+    assert_eq!(
+        run_executor_fields(&span),
+        [None, None, Some("true".into())]
     );
 }
 
@@ -310,6 +317,55 @@ async fn a_row_written_while_no_run_executor_is_linked_is_served_once_one_dials_
     answer(&server.streams, stream, &mut sent).await;
     assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(count(&database.database()).await.unwrap(), 0);
+}
+
+// Catches: a relayed compile whose span does not name the Run Executor
+// that took it on another Coral Instance, or does not say it was relayed.
+#[tokio::test]
+async fn a_relayed_compile_is_one_span_that_names_the_run_executor_that_took_it() {
+    process_spans();
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = server.streams.scripted(RUN_EXECUTOR, 0);
+
+    let request = tracing::info_span!("a request that compiles through the relay");
+    let compiling = tokio::spawn(traced(requester.compiler.clone()).instrument(request));
+    answer(&server.streams, stream, &mut sent).await;
+    assert_eq!(compiling.await.unwrap().as_deref(), Ok("42"));
+
+    let span = compile_span_under("a request that compiles through the relay").await;
+    assert_eq!(
+        run_executor_fields(&span),
+        [
+            Some(RUN_EXECUTOR.into()),
+            Some("dialed".into()),
+            Some("true".into())
+        ]
+    );
+    assert_eq!(span.status, Status::Unset);
+}
+
+// Catches: a relayed call left uncounted, or a probe for room counted as a
+// relayed compile.
+#[tokio::test]
+async fn each_row_with_a_call_counts_one_relayed_compile_and_a_probe_none() {
+    let metrics = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let relayed = || metrics.values("coral.compile.relayed").iter().sum::<f64>();
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = open(&server.streams, 0);
+    let before = relayed();
+
+    let ready = readying(&requester.compiler);
+    assert_eq!(ready.await.unwrap().map(|held| held.is_some()), Ok(false));
+    assert_eq!(relayed() - before, 0.0, "a probe relays no compile");
+    for _ in 0..2 {
+        let call = compiling(&requester.compiler, Duration::from_secs(5));
+        answer(&server.streams, stream, &mut sent).await;
+        assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
+    }
+    assert_eq!(relayed() - before, 2.0, "one for each row with a call");
 }
 
 /// The requester, and another Coral Instance whose pickup holds a unit for
@@ -377,4 +433,60 @@ async fn a_unit_held_for_a_call_that_never_comes_readies_the_next_caller() {
     // No call comes: the promise lapses, and the unit readies the other.
     let ready = second.await.unwrap().map(|held| held.is_some());
     assert_eq!(ready, Ok(false));
+}
+
+// Catches: a Coral Instance whose Run Executors' compile room is spent
+// relaying its calls through the database, which writes rows for each
+// call, although its own room frees when a compile answers.
+#[tokio::test]
+async fn a_coral_instance_that_holds_a_stream_waits_for_its_own_room() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let streams = PullStreams::default();
+    // No pickup: only a wait here can serve the call.
+    let relay = CompileRelay::new(database.database(), "alone");
+    let compiler = PullStreamCompiler::relayed(streams.clone(), None, relay);
+    let (stream, mut sent) = open_busy(&streams);
+
+    let before = database.statements_sent();
+    let call = compiling(&compiler, Duration::from_secs(5));
+    in_line(&streams, 1).await;
+    streams.let_go(stream);
+    answer(&streams, stream, &mut sent).await;
+    assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
+    assert_eq!(
+        database.statements_sent(),
+        before,
+        "the call sent the database nothing"
+    );
+}
+
+// Catches: a row from a Coral Instance that holds no pull stream taken only
+// once no caller waits where it is served, so under load it waits until its
+// deadline.
+#[tokio::test]
+async fn a_relayed_call_waits_in_line_with_the_callers_where_it_is_served() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = open_busy(&server.streams);
+
+    let call = compiling(&requester.compiler, Duration::from_secs(10));
+    rows_reach(&database.database(), 1).await;
+    // The pickup holds a place for the row, then a caller there joins.
+    in_line(&server.streams, 1).await;
+    let local = readying(&server.compiler);
+    in_line(&server.streams, 2).await;
+
+    server.streams.let_go(stream);
+    answer(&server.streams, stream, &mut sent).await;
+    assert_eq!(
+        call.await.unwrap().as_deref(),
+        Ok("42"),
+        "the row came first"
+    );
+    let held = local.await.unwrap().map(|held| held.is_some());
+    assert_eq!(
+        held,
+        Ok(true),
+        "the answer frees the unit for the caller there"
+    );
 }

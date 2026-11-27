@@ -73,6 +73,10 @@
   metric catalog, and export filtering in `coral-telemetry`. Domain modules own
   signal timing and record metrics through `coral_telemetry::metric`.
   Application bootstrap owns exporter configuration.
+- A Run Executor opens no span: Coral opens every span of a Run and of a
+  compile. A number that only a Run Executor knows is a metric that the Run
+  Executor records through its own exporter, not a new field on the link
+  (ADR 0027).
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 - A build that Coral publishes sets `RUSTY_V8_ARCHIVE_SHA256` to its target's
   digest in `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8
@@ -187,12 +191,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   retired, and a definite answer (a rejection, a claim mismatch, an ended
   Run, a corrupt head) stops it. The loop's own end of its Run (at its
   deadline, at a CPU or memory limit or a lost Program host, at the drain's
-  length for a local child, or on a reopen that finds its Principal gone)
-  alone retries every answer but a claim mismatch or an ended Run. An end
-  that reaches a loop whose commit was refused goes through the terminal
-  write instead, which stops on a definite answer and leaves the Run to the
-  sweeper. No write records a termination intent or waits a grace: the
-  chunk that decides a termination ends the Run.
+  length for a local child, or on a reopen that finds its Principal gone or
+  its `Open` broken) alone retries every answer but a claim mismatch or an
+  ended Run. An end that reaches a loop whose commit was refused goes
+  through the terminal write instead, which stops on a definite answer and
+  leaves the Run to the sweeper. No write records a termination intent or
+  waits a grace: the chunk that decides a termination ends the Run.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass
@@ -304,11 +308,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.
+- `apps/reef/app/wax` stands alone, so that another app can use a copy of that
+  one folder. A Wax file imports a package or another Wax file. Put a helper or
+  an asset that Wax needs in that folder.
 - When a table row opens a page, pass the path to `Table.Row`'s `to` so a
   click anywhere in the row opens it, and link its name with `Table.RowLink`.
   Do not make only the name a link, or style the name as a link.
   Use `Table.useRowCursor` so ↑, ↓ and Enter reach the rows.
-- Match a filter field's text with `filterQuery` (`apps/reef/app/utils/filter-query.ts`),
+- Match a filter field's text with `filterQuery` (`apps/reef/app/wax/utils/filter-query.ts`),
   not `includes`, so every filter trims the query and ignores case the same
   way. To bold the matches, use Wax's `HighlightedMatches`.
 - Do not show status or meaning with color alone. Pair color with a distinct
@@ -443,6 +450,7 @@ required gates below after the change stabilizes, then report what ran:
 | Postgres-backed behavior | `make postgres-tests`                                                                                                                                                                        |
 | Reef                     | `npm run check --prefix apps/reef`, `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, `npm run build --prefix apps/reef`, then `npm run test:server --prefix apps/reef` |
 | Desktop                  | `npm run check --prefix apps/desktop`, `npm test --prefix apps/desktop`, then the Reel `desktop` suite: `npm run test:e2e --prefix apps/reef -- --suite desktop`                             |
+| Helm chart               | `make chart-checks`, then `npm run test:e2e --prefix apps/reef -- --suite helm-install`                                                                                                      |
 | Runtime or Reef image    | `make docker-test`                                                                                                                                                                           |
 
 ### E2E scope and cadence

@@ -1,11 +1,16 @@
+import { renderToStaticMarkup } from 'react-dom/server'
+import { MemoryRouter } from 'react-router'
 import { expect, it } from 'vitest'
-import { markupRoute } from '@/test-support/route'
 import { BreadcrumbRoot, Breadcrumbs, type Segment } from './breadcrumbs'
 
 const root = { id: 'workspace', type: 'link' as const, text: 'Demo', to: '/workspaces/w' }
 function render(items: Segment[], withRoot: boolean, heading = false) {
   const trail = <Breadcrumbs items={items} heading={heading} />
-  return markupRoute(withRoot ? <BreadcrumbRoot value={root}>{trail}</BreadcrumbRoot> : trail)
+  return renderToStaticMarkup(
+    <MemoryRouter>
+      {withRoot ? <BreadcrumbRoot value={root}>{trail}</BreadcrumbRoot> : trail}
+    </MemoryRouter>,
+  )
 }
 const accounts: Segment[] = [
   { id: 'accounts', type: 'link', text: 'Accounts', to: '/workspaces/w/accounts' },

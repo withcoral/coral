@@ -10,7 +10,7 @@
   },
   "overrides": [
     {
-      "files": [".storybook/**"],
+      "files": [".storybook/**", "app/wax/storybook/**"],
       "rules": {
         "no-underscore-dangle": "off",
         "no-shadow": "off",

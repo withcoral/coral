@@ -9,7 +9,7 @@ use jsonwebtoken::jwk::{
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde_json::{Map, Value};
 
-use super::config::ResolvedOidcProvider;
+use super::oidc_mode::ResolvedOidcProvider;
 
 const CLOCK_SKEW_SECONDS: u64 = 60;
 const MAX_SUBJECT_BYTES: usize = 255;
@@ -92,9 +92,10 @@ impl TokenRejection {
 
 /// A fully verified identity. Intentionally does not implement `Debug`.
 ///
-/// The upstream identity is the verified `issuer` plus the raw `subject`, and
-/// that pair alone keys the user directory. A configured principal projection
-/// can constrain admission but never replaces or accompanies that identity.
+/// The upstream identity is the verified `issuer` plus the raw `subject`. The
+/// Subject alone finds the User in the user directory, and the issuer must
+/// equal the one that User keeps. A configured principal projection can
+/// constrain admission but never replaces or accompanies that identity.
 pub(super) struct ValidatedOidcIdentity {
     /// Issuer the ID token's signature and `iss` claim were verified against.
     pub(super) issuer: String,

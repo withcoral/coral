@@ -1,7 +1,7 @@
 ---
 title: Using the AWS MCP Server with IAM
 sidebarTitle: AWS
-description: "Connect Coral to the AWS MCP Server with an IAM role"
+description: "Connect Coral to the AWS MCP Server with an IAM role."
 ---
 
 The [AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html) is a remote MCP server that AWS runs. Coral can connect to it in two ways:
@@ -207,14 +207,20 @@ flowchart LR
 
   </Step>
   <Step title="Let Coral reach the bridge">
-    With `[auth]` configured, Coral denies provider calls to private network addresses. The bridge has a private address and serves plain HTTP, so add the [`[outbound]`](/reference/configuration#outbound) policy to Coral's configuration. In the Docker Compose guide, that is the `CORAL_CONFIG` value in the compose file. In the Kubernetes guide, it is the `config.toml` key of the Coral ConfigMap.
+    With `[auth]` configured, Coral denies provider calls to private network addresses. The bridge has a private address and serves plain HTTP, so add the [`[outbound]`](/reference/configuration#outbound) policy to Coral's configuration. In the Docker Compose guide, add it to the `CORAL_CONFIG` value in the compose file, then recreate the Coral container:
 
     ```toml
     [outbound]
     private_networks = "http-and-https"
     ```
 
-    Then recreate the Coral container, or restart the Coral Deployment.
+    In the Kubernetes guide, add it to your chart values, then run `helm upgrade`:
+
+    ```yaml
+    config:
+      outbound:
+        private_networks: http-and-https
+    ```
 
     <Note>
       Over plain HTTP, the API key is not encrypted between Coral and the

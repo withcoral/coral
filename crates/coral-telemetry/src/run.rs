@@ -1,12 +1,32 @@
 //! The Run Trace: the Coral-owned trace every span of one Program Run joins.
 
 use std::collections::HashMap;
+use std::time::SystemTime;
 
-use opentelemetry::Context;
-use opentelemetry::trace::{SpanContext, TraceContextExt as _, TraceState};
+use opentelemetry::trace::{Span as _, SpanBuilder, SpanContext, TraceContextExt as _, TraceState};
+use opentelemetry::{Context, KeyValue};
+use opentelemetry_sdk::trace::SdkTracer;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::{TRACEPARENT_HEADER, TraceId, context_from_trace_headers, inject_context};
+use crate::export::{LEVEL_KEY, TARGET_KEY};
+use crate::{TRACEPARENT_HEADER, TraceId, context_from_trace_headers, inject_context, safe};
+
+/// Holds the tracer that [`RunTrace::record_past`] records with. Bootstrap
+/// builds it from the tracer provider of the layer that gives spans trace
+/// context, so a past span reaches the same processors, the export filter
+/// among them. It observes no span or event.
+#[derive(Debug, Clone)]
+pub struct PastSpanLayer(SdkTracer);
+
+impl PastSpanLayer {
+    /// Records past spans with `tracer`.
+    #[must_use]
+    pub const fn new(tracer: SdkTracer) -> Self {
+        Self(tracer)
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PastSpanLayer {}
 
 /// The stored context of one Run Trace: its `coral.run.accept` span, as one
 /// W3C `traceparent`. It carries the root's sampling decision and no
@@ -61,10 +81,7 @@ impl RunTrace {
     /// Every Run phase span joins the Run Trace this way, on any Coral
     /// Instance; no span of an earlier phase is reopened.
     pub fn adopt(&self, span: &tracing::Span) {
-        if span
-            .set_parent(Context::new().with_remote_span_context(self.accept.clone()))
-            .is_err()
-        {
+        if span.set_parent(self.parent()).is_err() {
             tracing::debug!(error.type = "set_parent", "failed to join the Run Trace");
         }
     }
@@ -73,6 +90,44 @@ impl RunTrace {
     /// keeps its own trace.
     pub fn link(&self, span: &tracing::Span) {
         span.add_link(self.accept.clone());
+    }
+
+    /// Records `name`, a phase of the Run `run_id` that ended before this
+    /// call, such as its wait in the queue, as a child of the accept span
+    /// from `start` to `end`. A `tracing` span starts when it is made, so
+    /// this goes to the tracer of the current dispatcher's
+    /// [`PastSpanLayer`], and records nothing without one. The span carries
+    /// `target` and the info level, as a `tracing` span of `target` does,
+    /// so the operator's trace filter decides whether it leaves the host.
+    pub fn record_past(
+        &self,
+        name: &'static str,
+        target: &'static str,
+        run_id: &impl safe::Identifier,
+        start: SystemTime,
+        end: SystemTime,
+    ) {
+        let Some(tracer) = tracing::dispatcher::get_default(|dispatch| {
+            dispatch
+                .downcast_ref::<PastSpanLayer>()
+                .map(|layer| layer.0.clone())
+        }) else {
+            return;
+        };
+        let mut span = SpanBuilder::from_name(name)
+            .with_start_time(start)
+            .with_attributes([
+                KeyValue::new("coral.run.id", run_id.to_string()),
+                KeyValue::new(TARGET_KEY, target),
+                KeyValue::new(LEVEL_KEY, tracing::Level::INFO.as_str()),
+            ])
+            .start_with_context(&tracer, &self.parent());
+        span.end_with_timestamp(end);
+    }
+
+    /// The accept span, as the parent of a Run phase's span.
+    fn parent(&self) -> Context {
+        Context::new().with_remote_span_context(self.accept.clone())
     }
 
     fn from_context(context: &Context) -> Option<Self> {
@@ -191,6 +246,59 @@ mod tests {
                 .map(|link| link.span_context.trace_id().to_string())
                 .collect::<Vec<_>>(),
             vec!["0123456789abcdef0123456789abcdef".to_string()]
+        );
+    }
+
+    /// A past span joins the Run Trace with the instants it is given, and
+    /// carries the target and level the export filter admits it by. It
+    /// leaves through that filter with only the cataloged keys. Without the
+    /// layer it is not recorded.
+    #[test]
+    fn a_past_span_keeps_its_instants_and_leaves_through_the_export_filter() {
+        use std::time::{Duration, SystemTime};
+
+        use crate::testing::{ExportCapture, attribute};
+
+        let export = ExportCapture::default();
+        let capture = SpanCapture::exporting_to(&export);
+        let trace = RunTrace::parse("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+            .expect("stored Run Trace");
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let end = start + Duration::from_secs(2);
+        trace.record_past("coral.run.unrecorded", "coral_run", &"run", start, end);
+        tracing::subscriber::with_default(capture.subscriber(), || {
+            trace.record_past("coral.run.queue", "coral_run", &"run", start, end);
+        });
+
+        let exported = export.spans();
+        let [span] = exported.as_slice() else {
+            panic!("one exported span: {exported:?}");
+        };
+        assert_eq!(span.name, "coral.run.queue");
+        assert_eq!((span.start_time, span.end_time), (start, end));
+        assert_eq!(
+            (
+                span.span_context.trace_id().to_string(),
+                span.parent_span_id.to_string()
+            ),
+            (
+                "0123456789abcdef0123456789abcdef".to_string(),
+                "0123456789abcdef".to_string()
+            )
+        );
+        assert_eq!(attribute(span, "coral.run.id").as_deref(), Some("run"));
+        assert_eq!(
+            attribute(span, "target"),
+            None,
+            "the catalog lists no target"
+        );
+        let recorded = capture.finished();
+        let [recorded] = recorded.as_slice() else {
+            panic!("one recorded span: {recorded:?}");
+        };
+        assert_eq!(
+            (attribute(recorded, "target"), attribute(recorded, "level")),
+            (Some("coral_run".to_string()), Some("INFO".to_string()))
         );
     }
 

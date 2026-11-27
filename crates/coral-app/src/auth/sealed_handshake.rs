@@ -8,7 +8,7 @@
 //!
 //! The associated data binds each sealed value to what it belongs to: a
 //! pending approval and a pending Workspace choice to the browser's approval
-//! cookie, and a sign-in session to its OIDC `state`. A value moved to another browser or sign-in does not open.
+//! cookie, and a sign-in session to the sign-in's value. A value moved to another browser or sign-in does not open.
 //! The PKCE verifier and the nonce Coral sends to the identity provider are
 //! derived from the OIDC `state`, so they are never carried at all.
 //!
@@ -192,8 +192,8 @@ impl ClientRequest {
     }
 }
 
-/// What the OIDC callback needs to finish a sign-in, sealed into its cookie
-/// for the sign-in's OIDC `state`.
+/// What core needs to finish a sign-in, sealed into its cookie for the
+/// sign-in's value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SignInSession {
     pub(crate) request: ClientRequest,
@@ -203,7 +203,7 @@ pub(crate) struct SignInSession {
 }
 
 impl SignInSession {
-    /// Seals this session for the sign-in named by `oidc_state`, to be opened
+    /// Seals this session for the sign-in named by `sign_in`, to be opened
     /// before `expires_at_unix_secs`.
     ///
     /// # Errors
@@ -213,10 +213,10 @@ impl SignInSession {
     pub(crate) fn seal(
         &self,
         keys: &HandshakeKeys,
-        oidc_state: &str,
+        sign_in: &str,
         expires_at_unix_secs: u64,
     ) -> Result<String, SealError> {
-        let aad = aad(SIGN_IN_SESSION_AAD, oidc_state.as_bytes());
+        let aad = aad(SIGN_IN_SESSION_AAD, sign_in.as_bytes());
         keys.seal(&aad, &self.frame(expires_at_unix_secs)?.0)
     }
 
@@ -237,15 +237,15 @@ impl SignInSession {
         })
     }
 
-    /// Opens the session sealed for `oidc_state`, if it is intact, belongs to
+    /// Opens the session sealed for `sign_in`, if it is intact, belongs to
     /// that sign-in, and has not expired at `now_unix_secs`.
     pub(crate) fn open(
         keys: &HandshakeKeys,
-        oidc_state: &str,
+        sign_in: &str,
         sealed: &[u8],
         now_unix_secs: u64,
     ) -> Option<Self> {
-        let aad = aad(SIGN_IN_SESSION_AAD, oidc_state.as_bytes());
+        let aad = aad(SIGN_IN_SESSION_AAD, sign_in.as_bytes());
         open(keys, &aad, sealed, now_unix_secs, |reader| {
             Some(Self {
                 request: ClientRequest::read(reader)?,
@@ -321,12 +321,12 @@ impl PendingApproval {
 /// Workspace choice, sealed into the picker form.
 ///
 /// The seal is bound to the browser's approval cookie, so only the browser
-/// that signed in can submit it. It keeps the sign-in's OIDC state, so the
+/// that signed in can submit it. It keeps the sign-in's value, so the
 /// one-code-per-sign-in guard still holds when the choice issues the code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingWorkspaceChoice {
     pub(crate) user_id: UserId,
-    pub(crate) oidc_state: String,
+    pub(crate) sign_in: String,
     pub(crate) request: ClientRequest,
 }
 
@@ -346,7 +346,7 @@ impl PendingWorkspaceChoice {
     ) -> Result<String, SealError> {
         let frame = Frame::sealing(expires_at_unix_secs, |frame| {
             frame.put_str(self.user_id.as_str())?;
-            frame.put_str(&self.oidc_state)?;
+            frame.put_str(&self.sign_in)?;
             self.request.put(frame)
         })?;
         keys.seal(&aad(WORKSPACE_CHOICE_AAD, browser_binding), &frame.0)
@@ -364,15 +364,15 @@ impl PendingWorkspaceChoice {
         open(keys, &aad, sealed, now_unix_secs, |reader| {
             Some(Self {
                 user_id: UserId::parse(&reader.str()?).ok()?,
-                oidc_state: reader.str()?,
+                sign_in: reader.str()?,
                 request: ClientRequest::read(reader)?,
             })
         })
     }
 }
 
-/// Binds a seal to `purpose` and to what it belongs to: an OIDC `state` or a
-/// browser binding.
+/// Binds a seal to `purpose` and to what it belongs to: a sign-in's value or
+/// a browser binding.
 fn aad(purpose: &[u8], binding: &[u8]) -> Vec<u8> {
     let mut aad = purpose.to_vec();
     aad.extend_from_slice(&Sha256::digest(binding));
@@ -617,7 +617,7 @@ mod tests {
     fn choice() -> PendingWorkspaceChoice {
         PendingWorkspaceChoice {
             user_id: UserId::parse("user-1").unwrap(),
-            oidc_state: STATE.into(),
+            sign_in: STATE.into(),
             request: request("https://mcp.example.test/mcp"),
         }
     }

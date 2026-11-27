@@ -3,8 +3,8 @@ import { Tooltip as BaseTooltip } from '@base-ui/react/tooltip'
 import classNames from 'classnames'
 import { useState } from 'react'
 
-import { useComposedRefs } from '@/utils/compose-refs'
-import { useTruncationDetection } from '@/utils/use-truncation-detection'
+import { useComposedRefs } from '@/wax/utils/compose-refs'
+import { useTruncationDetection } from '@/wax/utils/use-truncation-detection'
 
 import * as styles from './tooltip.css'
 

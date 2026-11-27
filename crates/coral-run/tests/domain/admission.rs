@@ -1168,10 +1168,15 @@ async fn compilation_holds_no_write_transaction_and_final_recheck_is_atomic() {
     assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), 0);
 }
 
+/// The commit accepts the Run, and the Run then waits, `running`, for a take.
+/// A take does not wait for `launch`, so the Run can end before `launch` is
+/// called. `launch` then still returns the acceptance's `Running` update and
+/// writes nothing; a caller observes the Run to see its end.
 #[tokio::test]
 async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
-    let runs = fixture.live(None).await;
+    // No take loop runs until the test has seen the Run wait.
+    let runs = fixture.live_runs(None);
     let user = organization_user(
         fixture.database.clone(),
         "user:standalone",
@@ -1205,21 +1210,20 @@ async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
         .unwrap();
     let id = staged.run_id().clone();
     transaction.commit().await.unwrap();
-    // The commit alone makes the Run visible. The take loop starts it
-    // without `launch`, so it may already have ended.
-    let accepted = runs
+    let waiting = runs
         .observe(&actor, workspace.id(), &id, &immediate(None, 100))
         .await
-        .expect("the committed Run is visible before launch");
-    assert_eq!(accepted.run_id(), &id);
-    assert!(
-        matches!(accepted.state(), RunState::Running | RunState::Succeeded),
-        "{:?}",
-        accepted.state()
-    );
-    runs.launch(staged).await.unwrap();
+        .unwrap();
+    assert_eq!(waiting.state(), RunState::Running);
+
+    let runs = fixture.served(runs).await;
     let terminal = wait_for_terminal(&runs, &actor, workspace.id(), &id).await;
     assert_eq!(terminal.state(), RunState::Succeeded);
+    let ended = fixture.run_record(workspace.id(), &id).await;
+    let launched = runs.launch(staged).await.unwrap();
+    assert_eq!(launched.run_id(), &id);
+    assert_eq!(launched.state(), RunState::Running);
+    assert_eq!(fixture.run_record(workspace.id(), &id).await, ended);
 }
 
 /// Acceptance records no deadline. The start mark records it as the start

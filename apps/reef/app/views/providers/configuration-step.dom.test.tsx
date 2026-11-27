@@ -3,7 +3,8 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { afterEach, expect, it } from 'vitest'
+import { screen } from '@testing-library/react'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import { ConfigurationStep } from './configuration-step'
 import type {
@@ -375,49 +376,92 @@ const siteReview: ConfigurationReviewView = {
     options: [{ url: 'https://{subdomain}.{site}', variables: [] }],
   })),
 }
-const shownServers = () =>
-  [...document.querySelectorAll('label')]
+// The server fields above the box of default servers, and the ones inside it.
+// The box is the last part of the Servers section, under its Servers heading.
+const serverFields = (inBox: boolean) => {
+  const heading = screen.queryByRole('heading', { name: 'Servers', level: 4 })
+  const after = (label: Element) =>
+    heading !== null &&
+    Boolean(heading.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING)
+  return screen
+    .queryAllByText(/^Server for /, { selector: 'label' })
+    .filter((label) => after(label) === inBox)
     .map((label) => label.textContent)
-    .filter((text) => text?.startsWith('Server for'))
+}
 
-// Catches: a list of servers that each hold the recipe's URL, every one shown,
-// so the part of Setup that needs nothing is the longest part of it.
-it.each<[string, ConfigurationReviewView, string[], string]>([
-  ['every server holds the suggested URL', siteReview, [], '2 servers have the suggested URL.'],
+// Catches: a list of servers that each hold the recipe's URL making the part of
+// Setup that needs nothing the longest part of it, or one with an error hidden
+// in the box among the ones that need nothing.
+it.each<[string, ConfigurationReviewView, string[], string[]]>([
+  [
+    'every server holds the suggested URL',
+    siteReview,
+    [],
+    ['Server for /v2/logs', 'Server for /v2/metrics'],
+  ],
   [
     'one server has an error',
     { ...siteReview, errors: { [siteServers[1]]: 'Enter a reachable URL.' } },
     ['Server for /v2/metrics'],
-    '1 server has the suggested URL.',
+    ['Server for /v2/logs'],
   ],
-])('folds the suggested servers when %s', async (_case, configuration, shown, summary) => {
+])('boxes the suggested servers when %s', async (_case, configuration, shown, boxed) => {
   await renderStep(siteRecipe, configuration)
-  expect(shownServers()).toEqual(shown)
-  expect(document.body.textContent).toContain(summary)
-
-  const toggle = button('Show these servers')
-  expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await act(async () => toggle.click())
-  // Opened, every server shows in its place, so changing one does not move it.
-  expect(shownServers()).toEqual(['Server for /v2/logs', 'Server for /v2/metrics'])
-  expect(button('Hide these servers')).toHaveAttribute('aria-expanded', 'true')
+  expect(serverFields(false)).toEqual(shown)
+  expect(serverFields(true)).toEqual(boxed)
+  expect(document.body.textContent).toContain(
+    'Each tool sends its requests to one of these URLs. Based on the Site config above.',
+  )
 })
 
-// Catches: a server the person changed folded away with the ones that need nothing.
-it('keeps a server whose URL differs from the suggested one in view', async () => {
+// Catches: guidance that names the site for a box that also holds a fixed URL,
+// which changing the site does not move.
+it('names no question when a boxed server does not use it', async () => {
+  const mixed: RecipeConfigurationView = {
+    ...siteRecipe,
+    values: {
+      ...siteRecipe.values,
+      servers: [
+        siteRecipe.values.servers![0],
+        { ...siteRecipe.values.servers![1], url: 'https://metrics.example.test' },
+      ],
+    },
+  }
+  await renderStep(mixed, siteReview)
+  expect(serverFields(true)).toEqual(['Server for /v2/logs', 'Server for /v2/metrics'])
+  expect(document.body.textContent).toContain('Each tool sends its requests to one of these URLs.')
+  expect(document.body.textContent).not.toContain('Based on')
+})
+
+// Catches: a link to the question the URLs come from that leaves focus where it
+// was, so a keyboard user still has to find the field, or that leaves the field
+// under the pinned step header.
+it('moves focus to the question the default servers come from', async () => {
   await renderStep(siteRecipe, siteReview)
-  await act(async () => button('Show these servers').click())
+  const link = [...document.querySelectorAll('a')].find((a) => a.textContent === 'Site')!
+  const target = document.getElementById(link.getAttribute('href')!.slice(1))!
+  const scrollIntoView = vi.fn()
+  target.scrollIntoView = scrollIntoView
+  await act(async () => link.click())
+  expect(document.activeElement).toBe(target)
+  // In the middle of the view, where the pinned step header cannot cover it.
+  expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'center' }))
+})
+
+// Catches: a server that leaves the box, and moves the field, while the person
+// types a URL that differs from the suggested one.
+it('keeps an edited server in the box', async () => {
+  await renderStep(siteRecipe, siteReview)
+  const input = field('Server for /v2/logs')
   await act(async () => {
-    const input = field('Server for /v2/logs')
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
       input,
       'https://logs.example.test',
     )
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
-  await act(async () => button('Hide these servers').click())
-  expect(shownServers()).toEqual(['Server for /v2/logs'])
-  expect(document.body.textContent).toContain('1 server has the suggested URL.')
+  expect(field('Server for /v2/logs').value).toBe('https://logs.example.test')
+  expect(serverFields(true)).toEqual(['Server for /v2/logs', 'Server for /v2/metrics'])
 })
 
 // Catches: a refused automatic client setup shown as a banner at the foot of the

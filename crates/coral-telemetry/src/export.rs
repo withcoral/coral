@@ -16,6 +16,11 @@ use crate::field;
 /// never leave the host, whatever the operator's filters admit.
 const DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 
+/// The keys of the target and the level that each span carries, which the
+/// filter admits it by.
+pub(crate) const TARGET_KEY: &str = "target";
+pub(crate) const LEVEL_KEY: &str = "level";
+
 /// The name a library's span event leaves with, in place of its text.
 const LIBRARY_EVENT_NAME: &str = "event";
 
@@ -61,11 +66,11 @@ where
             span.status = Status::error("");
         }
         span.events.events.retain(|event| {
-            !string_attribute(&event.attributes, "target")
+            !string_attribute(&event.attributes, TARGET_KEY)
                 .is_some_and(|target| is_body_target(&target))
         });
         for event in &mut span.events.events {
-            if !string_attribute(&event.attributes, "target")
+            if !string_attribute(&event.attributes, TARGET_KEY)
                 .is_some_and(|target| is_coral_target(&target))
             {
                 event.name = LIBRARY_EVENT_NAME.into();
@@ -209,7 +214,7 @@ fn retain_exported(attributes: &mut Vec<KeyValue>) {
 }
 
 fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
-    let Some(target) = span_string_attribute(span, "target") else {
+    let Some(target) = span_string_attribute(span, TARGET_KEY) else {
         return false;
     };
     let Some(level) = span_level_attribute(span) else {
@@ -219,7 +224,7 @@ fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
 }
 
 fn span_has_denied_target(span: &SpanData) -> bool {
-    span_string_attribute(span, "target").is_some_and(|target| is_body_target(&target))
+    span_string_attribute(span, TARGET_KEY).is_some_and(|target| is_body_target(&target))
 }
 
 /// The file and line of tracing's default name for an event, `event
@@ -255,7 +260,7 @@ fn string_attribute(attributes: &[KeyValue], key: &str) -> Option<String> {
 }
 
 fn span_level_attribute(span: &SpanData) -> Option<tracing::Level> {
-    match span_string_attribute(span, "level")?.as_str() {
+    match span_string_attribute(span, LEVEL_KEY)?.as_str() {
         "TRACE" => Some(tracing::Level::TRACE),
         "DEBUG" => Some(tracing::Level::DEBUG),
         "INFO" => Some(tracing::Level::INFO),

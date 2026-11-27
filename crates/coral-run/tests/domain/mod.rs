@@ -24,6 +24,7 @@ mod output;
 mod private_tools;
 mod provider_setup;
 mod provider_update;
+mod queue;
 mod refresh;
 mod required_actions;
 mod resilience;

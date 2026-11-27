@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use super::{COMPILE_WAIT, PullStreamCompiler, ROOM_WAIT_RESERVE};
 use crate::local::tests::FakeStarter;
-use crate::pull::tests::{Sent, busy_stream, compiled, dialed_stream as open, up};
+use crate::pull::tests::{Sent, busy_stream, compiled, dialed_stream as open, in_line, up};
 use crate::pull::{COMPILE_ROOM, Credentials};
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
 use crate::{CompileError, CompilerClient, LocalRunExecutors, PullStreams, StreamId, Unavailable};
@@ -352,4 +352,21 @@ async fn ready_waits_for_room_without_holding_its_thread() {
     let (held, (stream, _sent)) = tokio::join!(caller.ready(), opening);
     let _held = held.expect("a compiler").expect("a held unit");
     assert_eq!(streams.compile_room(stream), COMPILE_ROOM - 1);
+}
+
+// Catches: a caller that keeps the turn the end of the line closed, so it
+// never waits in line again and no stream that opens serves it.
+#[tokio::test(start_paused = true)]
+async fn a_caller_waits_in_line_again_once_the_line_ends() {
+    let streams = PullStreams::default();
+    let (stream, _sent) = busy_stream(&streams);
+    let caller = PullStreamCompiler::new(streams.clone(), None);
+    let waiting = held_later(&caller);
+    in_line(&streams, 1).await;
+
+    streams.end(stream, None);
+    in_line(&streams, 1).await;
+    let (opened, _opened_sent) = open(&streams, 0);
+    let _held = waiting.await.unwrap();
+    assert_eq!(streams.compile_room(opened), COMPILE_ROOM - 1);
 }

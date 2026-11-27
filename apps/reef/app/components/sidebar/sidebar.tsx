@@ -1,17 +1,11 @@
-import classNames from 'classnames'
 import { Fragment, useRef, useState } from 'react'
 import { Form, Link, useLocation } from 'react-router'
 import type { BrowserAuth } from '@/auth/types'
-import { Button, Menu, ScrollArea } from '@/wax/components'
+import { Menu, ScrollArea } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
-import { Brand } from '@/wax/components/brand'
 import type { IconName } from '@/wax/components/icon'
-import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import { Sidebar as WaxSidebar } from '@/wax/components/sidebar'
 import { SidebarBadge, SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
-import {
-  NavigationClose,
-  NavigationFrame,
-} from '@/wax/components/navigation-frame/navigation-frame'
 import { useCopy } from '@/wax/components/button/use-copy'
 import { useTheme } from '@/wax/theme/theme-provider'
 import { ActionDialog, NameInput } from '@/views/management/forms'
@@ -191,24 +185,25 @@ function workspaceDestinations(
 }
 
 export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
-  const { isMinimized, toggleSidebar, hasToggled } = useSidebarState(initialIsMinimized)
-  const location = useLocation()
+  const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
+  // A tab that opened on the settings goes back home.
+  const back = useReturnTo(props.area === 'settings', '/')
+  // The brand opens the Overview of the workspace you are in. In the settings
+  // that is the workspace you came from. Home picks one when there is none.
+  const cameFrom = props.area === 'settings' ? /^\/workspaces\/[^/?#]+/.exec(back)?.[0] : undefined
   return (
-    <NavigationFrame navigationKey={location.key}>
-      {(mobile) => (
-        <SidebarNavigation
-          {...props}
-          isMinimized={!mobile && isMinimized}
-          toggleSidebar={toggleSidebar}
-          resized={!mobile && hasToggled}
-          mobile={mobile}
-        />
-      )}
-    </NavigationFrame>
+    <WaxSidebar
+      home={props.workspace?.path ?? cameFrom ?? '/'}
+      isMinimized={isMinimized}
+      onToggle={toggleSidebar}
+    >
+      {(minimized) => <SidebarContents {...props} back={back} isMinimized={minimized} />}
+    </WaxSidebar>
   )
 }
 
-function SidebarNavigation({
+/** Under the masthead: the workspace's switcher and pages, or the settings' nav, then the footer. */
+function SidebarContents({
   actionCounts,
   newerRelease,
   auth = { mode: 'disabled' },
@@ -219,15 +214,12 @@ function SidebarNavigation({
   workspaces = [],
   workspace,
   form,
+  back,
   isMinimized,
-  toggleSidebar,
-  resized,
-  mobile,
 }: Omit<SidebarProps, 'initialIsMinimized'> & {
+  /** Where the settings' way back goes. */
+  back: string
   isMinimized: boolean
-  toggleSidebar: () => void
-  resized: boolean
-  mobile: boolean
 }) {
   const location = useLocation()
   // Without a name there are no initials to show, so the account keeps the user icon.
@@ -238,12 +230,6 @@ function SidebarNavigation({
   const reader = { organizationOwner, people, secretStoresEnabled }
   // The section Settings opens: the first one this reader has.
   const firstSection = settingsNav(reader)[0]
-  // A tab that opened on the settings goes back home.
-  const back = useReturnTo(inSettings, '/')
-  // The brand opens the Overview of the workspace you are in. In the settings
-  // that is the workspace you came from. Home picks one when there is none.
-  const cameFrom = inSettings ? /^\/workspaces\/[^/?#]+/.exec(back)?.[0] : undefined
-  const home = workspace?.path ?? cameFrom ?? '/'
   const logout = useRef<HTMLFormElement>(null)
   // You open a Workspace only as its member, so every entry here is one of yours.
   // The route's Workspace is fresher than the list, and stands in when the list
@@ -308,46 +294,7 @@ function SidebarNavigation({
     </SidebarButton>
   )
   return (
-    <nav
-      aria-label="Coral"
-      className={classNames(
-        styles.sidebar,
-        isMinimized && styles.sidebarMinimized,
-        resized && styles.sidebarResized,
-        mobile && styles.drawerSidebar,
-      )}
-      data-sidebar-minimized={isMinimized}
-    >
-      <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
-        <Link
-          to={home}
-          className={classNames(styles.identity, isMinimized && styles.minimizedControl)}
-          aria-label="Coral"
-        >
-          <Brand compact={isMinimized} />
-        </Link>
-        {mobile ? (
-          <NavigationClose />
-        ) : (
-          <KeyboardShortcut
-            handler={(event) => {
-              event.preventDefault()
-              toggleSidebar()
-            }}
-            shortcut="$mod+Backslash"
-            tooltipContent={isMinimized ? 'Expand sidebar' : 'Collapse sidebar'}
-            tooltipSide={isMinimized ? 'right' : 'bottom'}
-          >
-            <Button.IconButton
-              ariaLabel={isMinimized ? 'Expand sidebar' : 'Collapse sidebar'}
-              name="PanelLeft"
-              onClick={toggleSidebar}
-              size="32"
-              variant="bare"
-            />
-          </KeyboardShortcut>
-        )}
-      </div>
+    <>
       <div className={isMinimized ? styles.rail : styles.workspace}>
         {!inSettings && (
           <WorkspaceSwitcher
@@ -434,7 +381,7 @@ function SidebarNavigation({
           </Menu.Content>
         </Menu.Container>
       </div>
-    </nav>
+    </>
   )
 }
 

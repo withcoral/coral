@@ -49,7 +49,7 @@ import {
   serverLabel,
 } from './configuration-details'
 import { ScopesField } from './scopes-field'
-import { ServerField } from './server-field'
+import { DefaultServers, ServerField } from './server-field'
 import { serverProblem, type ServerGroup } from './server-choices'
 import { StepFrame } from './step-frame'
 import { ConfigurationChanges } from './configuration-changes'
@@ -372,8 +372,8 @@ export function ConfigurationStep({
       blockers.push({ field: ids.server(group.declaration), message: problem })
   const blocked = blockers.at(0)
   // A server that holds the URL the recipe gives it needs nothing from the
-  // person, so it folds away until they open the list. One that differs, waits
-  // for an answer or has an error stays in view.
+  // person, so its field goes in the box of default servers. One that differs,
+  // waits for an answer or has an error stays in view above the box.
   const suggestedServer = (group: ServerGroup) => {
     const fromRecipe = filled?.values.servers?.find(
       (server) => server.declaration === group.declaration && server.url,
@@ -386,9 +386,37 @@ export function ConfigurationStep({
       !serverProblem(group, selection)
     )
   }
-  const foldableServers = serverGroups.filter(suggestedServer).length
-  const [serversOpen, setServersOpen] = useState(false)
-  const folded = (group: ServerGroup) => !serversOpen && suggestedServer(group)
+  // Fixed when the step opens, so a field never leaves the box as the person
+  // edits it. A post reloads the step, which sorts the servers again. A boxed
+  // server whose recipe answer is cleared later stays boxed on purpose: its
+  // field says what it waits for, and Next points to that answer's field.
+  const [defaultServers] = useState(
+    () => new Set(serverGroups.filter(suggestedServer).map((group) => group.declaration)),
+  )
+  // The recipe questions every boxed server is built from. A question that one
+  // of them ignores would wrongly say that changing it moves that URL too.
+  const boxedInputs = serverGroups
+    .filter((group) => defaultServers.has(group.declaration))
+    .map((group) => {
+      const server = recipeServer(group)
+      return server ? serverInputs(server) : []
+    })
+  const serverSources = (applied?.inputs ?? [])
+    .filter((input) => boxedInputs.every((names) => names.includes(input.name)))
+    .map((input) => ({ label: input.label, id: ids.input(input.name) }))
+  const serverField = (group: ServerGroup) => (
+    <ServerField
+      key={group.declaration}
+      id={ids.server(group.declaration)}
+      waitingFor={waitingFor(group)}
+      group={group}
+      selection={value.servers.find((server) => server.declaration === group.declaration)}
+      error={errors[group.declaration]}
+      onChange={(selection) =>
+        selection ? setServer(group.declaration, selection) : clearServer(group.declaration)
+      }
+    />
+  )
   const serverFieldsShowErrors =
     staleServers.length > 0 ||
     serverProblems.length > 0 ||
@@ -717,41 +745,14 @@ export function ConfigurationStep({
                     boundary rather than a title. */}
                   <div className={styles.groupRule} role="presentation" />
                   {review.servers
-                    .filter((group) => !folded(group))
-                    .map((group) => (
-                      <ServerField
-                        key={group.declaration}
-                        id={ids.server(group.declaration)}
-                        waitingFor={waitingFor(group)}
-                        group={group}
-                        selection={value.servers.find(
-                          (server) => server.declaration === group.declaration,
-                        )}
-                        error={errors[group.declaration]}
-                        onChange={(selection) =>
-                          selection
-                            ? setServer(group.declaration, selection)
-                            : clearServer(group.declaration)
-                        }
-                      />
-                    ))}
-                  {foldableServers > 0 && (
-                    <div className={styles.foldedServers}>
-                      <Typography.BodySmall as="p" variant="secondary">
-                        {foldableServers === 1
-                          ? '1 server has the suggested URL.'
-                          : `${foldableServers} servers have the suggested URL.`}
-                      </Typography.BodySmall>
-                      <Button.TextButton
-                        type="button"
-                        variant="secondary"
-                        size="32"
-                        aria-expanded={serversOpen}
-                        onClick={() => setServersOpen(!serversOpen)}
-                      >
-                        {serversOpen ? 'Hide these servers' : 'Show these servers'}
-                      </Button.TextButton>
-                    </div>
+                    .filter((group) => !defaultServers.has(group.declaration))
+                    .map(serverField)}
+                  {defaultServers.size > 0 && (
+                    <DefaultServers sources={serverSources}>
+                      {review.servers
+                        .filter((group) => defaultServers.has(group.declaration))
+                        .map(serverField)}
+                    </DefaultServers>
                   )}
                 </section>
               )}

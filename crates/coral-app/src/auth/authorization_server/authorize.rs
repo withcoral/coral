@@ -1,4 +1,3 @@
-use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::sealed_handshake::{ClientRequest, PendingApproval, SignInSession};
 use super::client_metadata::OAuthClientRegistration;
 use super::response::{TrustedRedirect, direct_error, redirect};
@@ -9,6 +8,7 @@ use axum::extract::{RawQuery, Request, State};
 use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
+use coral_sign_in::SignInValue;
 use coral_telemetry::safe;
 
 use super::approval_page::{self, ApprovalDecision, ApprovalScope};
@@ -100,7 +100,9 @@ pub(super) async fn oauth_authorize_get(
         return trusted.error("invalid_request", inputs);
     }
     let sealed_len = sign_in.sealed_len();
-    if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.secure_cookies())) {
+    if !sealed_len
+        .is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.sign_in_cookie_attributes()))
+    {
         return trusted.error("invalid_request", "authorization request is too large");
     }
     // A trusted client proceeds as if the user had already pressed Allow.
@@ -200,12 +202,12 @@ pub(super) async fn oauth_authorize_post(
     .await
 }
 
-/// Sends an approved sign-in on to the upstream provider.
+/// Begins an approved sign-in through the sign-in mode.
 ///
 /// This is the step an Allow submission continues into and a trusted client
 /// skips to directly. The redirect hands this browser the sign-in cookie that
-/// carries the sealed session, so the callback can never arrive ahead of the
-/// state it needs, any process can finish it, and only this browser can.
+/// carries the sealed session, so the mode's answer can never arrive ahead of
+/// the state it needs, any process can finish it, and only this browser can.
 /// Older sign-ins beyond the per-browser cap are expired on the same response.
 async fn provider_sign_in(
     state: &AuthorizationServerHttpState,
@@ -213,37 +215,38 @@ async fn provider_sign_in(
     trusted: &TrustedRedirect,
     headers: &HeaderMap,
 ) -> Response {
-    let keys = state.settings.handshake_keys();
-    let Ok(OidcAuthorizationRequest {
-        url,
-        state: oidc_state,
-    }) = state
-        .provider_client
-        .authorization_request(state.settings.provider(), keys)
-        .await
-    else {
+    let Ok(sign_in) = super::callback::random_token().map(SignInValue::new) else {
         return trusted.error("server_error", "authorization failed");
     };
-    let secure = state.secure_cookies();
-    // The sign-in starts when the provider's answer arrives, not when the
+    let url = match state.sign_in_mode.begin(&sign_in, state.clock.now()).await {
+        Ok(url) => url,
+        Err(refusal) => return trusted.refused(&refusal),
+    };
+    let keys = state.settings.handshake_keys();
+    let attributes = state.sign_in_cookie_attributes();
+    // The sign-in starts when the mode's answer arrives, not when the
     // request did.
     let now = state.clock.now().whole_seconds();
     let Some(cookie) = session
-        .seal(keys, &oidc_state, now + sign_in_cookie::MAX_AGE_SECONDS)
+        .seal(
+            keys,
+            sign_in.as_str(),
+            now + sign_in_cookie::MAX_AGE_SECONDS,
+        )
         .ok()
         .and_then(|sealed| {
             sign_in_cookie::set_header(
-                &sign_in_cookie::name(&oidc_state, now, secure),
+                &sign_in_cookie::name(sign_in.as_str(), now, attributes),
                 &sealed,
-                secure,
+                attributes,
             )
         })
     else {
         return trusted.error("server_error", "authorization failed");
     };
     let mut response = redirect(url.as_str());
-    for evicted in sign_in_cookie::evicted_by_new_sign_in(headers, secure) {
-        if let Some(clear) = sign_in_cookie::clear_header(&evicted, secure) {
+    for evicted in sign_in_cookie::evicted_by_new_sign_in(headers, attributes) {
+        if let Some(clear) = sign_in_cookie::clear_header(&evicted, attributes) {
             response.headers_mut().append(header::SET_COOKIE, clear);
         }
     }
@@ -462,7 +465,15 @@ mod tests {
         extra: &str,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        let mut state = http_state(database, issuer, extra, &[RESOURCE]);
+        faked(http_state(database, issuer, extra, &[RESOURCE]), resolver)
+    }
+
+    /// `state` with client metadata resolved by `resolver`, on a clock that
+    /// reads `NOW`.
+    fn faked(
+        mut state: AuthorizationServerHttpState,
+        resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> AuthorizationServerHttpState {
         state.client_metadata_resolver = resolver;
         state.clock = Arc::new(ManualClock::starting_at(NOW));
         state
@@ -483,8 +494,9 @@ mod tests {
                 HeaderValue::from_str(pair.expect("name and value")).expect("cookie"),
             );
         }
-        let (_name, sealed) = sign_in_cookie::find(&cookies, oidc_state, state.secure_cookies())
-            .expect("sign-in cookie");
+        let (_name, sealed) =
+            sign_in_cookie::find(&cookies, oidc_state, state.sign_in_cookie_attributes())
+                .expect("sign-in cookie");
         let now = state.clock.now().whole_seconds();
         SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
             .expect("sealed sign-in")
@@ -1654,13 +1666,20 @@ mod tests {
         let auth_state = state_with(&database, &provider.uri(), &trusting(CLIENT_ID), resolver);
         let mut headers = browser_headers();
         for started_at in [30, 10, 20] {
-            let name = sign_in_cookie::name(&format!("held-{started_at}"), started_at, true);
+            let name = sign_in_cookie::name(
+                &format!("held-{started_at}"),
+                started_at,
+                auth_state.sign_in_cookie_attributes(),
+            );
             headers.append(
                 header::COOKIE,
                 HeaderValue::from_str(&format!("{name}=sealed")).expect("cookie"),
             );
         }
-        let evicted = sign_in_cookie::evicted_by_new_sign_in(&headers, true);
+        let evicted = sign_in_cookie::evicted_by_new_sign_in(
+            &headers,
+            auth_state.sign_in_cookie_attributes(),
+        );
         assert!(!evicted.is_empty(), "the setup must reach the cap");
         let response =
             oauth_authorize_get(State(auth_state), RawQuery(Some(encode(&pairs()))), headers).await;
@@ -1866,6 +1885,90 @@ mod tests {
         }
     }
 
+    /// A sign-in begins through the configured mode: the browser goes to the
+    /// mode's URL with a fresh value, and carries the sign-in's cookie under
+    /// that value. A mode that refuses the begin sends the client its
+    /// refusal and the browser no sign-in.
+    #[tokio::test]
+    async fn a_sign_in_begins_through_the_configured_mode() {
+        let database = database().await;
+        let auth_state = |mode| {
+            let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+            let state = super::super::test_state::http_state_with_mode(
+                &database,
+                "https://provider.invalid",
+                &trusting(CLIENT_ID),
+                &[RESOURCE],
+                mode,
+            );
+            faked(state, resolver)
+        };
+        let app = auth_state(super::super::test_state::test_mode(""));
+        let response = request(app.clone(), &pairs()).await;
+        let mode_url = Url::parse(location(&response).expect("redirect")).expect("URL");
+        assert_eq!(
+            (mode_url.host_str(), mode_url.path()),
+            (Some("idp.example.test"), "/start")
+        );
+        let query = mode_url
+            .query_pairs()
+            .into_owned()
+            .collect::<BTreeMap<_, _>>();
+        let sign_in = query.get("sign_in").expect("the sign-in's value");
+        // The value has the form OIDC's `state` had, so a sign-in begun
+        // before an upgrade finishes after it.
+        assert_eq!(sign_in.len(), 43);
+        assert!(
+            sign_in
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+            "{sign_in}"
+        );
+        let session = returned_session(&app, &response, sign_in);
+        assert_eq!(session.request.client_id, CLIENT_ID);
+        // The cookie takes the mode's `SameSite`.
+        for (settings, same_site) in [
+            ("", "SameSite=Lax"),
+            ("same_site = 'none'", "SameSite=None"),
+        ] {
+            let response = request(
+                auth_state(super::super::test_state::test_mode(settings)),
+                &pairs(),
+            )
+            .await;
+            let cookie = response.headers()[header::SET_COOKIE]
+                .to_str()
+                .expect("ASCII");
+            assert!(cookie.ends_with(same_site), "{cookie}");
+        }
+
+        let refusing = auth_state(Arc::new(super::super::test_state::Refusing(
+            coral_sign_in::Refusal::failed("mode_unavailable"),
+        )));
+        let response = request(refusing, &pairs()).await;
+        let client = Url::parse(location(&response).expect("redirect")).expect("URL");
+        let values = client
+            .query_pairs()
+            .into_owned()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            (
+                values.get("error").map(String::as_str),
+                values.get("error_description").map(String::as_str),
+                values.get("state").map(String::as_str)
+            ),
+            (
+                Some("server_error"),
+                Some("authorization failed"),
+                Some(CLIENT_STATE)
+            )
+        );
+        assert!(
+            !response.headers().contains_key(header::SET_COOKIE),
+            "a refused begin starts no sign-in"
+        );
+    }
+
     /// Trust skips only the approval page. Every validation the page sits
     /// behind still runs, so a trusted client's malformed request fails exactly
     /// like anyone else's rather than being waved through to the provider.
@@ -1949,14 +2052,8 @@ mod tests {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let auth_state = state(&database, &provider.uri());
-        let bind_addr = auth_state.settings.bind_addr();
-        let server = super::super::start_listener(bind_addr, super::super::auth_router(auth_state))
-            .await
-            .expect("start");
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("client");
+        let server = super::super::test_state::serve(auth_state).await;
+        let client = super::super::test_state::browser();
         let authorize_url = format!("{}/oauth/authorize", server.endpoint_uri());
         let response = client
             .get(format!(

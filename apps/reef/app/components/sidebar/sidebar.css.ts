@@ -1,73 +1,6 @@
-import { keyframes, style } from '@vanilla-extract/css'
-import { animation, theme, zIndex } from '@/wax/theme/theme.css'
-import { FRAME_INSET_PX, FRAME_LINE_PX } from '@/components/content-container/constants'
-import { TOP_BAR_HEIGHT_PX } from '@/wax/components/page-layout/constants'
+import { style } from '@vanilla-extract/css'
+import { theme } from '@/wax/theme/theme.css'
 
-const SIDEBAR_PADDING_PX = 12
-// As tall as the collapse toggle beside the brand.
-const IDENTITY_HEIGHT_PX = 32
-// The masthead sits so the brand centres on the top bar of the page's frame
-// beside it, which starts a little below the window's edge, under the frame's line.
-const MASTHEAD_OFFSET_PX =
-  FRAME_INSET_PX + FRAME_LINE_PX + (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
-export const sidebar = style({
-  backgroundColor: theme.surface.main,
-  display: 'flex',
-  flexDirection: 'column',
-  flex: '0 0 220px',
-  height: '100dvh',
-  minWidth: 0,
-  padding: SIDEBAR_PADDING_PX,
-  gap: 16,
-  zIndex: zIndex.navigation,
-})
-export const sidebarMinimized = style({ flexBasis: 68, alignItems: 'center' })
-// After a toggle, the width moves like a drawer and the contents cross-blur, which
-// hides their swap between layouts. Only a toggle animates, never a page load.
-const { panel } = animation
-const expandBlur = keyframes({ from: { filter: panel.blur } })
-const collapseBlur = keyframes({ from: { filter: panel.blur } })
-export const sidebarResized = style({
-  animation: `${expandBlur} ${panel.open} ${panel.ease}`,
-  overflowX: 'clip',
-  transition: `flex-basis ${panel.open} ${panel.ease}`,
-  selectors: {
-    [`&${sidebarMinimized}`]: {
-      animation: `${collapseBlur} ${panel.close} ${panel.ease}`,
-      transition: `flex-basis ${panel.close} ${panel.ease}`,
-    },
-  },
-  '@media': {
-    '(prefers-reduced-motion: reduce)': {
-      animation: 'none',
-      transition: 'none',
-      selectors: { [`&${sidebarMinimized}`]: { animation: 'none', transition: 'none' } },
-    },
-  },
-})
-// In the drawer the sidebar fills the popup, and looks as it does on a desktop.
-export const drawerSidebar = style({ flex: 1, height: 'auto', minHeight: 0 })
-// A masthead: the brand with the collapse toggle at its end, and room beneath
-// it before the workspace switcher. Collapsed, the toggle sits under the mark, so it
-// stays at the top in both states.
-export const header = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 4,
-  marginBlockStart: MASTHEAD_OFFSET_PX,
-  minWidth: 0,
-})
-// The 22px mark centres on the 18px icons of the buttons below, so every icon
-// shares one column.
-export const identity = style({
-  display: 'flex',
-  alignItems: 'center',
-  flex: 1,
-  minHeight: IDENTITY_HEIGHT_PX,
-  paddingInline: 6,
-  color: theme.content.primary,
-  textDecoration: 'none',
-})
 // The switcher and the current Workspace's pages take the spare height. Only
 // the pages scroll, so the switcher and the footer stay put.
 export const workspace = style({
@@ -170,16 +103,6 @@ export const rail = style({
 export const railTile = style({ borderRadius: 10, height: 34, paddingBlock: 0 })
 // The release notice and the help and account menus are rows like the pages above them.
 export const footer = style({ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 })
-// Collapsed, the brand is the same centered square as the buttons, so they
-// share one axis.
-export const minimizedControl = style({
-  justifyContent: 'center',
-  minWidth: 0,
-  paddingInline: 0,
-  flex: 'none',
-  width: 34,
-})
-export const minimizedColumn = style({ alignItems: 'center', flexDirection: 'column' })
 export const railDestinations = style({
   alignItems: 'center',
   display: 'flex',

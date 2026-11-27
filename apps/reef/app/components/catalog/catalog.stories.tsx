@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect } from 'storybook/test'
 
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 import { Button, Table } from '@/wax/components'
 
 import {

@@ -1,6 +1,6 @@
 import { createTheme } from '@/wax/css'
 
-import { utils } from '@/styles/utils'
+import { utils } from '@/wax/styles/utils'
 import { paletteLight } from '@/wax/base/palette/palette-light'
 import { fontFamily } from '@/wax/theme/font.css'
 import { staticUtilities, theme } from '@/wax/theme/theme.css'

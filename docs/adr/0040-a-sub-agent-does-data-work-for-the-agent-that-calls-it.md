@@ -225,10 +225,6 @@ Workspace that disables the Tool, or sets it to approval, reads core's own steps
 description carries the Tool's guidance: how to brief a Sub-agent, and what to do with each state that a call returns.
 A client that shows a lead no instructions still shows it that.
 
-The model's tools include an `end_task` of the Sub-agent's own with core's arguments, which Sailfish calls before nearly
-every answer. It ends nothing, since the lead owns the Task, and the lead reads the outcome it records beside the
-Turn's answer.
-
 When a change in core alters a value that the Sub-agent's crate reads, the crate stops compiling in the same pull
 request. The author then updates it so that the model reads what it read before.
 
@@ -529,7 +525,7 @@ query that reads or writes them is in the Sub-agent's crate.
 | What the Sub-agent's model reads | Where it is written | Learned in training |
 | --- | --- | --- |
 | The system prompt | the Sub-agent's crate | Yes |
-| The name, description and argument schema of `search`, `exec`, `wait`, `cancel` and `end_task` | the Sub-agent's crate | Yes |
+| The name, description and argument schema of `search`, `exec`, `wait` and `cancel` | the Sub-agent's crate | Yes |
 | The field names of each tool result | the Sub-agent's crate | Yes |
 | The declaration of a Provider, Private or Shared Tool, returned by `search` | core | No. The model reads it each time it searches. |
 | The wording of each failure | the Sub-agent's crate | No. The model reads each one when it occurs. |

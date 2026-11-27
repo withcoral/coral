@@ -8,7 +8,7 @@ import { ActionDialog } from './forms'
 import { ManagementLayout, trail } from './layout'
 import { PeopleField } from './people-field'
 import { personLabel, personName } from './person'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 import type {
   FormContext,
   OrganizationPersonView,

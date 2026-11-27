@@ -2,19 +2,20 @@ use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 use super::{LinkOutcome, UserIdentifier, UserIdentifierKind};
-use crate::{LoginProvisioning, UserDirectory, UserId, VerifiedOidcLogin};
+use crate::{LoginProvisioning, UserDirectory, UserId, VerifiedLogin};
 
 const NOW: UnixNanos = UnixNanos::new(1_800_000_000_000_000_000);
+pub(crate) const ISSUER: &str = "https://issuer.test";
 /// The version of the first of the store's two steps. It makes
 /// `users.issuer` and `users.subject` optional, and the next step adds the
 /// table and copies each Subject.
 const FIRST_STORE_MIGRATION_VERSION: i64 = 88;
 
-const fn subject(value: &str) -> UserIdentifier<'_> {
+pub(crate) const fn subject(value: &str) -> UserIdentifier<'_> {
     UserIdentifier::new(UserIdentifierKind::Subject, value)
 }
 
-const fn name_id(value: &str) -> UserIdentifier<'_> {
+pub(crate) const fn name_id(value: &str) -> UserIdentifier<'_> {
     UserIdentifier::new(UserIdentifierKind::NameId, value)
 }
 
@@ -42,7 +43,7 @@ async fn holder(fixture: &TestDatabase, identifier: UserIdentifier<'_>) -> Optio
 }
 
 /// Asserts the holder of each identifier, or that it has none.
-async fn assert_holders(
+pub(crate) async fn assert_holders(
     fixture: &TestDatabase,
     expected: &[(UserIdentifier<'_>, Option<&UserId>)],
 ) {
@@ -177,9 +178,8 @@ async fn a_value_is_compared_by_its_bytes() {
 async fn the_upgrade_keeps_each_user_and_copies_its_subject_into_the_store() {
     let before = coral_test_support::migration_plan_before(FIRST_STORE_MIGRATION_VERSION);
     let fixture = TestDatabase::new(&before).await.unwrap();
-    let directory = UserDirectory::new(fixture.database());
-    let ana = sign_in(&directory, "ana").await;
-    let ben = sign_in(&directory, "ben").await;
+    let ana = insert_user_as_the_release_before(&fixture, "ana").await;
+    let ben = insert_user_as_the_release_before(&fixture, "ben").await;
 
     fixture
         .database()
@@ -197,17 +197,50 @@ async fn the_upgrade_keeps_each_user_and_copies_its_subject_into_the_store() {
         ],
     )
     .await;
-    // The sign-in of this Coral still reads `users`, as the Coral before it does.
-    assert_eq!(sign_in(&directory, "ana").await, ana);
+    let login = VerifiedLogin::oidc(ISSUER, "ana", None, NOW);
+    assert_eq!(
+        UserDirectory::new(fixture.database())
+            .provision_login(login)
+            .await
+            .unwrap(),
+        LoginProvisioning::Provisioned(ana)
+    );
 }
 
-/// The User of an OIDC sign-in with `oidc_subject`.
-async fn sign_in(directory: &UserDirectory, oidc_subject: &str) -> UserId {
-    let login = VerifiedOidcLogin::new("https://issuer.test", oidc_subject, None, NOW);
-    match directory.provision_login(login).await.unwrap() {
-        LoginProvisioning::Provisioned(user_id) => user_id,
-        LoginProvisioning::IssuerMismatch | LoginProvisioning::Disabled => {
-            panic!("expected a provisioned login")
-        }
-    }
+/// Two links of one identifier to two Users that arrive together: one is
+/// linked, and the other reads the holder and changes nothing.
+#[tokio::test]
+async fn two_links_together_leave_one_holder() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let ana = new_user_id();
+    let ben = new_user_id();
+    let outcomes = tokio::join!(
+        link(&fixture, name_id("joy"), &ana),
+        link(&fixture, name_id("joy"), &ben),
+    );
+    let winner = match outcomes {
+        (LinkOutcome::Linked, LinkOutcome::HeldBy(holder))
+        | (LinkOutcome::HeldBy(holder), LinkOutcome::Linked) => holder,
+        outcomes => panic!("expected one link and one holder, got {outcomes:?}"),
+    };
+    assert_holders(&fixture, &[(name_id("joy"), Some(&winner))]).await;
+}
+
+/// Writes a `users` row as the release before this one does, and no row in
+/// the store.
+pub(crate) async fn insert_user_as_the_release_before(
+    fixture: &TestDatabase,
+    oidc_subject: &str,
+) -> UserId {
+    let user_id = new_user_id();
+    fixture
+        .execute_fixture_sql(&format!(
+            "INSERT INTO users (user_id, issuer, subject, display_name, \
+             created_at_unix_nanos, last_login_at_unix_nanos) \
+             VALUES ('{}', '{ISSUER}', '{oidc_subject}', NULL, 1, 1)",
+            user_id.as_str()
+        ))
+        .await
+        .unwrap();
+    user_id
 }

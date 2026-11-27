@@ -1,6 +1,6 @@
 import { style } from '@/wax/css'
 
-import { breakpoints } from '@/styles/breakpoints'
+import { breakpoints } from '@/wax/styles/breakpoints'
 import { theme } from '@/wax/theme/theme.css'
 
 export const section = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })

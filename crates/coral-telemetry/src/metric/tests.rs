@@ -58,6 +58,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "{request}",
         &["compiler.role"],
     ),
+    ("coral.compile.relayed", "counter", "{call}", &[]),
     (
         "coral.persistence.acquisition.duration",
         "histogram",
@@ -131,7 +132,22 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
     ),
     ("coral.run.duration", "histogram", "s", &["run.status"]),
     ("coral.run.phase.duration", "histogram", "s", &["run.phase"]),
+    (
+        "coral.run.start.wait",
+        "histogram",
+        "s",
+        &["run_executor.kind"],
+    ),
     ("coral.run.active", "gauge", "{run}", &[]),
+    ("coral.run.waiting", "gauge", "{run}", &[]),
+    ("coral.run.waiting.age", "gauge", "s", &[]),
+    ("coral.run.held", "gauge", "{run}", &[]),
+    (
+        "coral.run_executor.linked",
+        "gauge",
+        "{stream}",
+        &["run_executor.kind"],
+    ),
     (
         "coral.invocation.started",
         "counter",
@@ -289,6 +305,7 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         Duration::from_millis(1),
     );
     program_compiled(CompileOutcome::Ok, Duration::from_millis(30));
+    compile_relayed();
     program_executed(Some(Duration::from_millis(12)), 4096);
     program_terminated(TerminationReason::Canceled);
     run_accepted(PrincipalKind::Agent);
@@ -298,7 +315,14 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         Duration::from_secs(2),
     );
     drop(run_phase(RunPhase::Execute));
+    run_start_wait(RunExecutorKind::Dialed, Duration::from_millis(80));
     let active = run_active();
+    run_queue_read(Some(RunQueue {
+        waiting: 2,
+        waiting_age: Duration::from_secs(4),
+        held: 3,
+    }));
+    drop(run_executor_linked(RunExecutorKind::Local));
     secret_store_read(
         "kv_v2",
         SecretStoreRead::EntryNotFound,
@@ -473,6 +497,33 @@ fn pools_are_read_at_collection_while_observed() {
         [] as [f64; 0],
         "a dropped pool reports nothing"
     );
+}
+
+/// A failed queue read leaves the gauges unknown, never at zero or at the
+/// reading before it.
+#[test]
+fn a_failed_queue_read_reports_nothing_until_the_next_reading() {
+    let capture = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(capture.subscriber());
+    let queue = RunQueue {
+        waiting: 1,
+        waiting_age: Duration::from_millis(1500),
+        held: 3,
+    };
+    run_queue_read(Some(queue));
+    let reported = || {
+        [
+            "coral.run.waiting",
+            "coral.run.waiting.age",
+            "coral.run.held",
+        ]
+        .map(|name| capture.values(name))
+    };
+    assert_eq!(reported(), [vec![1.0], vec![1.5], vec![3.0]]);
+    run_queue_read(None);
+    assert_eq!(reported(), [vec![], vec![], vec![]] as [Vec<f64>; 3]);
+    run_queue_read(Some(queue));
+    assert_eq!(reported(), [vec![1.0], vec![1.5], vec![3.0]]);
 }
 
 #[test]

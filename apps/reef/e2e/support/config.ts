@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isIP } from 'node:net'
 import { resolve } from 'node:path'
+import { installSettings } from './install.ts'
 import type { AuthenticationTarget } from './oidc-fixture.ts'
 
 export const reefRoot = resolve(import.meta.dirname, '../..')
@@ -38,6 +39,7 @@ export interface Target {
     | 'local-mode'
     | 'desktop'
     | 'multi-instance'
+    | 'helm-install'
     | 'attached-local'
     | 'harness'
   authentication?: AuthenticationTarget
@@ -54,15 +56,22 @@ export interface InstancesTarget {
 
 /**
  * Each suite's database. Only main selects one; several Coral Instances share
- * one database only on Postgres.
+ * one database only on Postgres. The helm-install suite's Install runs on its own
+ * Postgres, in the cluster.
  */
 const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
   main: undefined,
   'local-mode': 'sqlite',
   desktop: 'sqlite',
   'multi-instance': 'postgres',
+  'helm-install': 'postgres',
 }
 export const SUITES = Object.keys(SUITE_DATABASE)
+
+/** Whether Reel provisions the suite's database. The helm-install suite's cluster brings its own. */
+export function reelProvisionsDatabase(suite: string) {
+  return suite !== 'helm-install'
+}
 
 /** Rejects a suite, or a database the suite does not run on. Harness probes run on SQLite. */
 export function checkSuiteDatabase(suite: string, database: string, probes = false) {
@@ -165,7 +174,7 @@ export function commandOptions(args: string[]) {
       else database = value
     } else if (flag === '--desktop' || flag === '--project') {
       throw new Error(
-        'Select --suite main, local-mode, desktop or multi-instance; use --database postgres for main',
+        'Select --suite main, local-mode, desktop, multi-instance or helm-install; use --database postgres for main',
       )
     } else vitest.push(argument)
   }
@@ -183,7 +192,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
   if (attached && suite !== 'local-mode')
     throw new Error('Attached mode requires --suite local-mode')
   let postgresURL: string | undefined
-  if (database === 'postgres') {
+  if (database === 'postgres' && reelProvisionsDatabase(suite)) {
     if (!env.E2E_POSTGRES_TEST_URL)
       throw new Error('Run Reel with --database postgres to provision a disposable database')
     // Only the runner supplies its selected disposable database. Never consume
@@ -253,6 +262,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
             },
           }
         : undefined,
+    install: suite === 'helm-install' ? installSettings(env) : undefined,
     film: env.E2E_FILM === '1',
     ffmpegBinary: env.E2E_FFMPEG_BINARY || 'ffmpeg',
     probes,

@@ -1,4 +1,4 @@
-import type { LucideProps } from 'lucide-react'
+import type { LucideProps } from 'lucide-react/types'
 
 export function BanIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
   return (

@@ -1,0 +1,17 @@
+# Air-gapped: every image from your own registry, and no Usage Reports. Copy
+# these values into your own, or pass this file with -f after them.
+# "Air-gapped and restricted egress" in the Kubernetes docs lists what else
+# calls outside the cluster.
+
+global:
+  # Your registry's host, with a port if it needs one. Each image keeps its
+  # path, so mirror ghcr.io/withcoral/coral to
+  # registry.internal/withcoral/coral.
+  imageRegistry: registry.internal
+
+# Leave it empty if the nodes can pull without one.
+imagePullSecrets:
+  - name: registry-internal
+
+usageReports:
+  enabled: false

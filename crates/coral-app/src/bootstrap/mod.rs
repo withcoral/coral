@@ -29,7 +29,7 @@ pub use sub_agent::{SubAgentDependencies, SubAgentToolsFactory};
 pub(crate) use env::env_var_name;
 /// Startup's decode of `config.toml`, for tests outside bootstrap.
 #[cfg(test)]
-pub(crate) use server_config::tests::{auth_settings, telemetry};
+pub(crate) use server_config::tests::{auth_settings, auth_settings_with, telemetry};
 
 pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> {
     env::AppEnvironment::env_var(name)

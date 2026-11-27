@@ -7,7 +7,7 @@ import { darkTheme } from '@/wax/theme/theme-dark.css'
 import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
-import { hover, paintedPixels, unhover } from '../../../../.storybook/browser'
+import { hover, paintedPixels, unhover } from '@/wax/storybook/browser'
 import { AddRow } from './add-row'
 import { Body } from './body'
 import { Cell } from './cell'

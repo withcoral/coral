@@ -18,7 +18,7 @@ import { Activity } from '@/views/activity/activity'
 import type { ActivityRow, ActivityViewProps } from '@/views/activity/types'
 import { ActivitySummary } from '@/views/activity/summary/summary'
 import { ACTIVITY_PAGE_SIZE } from '@/lib/activity-list'
-import { resizeViewport } from '../../../.storybook/browser'
+import { resizeViewport } from '@/wax/storybook/browser'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
 import { onboardingPrompt } from './onboarding-prompt'
 

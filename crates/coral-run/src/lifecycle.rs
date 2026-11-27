@@ -40,6 +40,9 @@ pub(crate) struct RunRecord {
     /// The time limit acceptance stored, which a Run stream's start adds
     /// to its own instant; `None` for a Run accepted before it was stored.
     pub(crate) time_limit_nanos: Option<i64>,
+    /// When a take gave the Run to a Run Executor, on the clock of the
+    /// Coral Instance that served the take.
+    pub(crate) taken_at_unix_nanos: Option<i64>,
     /// A take gave the Run to a Run Executor.
     pub(crate) on_run_executor: bool,
     /// The Run Executor that took it is a local child, so its Run stream

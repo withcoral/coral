@@ -53,11 +53,15 @@ impl ServerConfigFile {
     /// Validates the auth settings: the `[auth]` table, and the auth and web
     /// listeners whose addresses give the authorization server its identity.
     /// None without `[auth]`.
-    fn auth_settings(&mut self) -> Result<Option<AuthSettings>, AppError> {
+    fn auth_settings(
+        &mut self,
+        modes: &coral_sign_in::SignInModes,
+    ) -> Result<Option<AuthSettings>, AppError> {
         AuthSettings::from_sections(
             self.auth.take(),
             &self.listeners.auth,
             self.listeners.web.as_ref(),
+            modes,
         )
         .map_err(AppError::Auth)
     }
@@ -165,7 +169,7 @@ impl LoadedServerConfig {
     ) -> Result<DeploymentConfig, AppError> {
         let document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
         let mut file = ServerConfigFile::decode(document)?;
-        let auth = file.auth_settings()?;
+        let auth = file.auth_settings(&launcher.extensions.sign_in_modes)?;
         let ServerConfigFile {
             listeners,
             runtime,
@@ -1485,10 +1489,18 @@ pub(super) mod tests {
     /// Decodes `raw` and validates its auth settings as startup does, for
     /// the auth module's tests. A refusal is the message alone.
     pub(crate) fn auth_settings(raw: &str) -> Result<Option<crate::auth::AuthSettings>, String> {
+        auth_settings_with(raw, &coral_sign_in::SignInModes::default())
+    }
+
+    /// [`auth_settings`] in a build whose binary adds `modes`.
+    pub(crate) fn auth_settings_with(
+        raw: &str,
+        modes: &coral_sign_in::SignInModes,
+    ) -> Result<Option<crate::auth::AuthSettings>, String> {
         super::Document::parse(raw)
             .map_err(AppError::ConfigDecode)
             .and_then(super::ServerConfigFile::decode)
-            .and_then(|mut file| file.auth_settings())
+            .and_then(|mut file| file.auth_settings(modes))
             .map_err(|error| match error {
                 AppError::Auth(error) => error.to_string(),
                 AppError::ConfigDecode(error) => {

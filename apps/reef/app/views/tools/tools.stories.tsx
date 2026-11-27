@@ -6,7 +6,7 @@ import { CORAL_ICONS, PRIVATE_ICONS, SHARED_ICONS } from '@/views/providers/cora
 import type { ProviderToolDetailView, ProviderView, ToolView } from '@/views/providers/types'
 import { selectionKey } from '@/views/providers/selection'
 import { ToolsPage } from '@/views/tools/tools-page'
-import { resizeViewport } from '../../../.storybook/browser'
+import { resizeViewport } from '@/wax/storybook/browser'
 import type {
   PrivateToolDetailView,
   PublishReviewResult,

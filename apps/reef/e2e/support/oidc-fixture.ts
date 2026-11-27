@@ -1,12 +1,14 @@
 // A test-only identity provider built on the maintained oidc-provider protocol
 // implementation. No Coral code, database access, or Coral token signing here.
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
   type RequestListener,
 } from 'node:http'
+import { createServer as createSecureServer } from 'node:https'
 import Provider from 'oidc-provider'
 
 import { escape } from './artifacts.ts'
@@ -23,28 +25,67 @@ export interface AuthenticationTarget {
   owner: SyntheticUser
 }
 
+/** The OAuth client the provider registers for Coral. */
+export const FIXTURE_CLIENT_ID = 'coral-reel'
+
 const starting: RequestListener = (_request, response) => {
   response.writeHead(503).end()
 }
 
-export async function startIdentityProvider(coralCallback: string, reefOrigin: string) {
+/**
+ * Serves the identity provider at a fixed HTTPS hostname, for a Coral that
+ * runs elsewhere and cannot reach this process's loopback: the helm-install suite's
+ * cluster. The owner's subject and the client secret are fixed before Coral
+ * starts, so they come from its setup. Without these, the provider listens on
+ * loopback HTTP at a free port, and makes both up.
+ */
+export interface PublishedIdentityProvider {
+  host: string
+  certFile: string
+  keyFile: string
+  ownerSubject: string
+  clientSecret: string
+}
+
+export async function startIdentityProvider(
+  coralCallback: string,
+  reefOrigin: string,
+  published?: PublishedIdentityProvider,
+) {
   let handler = starting
-  const server = createServer((request, response) => handler(request, response))
+  const listener: RequestListener = (request, response) => handler(request, response)
+  const server = published
+    ? createSecureServer(
+        { cert: await readFile(published.certFile), key: await readFile(published.keyFile) },
+        listener,
+      )
+    : createServer(listener)
+  // Coral reuses its connections. Node closes an idle one after five seconds,
+  // and a request sent as it closes fails, so close them only at teardown.
+  if (published) server.keepAliveTimeout = 0
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
+    // The published provider binds every address of its disposable container.
+    if (published) server.listen(443, '0.0.0.0', resolve)
+    else server.listen(0, '127.0.0.1', resolve)
   })
-  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+  const origin = published
+    ? `https://${published.host}`
+    : `http://127.0.0.1:${(server.address() as { port: number }).port}`
   const accounts = new Map<string, SyntheticUser & { emailVerified: boolean }>()
-  const register = (label: string, emailVerified = true, email?: string): SyntheticUser => {
-    const subject = `reel-${randomUUID()}`
+  const register = (
+    label: string,
+    emailVerified = true,
+    email?: string,
+    subject = `reel-${randomUUID()}`,
+  ): SyntheticUser => {
     const account = { subject, label, email: email ?? `${subject}@example.test`, emailVerified }
     accounts.set(subject, account)
     return { subject, label, email: account.email }
   }
-  const owner = register('Organization Owner')
-  const clientId = 'coral-reel'
-  const clientSecret = randomBytes(32).toString('hex')
+  const owner = register('Organization Owner', true, undefined, published?.ownerSubject)
+  const clientId = FIXTURE_CLIENT_ID
+  const clientSecret = published?.clientSecret ?? randomBytes(32).toString('hex')
   let closing: Promise<void> | undefined
   const close = () => {
     closing ??= new Promise<void>((resolve, reject) => {

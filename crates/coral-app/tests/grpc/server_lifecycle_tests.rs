@@ -232,6 +232,14 @@ async fn rejected_database_is_unchanged_before_other_settings_are_parsed() {
     assert_eq!(fs::read_dir(&config_dir).unwrap().count(), 2);
 }
 
+/// `[auth]` whole but for a provider holding one unknown key.
+const PROVIDER_UNKNOWN: &str = "[listeners.auth]\npublic_url = 'http://localhost:9080'\n\
+    [auth.session]\nsigning_key_file = 'session.key'\n\
+    [auth.provider]\nunknown = 'canary-value'";
+const PROVIDER_REDIRECT_URI: &str = "[listeners.auth]\npublic_url = 'http://localhost:9080'\n\
+    [auth.session]\nsigning_key_file = 'session.key'\n\
+    [auth.provider]\nredirect_uri = 'canary-value'";
+
 #[tokio::test]
 async fn startup_rejects_unknown_keys_in_every_configuration_section() {
     let temp = TempDir::new().expect("temp dir");
@@ -289,11 +297,10 @@ async fn startup_rejects_unknown_keys_in_every_configuration_section() {
             "[auth.authorization_server]\nissuer = 'canary-value'",
             "authorization_server",
         ),
-        ("[auth.provider]\nunknown = 'canary-value'", "unknown"),
-        (
-            "[auth.provider]\nredirect_uri = 'canary-value'",
-            "redirect_uri",
-        ),
+        // Core reads `[auth.provider]` only once the rest of `[auth]` is
+        // whole, since `mode` decides which settings it holds.
+        (PROVIDER_UNKNOWN, "unknown"),
+        (PROVIDER_REDIRECT_URI, "redirect_uri"),
     ] {
         fs::write(temp.path().join("config.toml"), config).unwrap();
         for builder in [

@@ -94,6 +94,34 @@ test('routine setup needs no host provisioning and Postgres remains runner-owned
   )
 })
 
+test('the helm-install suite drives a cluster that brings its own Postgres and sign-in settings', () => {
+  assert.deepEqual(commandOptions(['--suite', 'helm-install']), {
+    suite: 'helm-install',
+    database: 'postgres',
+    vitest: [],
+  })
+  assert.throws(
+    () => commandOptions(['--suite', 'helm-install', '--database', 'postgres']),
+    /Only the main suite selects a database/,
+  )
+  // Without the host's setup, the suite fails at once, not at sign-in.
+  assert.throws(
+    () => bootstrapConfig({ E2E_SUITE: 'helm-install', E2E_DATABASE: 'postgres' }),
+    /install\/cluster\.ts sets up/,
+  )
+  const ownerSubject = 'reel-00000000-0000-4000-8000-000000000000'
+  const config = bootstrapConfig({
+    E2E_SUITE: 'helm-install',
+    E2E_DATABASE: 'postgres',
+    E2E_INSTALL_OWNER_SUBJECT: ownerSubject,
+    E2E_INSTALL_CLIENT_SECRET: 'fixture-secret',
+  })
+  // Reel provisions no database for it, so none is required or set.
+  assert.equal(config.postgresURL, undefined)
+  assert.equal(config.install?.ownerSubject, ownerSubject)
+  assert.equal(config.install?.caFile, '/run/reel-install/ca.pem')
+})
+
 const routableFixtures = {
   // Configuration-only example; this test never contacts the address.
   E2E_FIXTURE_BIND_HOST: '0.0.0.0',

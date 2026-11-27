@@ -1,6 +1,7 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
 .PHONY: dependency-check advisory-check lint-migrations lint-proto protocol-level reef-image-checks ee-boundary
+.PHONY: chart-checks
 
 # Images build and test with Docker or Podman.
 CONTAINER_ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -216,3 +217,8 @@ lint-proto:
 protocol-level: lint-proto
 	scripts/check-protocol-level.sh
 	scripts/check-protocol-level.test.sh
+
+# Lints, renders and validates the Helm chart, and runs its helm-unittest
+# suites. Needs helm, kubeconform and the helm-unittest plugin.
+chart-checks:
+	./scripts/check-chart.sh

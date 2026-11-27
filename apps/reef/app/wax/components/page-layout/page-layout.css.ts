@@ -2,7 +2,7 @@ import { recipe, style } from '@/wax/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
-import { breakpoints } from '@/styles/breakpoints'
+import { breakpoints } from '@/wax/styles/breakpoints'
 
 import { TOP_BAR_HEIGHT_PX } from './constants'
 

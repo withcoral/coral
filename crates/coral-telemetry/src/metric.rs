@@ -28,9 +28,9 @@ pub use attribute::{
     AcquisitionOperation, AcquisitionOutcome, CompactionOutcome, CompileOutcome,
     CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
     DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd, ModelCallOutcome,
-    OutputKind, PrincipalKind, ProviderProtocol, RequestOutcome, RunPhase, RunStatus,
-    SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason, TokenType, ToolEffect,
-    TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    OutputKind, PrincipalKind, ProviderProtocol, RequestOutcome, RunExecutorKind, RunPhase,
+    RunStatus, SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason, TokenType,
+    ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -88,6 +88,7 @@ struct Catalog {
     request_duration: Histogram<f64>,
     request_cpu_duration: Histogram<f64>,
     program_compile_duration: Histogram<f64>,
+    compile_relayed: Counter<u64>,
     compiler_request_duration: Histogram<f64>,
     compiler_queue_duration: Histogram<f64>,
     compiler_work_duration: Histogram<f64>,
@@ -101,7 +102,10 @@ struct Catalog {
     run_ended: Counter<u64>,
     run_duration: Histogram<f64>,
     run_phase_duration: Histogram<f64>,
+    run_start_wait: Histogram<f64>,
     run_active: Level,
+    run_queue: RunQueueGauges,
+    run_executor_linked: LabeledLevel<RunExecutorKind>,
     invocation_started: Counter<u64>,
     invocation_ended: Counter<u64>,
     invocation_duration: Histogram<f64>,
@@ -409,6 +413,11 @@ impl Metrics {
                 "coral.program.compile.duration",
                 "How long compiling a submitted Program took.",
             ),
+            compile_relayed: counter(
+                "coral.compile.relayed",
+                "{call}",
+                "Compiler calls this Coral Instance relayed through the database: one for each row with a call that it wrote. A wait for room writes a row with no call, and is not counted.",
+            ),
             program_execution_cpu_duration: seconds(
                 "coral.program.execution.cpu.duration",
                 "The CPU time a Program's execution thread used.",
@@ -432,11 +441,23 @@ impl Metrics {
                 "coral.run.phase.duration",
                 "How long one phase of a Program Run took.",
             ),
+            run_start_wait: seconds(
+                "coral.run.start.wait",
+                "How long a Program Run waited from its acceptance to its start.",
+            ),
             run_active: Level::new(
                 &meter,
                 "coral.run.active",
                 "{run}",
                 "Program Runs whose Run stream is served on this Coral Instance.",
+            ),
+            run_queue: RunQueueGauges::new(&meter),
+            run_executor_linked: LabeledLevel::new(
+                &meter,
+                "coral.run_executor.linked",
+                "{stream}",
+                "Pull streams of Run Executors that this Coral Instance holds, by the credential that admitted them. A stream that closes at its connection age counts until it ends, so a Run Executor that redials here counts twice for a moment.",
+                |kind: RunExecutorKind| vec![KeyValue::new("run_executor.kind", kind.as_str())],
             ),
             invocation_started: counter(
                 "coral.invocation.started",
@@ -975,6 +996,12 @@ pub fn program_compiled(outcome: CompileOutcome, elapsed: Duration) {
     });
 }
 
+/// Counts one compiler call that this Coral Instance relayed through the
+/// database: a row it wrote.
+pub fn compile_relayed() {
+    with(|catalog| catalog.compile_relayed.add(1, &[]));
+}
+
 /// Records what one Program execution used: the CPU time of the thread that
 /// ran it, where the platform measures it, and the most heap it held.
 pub fn program_executed(cpu: Option<Duration>, heap_peak_bytes: usize) {
@@ -1023,10 +1050,127 @@ pub fn run_ended(status: RunStatus, code: Option<&'static str>, elapsed: Duratio
     });
 }
 
+/// Records how long a Program Run waited from its acceptance to its start,
+/// on a Run Executor of `kind`.
+pub fn run_start_wait(kind: RunExecutorKind, wait: Duration) {
+    with(|catalog| {
+        catalog.run_start_wait.record(
+            wait.as_secs_f64(),
+            &[KeyValue::new("run_executor.kind", kind.as_str())],
+        );
+    });
+}
+
 /// Times one phase of a Program Run until the returned timer drops.
 #[must_use = "the phase is timed until the timer drops"]
 pub fn run_phase(phase: RunPhase) -> Timer {
     Timer::start(Timed::RunPhase(phase))
+}
+
+/// The Run queue as one read snapshot of the database found it.
+#[derive(Debug, Clone, Copy)]
+pub struct RunQueue {
+    /// Runs accepted and not yet taken.
+    pub waiting: u64,
+    /// How long the oldest of them had waited; zero when none waits.
+    pub waiting_age: Duration,
+    /// Runs taken and not yet ended, started or not.
+    pub held: u64,
+}
+
+/// The Run queue gauges, which report the last reading of the queue pass.
+#[derive(Debug)]
+struct RunQueueGauges {
+    last: Arc<Mutex<Option<RunQueue>>>,
+    _gauges: (
+        ObservableGauge<u64>,
+        ObservableGauge<f64>,
+        ObservableGauge<u64>,
+    ),
+}
+
+impl RunQueueGauges {
+    fn new(meter: &Meter) -> Self {
+        let last = Arc::<Mutex<Option<RunQueue>>>::default();
+        let description = |what: &str| {
+            format!(
+                "{what}, at the last read. Every Coral Instance reads the same database: \
+                 take the maximum across instances, not the sum."
+            )
+        };
+        let read = || {
+            let last = Arc::clone(&last);
+            move || {
+                *last
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            }
+        };
+        let count = |name: &'static str, what: &str, value: fn(RunQueue) -> u64| {
+            let read = read();
+            meter
+                .u64_observable_gauge(name)
+                .with_unit("{run}")
+                .with_description(description(what))
+                .with_callback(move |gauge| {
+                    if let Some(queue) = read() {
+                        gauge.observe(value(queue), &[]);
+                    }
+                })
+                .build()
+        };
+        let age = {
+            let read = read();
+            meter
+                .f64_observable_gauge("coral.run.waiting.age")
+                .with_unit("s")
+                .with_description(description(
+                    "How long the oldest Program Run not yet taken had waited, zero when none waits",
+                ))
+                .with_callback(move |gauge| {
+                    if let Some(queue) = read() {
+                        gauge.observe(queue.waiting_age.as_secs_f64(), &[]);
+                    }
+                })
+                .build()
+        };
+        Self {
+            _gauges: (
+                count(
+                    "coral.run.waiting",
+                    "Program Runs accepted and not yet taken by a Run Executor",
+                    |queue| queue.waiting,
+                ),
+                age,
+                count(
+                    "coral.run.held",
+                    "Program Runs taken by a Run Executor and not yet ended, started or not",
+                    |queue| queue.held,
+                ),
+            ),
+            last,
+        }
+    }
+}
+
+/// Reports `queue` on the Run queue gauges until the next reading. `None`,
+/// a failed read, reports nothing: the queue is unknown, not empty. The
+/// gauges' callbacks read only this value, never the database.
+pub fn run_queue_read(queue: Option<RunQueue>) {
+    with(|catalog| {
+        *catalog
+            .run_queue
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = queue;
+    });
+}
+
+/// Counts one pull stream of a Run Executor of `kind` that this Coral
+/// Instance holds until the returned level drops.
+#[must_use = "the stream counts as linked until the level drops"]
+pub fn run_executor_linked(kind: RunExecutorKind) -> LevelGuard {
+    LevelGuard::start(Live::RunExecutor(kind))
 }
 
 /// Counts one Run stream loop live on this Coral Instance until the
@@ -1330,6 +1474,7 @@ impl Drop for Timer {
 enum Live {
     Run,
     SubAgentTurn,
+    RunExecutor(RunExecutorKind),
 }
 
 /// Counts one live thing on its gauge until it drops.
@@ -1343,17 +1488,18 @@ impl LevelGuard {
     fn start(live: Live) -> Self {
         let metrics = current();
         if let Some(metrics) = &metrics {
-            metrics.level(live).add(1);
+            metrics.add(live, 1);
         }
         Self { metrics, live }
     }
 }
 
 impl Metrics {
-    fn level(&self, live: Live) -> &Level {
+    fn add(&self, live: Live, delta: i64) {
         match live {
-            Live::Run => &self.0.run_active,
-            Live::SubAgentTurn => &self.0.sub_agent_turn_active,
+            Live::Run => self.0.run_active.add(delta),
+            Live::SubAgentTurn => self.0.sub_agent_turn_active.add(delta),
+            Live::RunExecutor(kind) => self.0.run_executor_linked.add(kind, delta),
         }
     }
 }
@@ -1361,7 +1507,7 @@ impl Metrics {
 impl Drop for LevelGuard {
     fn drop(&mut self) {
         if let Some(metrics) = &self.metrics {
-            metrics.level(self.live).add(-1);
+            metrics.add(self.live, -1);
         }
     }
 }

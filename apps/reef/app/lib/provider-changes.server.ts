@@ -13,7 +13,7 @@ import {
 import { authorizedWorkspace } from './workspace-route.server'
 import type { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
-import { countLabel } from '@/utils/count-label'
+import { countLabel } from '@/wax/utils/count-label'
 import type { ToolOutcome } from '@/views/providers/types'
 import { PROVIDER_ICON_MAX_BYTES, PROVIDER_ICON_RULE } from './provider-input-limits'
 

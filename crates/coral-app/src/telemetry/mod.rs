@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use coral_telemetry::metric::Metrics;
 use coral_telemetry::safe;
-use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter};
+use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter, PastSpanLayer};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{
     ExporterBuildError, LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter,
@@ -28,8 +28,8 @@ use tracing_subscriber::{EnvFilter, Registry};
 pub mod config;
 
 use crate::bootstrap::AppError;
-pub use config::TelemetryConfig;
 use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, TRACE_CONTEXT_FILTER};
+pub use config::{RunExecutorTelemetry, TelemetryConfig};
 /// Why an exporter that `[otel]` configures could not be built.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(transparent)]
@@ -95,12 +95,15 @@ fn normalize_otlp_endpoint(endpoint: &str, signal: &str) -> String {
     format!("{base}/v1/{signal}")
 }
 
+/// `[otel] headers`, `key=value` pairs. A pair with an empty key or value
+/// is left out, as the OTLP exporter leaves it out of
+/// `OTEL_EXPORTER_OTLP_HEADERS`, so a local child sends what Coral sends.
 fn parse_headers(raw: &str) -> HashMap<String, String> {
     raw.split(',')
         .filter_map(|pair| {
-            let pair = pair.trim();
             let (key, value) = pair.split_once('=')?;
-            Some((key.trim().to_string(), value.trim().to_string()))
+            let (key, value) = (key.trim(), value.trim());
+            (!key.is_empty() && !value.is_empty()).then(|| (key.to_owned(), value.to_owned()))
         })
         .collect()
 }
@@ -115,8 +118,8 @@ fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
 
 /// The process's resource: its service name and version, and as
 /// `service.instance.id` the id of the Coral Instance whose start initialized
-/// telemetry, so every exported span, log and metric names that Coral
-/// Instance.
+/// telemetry, or the Run Executor's id, so every exported span, log and
+/// metric names that process.
 fn telemetry_resource(service_name: &str, service_version: &str, instance_id: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(
@@ -375,6 +378,22 @@ pub(crate) fn init_tracing(
     .map_err(AppError::Telemetry)
 }
 
+/// Starts a Run Executor's telemetry: what a Coral server installs, with
+/// the Run Executor's id as `service.instance.id`. With no endpoint it
+/// records and logs nothing.
+///
+/// # Errors
+///
+/// Returns [`AppError::Telemetry`] if an exporter that the settings
+/// configure cannot be built.
+pub fn init_run_executor_telemetry(
+    settings: &RunExecutorTelemetry,
+    run_executor_id: &str,
+    service_version: &str,
+) -> Result<(), AppError> {
+    init_tracing(&settings.0, run_executor_id, service_version)
+}
+
 fn try_init_tracing(
     config: &TelemetryConfig,
     instance_id: &str,
@@ -404,6 +423,9 @@ fn try_init_tracing(
     }
     let (provider, otel_trace_layer, trace_filter_error) =
         trace_pipeline(config, &resource, metrics.as_ref())?;
+    // A Run's past spans, such as its wait in the queue, reach the same
+    // processors as every other span. Without an endpoint none would leave.
+    let past_spans = endpoint.map(|_| PastSpanLayer::new(provider.tracer("coral")));
     if let Ok(mut guard) = PROVIDER.lock() {
         *guard = Some(provider);
     }
@@ -417,6 +439,7 @@ fn try_init_tracing(
 
     if Registry::default()
         .with(otel_trace_layer)
+        .with(past_spans)
         .with(otel_log_layer)
         .with(metrics.as_ref().map(Metrics::layer))
         .try_init()
@@ -663,6 +686,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn headers_leave_out_a_pair_with_an_empty_key_or_value() {
+        let headers = super::parse_headers(" x-key = a , x-empty= ,=b,x-bare,x-eq=c=d");
+        let expected = [("x-key", "a"), ("x-eq", "c=d")]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()));
+        assert_eq!(headers, expected.into_iter().collect());
+    }
+
     /// The module of `tokenizers` that writes trace records for each
     /// character it normalizes.
     const DEPENDENCY_TARGET: &str = "tokenizers::tokenizer::normalizer";
@@ -695,6 +726,57 @@ mod tests {
         assert!(
             stdout.contains("1 passed"),
             "the child ran no test named {test}:\n{stdout}"
+        );
+    }
+
+    /// A Run's past span, recorded under the subscriber that Coral's
+    /// telemetry installs, leaves through the configured endpoint.
+    #[test]
+    fn a_past_span_leaves_through_the_configured_endpoint() {
+        in_child_process(
+            "telemetry::tests::a_past_span_leaves_through_the_configured_endpoint",
+            || {
+                use std::time::{Duration, SystemTime};
+
+                use wiremock::matchers::{method, path};
+                use wiremock::{Mock, MockServer, ResponseTemplate};
+
+                let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+                let collector = runtime.block_on(MockServer::start());
+                runtime.block_on(
+                    Mock::given(method("POST"))
+                        .and(path("/v1/traces"))
+                        .respond_with(ResponseTemplate::new(200))
+                        .mount(&collector),
+                );
+                let config = crate::bootstrap::telemetry(&format!(
+                    "[otel]\nendpoint = \"{}\"\n",
+                    collector.uri()
+                ))
+                .expect("telemetry config");
+                super::init_tracing(&config, "instance", "1.2.3+abc1234")
+                    .expect("telemetry starts");
+                let trace = coral_telemetry::RunTrace::parse(
+                    "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+                )
+                .expect("a stored Run Trace");
+                let start = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+                let end = start + Duration::from_secs(1);
+                trace.record_past("coral.run.queue", "coral_run::trace", &"run", start, end);
+                super::shutdown_tracing();
+
+                let received = runtime
+                    .block_on(collector.received_requests())
+                    .expect("the collector records requests");
+                let name = b"coral.run.queue";
+                assert!(
+                    received.iter().any(|request| {
+                        request.url.path() == "/v1/traces"
+                            && request.body.windows(name.len()).any(|bytes| bytes == name)
+                    }),
+                    "the past span did not reach the endpoint"
+                );
+            },
         );
     }
 

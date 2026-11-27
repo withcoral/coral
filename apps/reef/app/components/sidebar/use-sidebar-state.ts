@@ -20,15 +20,11 @@ export function useSidebarState(initialIsMinimized: boolean) {
     return readSidebarCollapsedCookiePreference(document.cookie) ?? initialIsMinimized
   })
 
-  // Only a toggle animates the width, so a page load shows the saved state at once.
-  const [hasToggled, setHasToggled] = useState(false)
-
   const toggleSidebar = () => {
     const next = !isMinimized
     saveSidebarState(next)
     setIsMinimized(next)
-    setHasToggled(true)
   }
 
-  return { isMinimized, toggleSidebar, hasToggled }
+  return { isMinimized, toggleSidebar }
 }

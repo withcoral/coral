@@ -27,7 +27,6 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::header::ACCEPT;
-use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -36,10 +35,10 @@ use tokio::time::Instant;
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::config::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
 use super::id_token::{
     TokenRejection, ValidatedOidcIdentity, validate_access_token_admission, validate_id_token,
 };
+use super::oidc_mode::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
 use super::sealed_handshake::HandshakeKeys;
 use coral_outbound::{Configured, Discovered, EndpointUrl, read_bounded_body};
 
@@ -78,18 +77,7 @@ const RESERVED_TOKEN_PARAMS: &[&str] = &[
 pub(super) struct OidcProviderClient {
     http: reqwest::Client,
     discovered_http: coral_outbound::Client,
-    random: SystemRandom,
     discovery: Arc<DiscoveryCache>,
-}
-
-/// An authorization URL and the `state` that names its login.
-///
-/// The nonce and PKCE verifier sent with it are derived from `state` with the
-/// handshake keys, so the callback recomputes them instead of anything
-/// holding them until it arrives.
-pub(super) struct OidcAuthorizationRequest {
-    pub(super) url: Url,
-    pub(super) state: String,
 }
 
 /// The result of redeeming an authorization code.
@@ -144,9 +132,6 @@ pub(super) enum OidcProviderClientError {
         "OIDC provider does not offer the client_secret_post token endpoint authentication method"
     )]
     UnsupportedTokenEndpointAuth,
-    /// The system random number generator failed.
-    #[error("failed to generate OIDC authorization parameters")]
-    Randomness,
     /// The token request failed, or its response was unusable.
     #[error("OIDC provider token exchange failed")]
     TokenExchange,
@@ -172,7 +157,6 @@ impl OidcProviderClientError {
             Self::IssuerMismatch { .. } => "issuer_mismatch",
             Self::InvalidEndpoint { .. } => "invalid_endpoint",
             Self::UnsupportedTokenEndpointAuth { .. } => "unsupported_token_endpoint_auth",
-            Self::Randomness { .. } => "randomness",
             Self::TokenExchange { .. } => "token_exchange",
             Self::Jwks { .. } => "jwks",
             Self::IdTokenValidation(rejection) => rejection.id_token_code(),
@@ -209,21 +193,22 @@ impl OidcProviderClient {
         Ok(Self {
             http,
             discovered_http,
-            random: SystemRandom::new(),
             discovery: Arc::new(DiscoveryCache::default()),
         })
     }
 
-    /// Builds the URL that starts a login, with the secrets it commits to.
+    /// Builds the URL that starts the login named `state`, with the secrets
+    /// it commits to. The nonce and the PKCE verifier are derived from
+    /// `state` with `keys`.
     pub(super) async fn authorization_request(
         &self,
         provider: &ResolvedOidcProvider,
         keys: &HandshakeKeys,
-    ) -> Result<OidcAuthorizationRequest, OidcProviderClientError> {
+        state: &str,
+    ) -> Result<Url, OidcProviderClientError> {
         let discovery = self.discover(provider).await?;
-        let state = self.random_url_token()?;
-        let nonce = keys.nonce(&state);
-        let code_verifier = keys.pkce_verifier(&state);
+        let nonce = keys.nonce(state);
+        let code_verifier = keys.pkce_verifier(state);
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         let mut url = discovery.authorization_endpoint.into_url();
         {
@@ -233,7 +218,7 @@ impl OidcProviderClient {
                 .append_pair("client_id", &provider.client_id)
                 .append_pair("redirect_uri", &provider.redirect_uri)
                 .append_pair("scope", &provider.scopes.join(" "))
-                .append_pair("state", &state)
+                .append_pair("state", state)
                 .append_pair("nonce", &nonce)
                 .append_pair("code_challenge", &code_challenge)
                 .append_pair("code_challenge_method", "S256");
@@ -241,7 +226,7 @@ impl OidcProviderClient {
                 query.append_pair(key, value);
             }
         }
-        Ok(OidcAuthorizationRequest { url, state })
+        Ok(url)
     }
 
     /// Redeems an authorization code for an ID token.
@@ -299,15 +284,14 @@ impl OidcProviderClient {
     ///
     /// It reads `clock` once, after the provider's keys arrive: the provider
     /// issued the tokens during the sign-in, so an instant read before its
-    /// answers would date them in the future. The instant comes back with
-    /// the identity, to date what the sign-in decides next.
+    /// answers would date them in the future.
     pub(super) async fn validate_code_exchange(
         &self,
         provider: &ResolvedOidcProvider,
         exchange: OidcCodeExchange,
         expected_nonce: &str,
         clock: &dyn coral_db::Clock,
-    ) -> Result<(ValidatedOidcIdentity, coral_db::UnixNanos), OidcProviderClientError> {
+    ) -> Result<ValidatedOidcIdentity, OidcProviderClientError> {
         let OidcCodeExchange {
             id_token,
             access_token,
@@ -348,7 +332,7 @@ impl OidcProviderClient {
             now,
         )
         .map_err(OidcProviderClientError::AccessTokenAdmission)?;
-        Ok((identity, now))
+        Ok(identity)
     }
 
     /// Returns the provider's validated discovery document, reusing a cached
@@ -441,15 +425,6 @@ impl OidcProviderClient {
             jwks_uri: discovered_endpoint(DiscoveredEndpoint::Jwks, &document.jwks_uri, &issuer)?,
             signing_algorithms: document.id_token_signing_alg_values_supported,
         })
-    }
-
-    /// Returns a fresh URL-safe 256-bit token.
-    fn random_url_token(&self) -> Result<String, OidcProviderClientError> {
-        let mut bytes = Zeroizing::new([0_u8; 32]);
-        self.random
-            .fill(&mut *bytes)
-            .map_err(|_error| OidcProviderClientError::Randomness)?;
-        Ok(URL_SAFE_NO_PAD.encode(bytes.as_slice()))
     }
 }
 
@@ -855,16 +830,16 @@ mod tests {
             valid_document(&server, &issuer).to_string(),
         )
         .await;
-        let request = OidcProviderClient::new(loopback_policy())
+        let state = "sign-in-state";
+        let url = OidcProviderClient::new(loopback_policy())
             .expect("client")
-            .authorization_request(&provider(&issuer), &keys())
+            .authorization_request(&provider(&issuer), &keys(), state)
             .await
             .expect("authorization request");
-        let state = request.state.as_str();
         let nonce = keys().nonce(state);
         let code_verifier = keys().pkce_verifier(state);
         let (nonce, code_verifier) = (nonce.as_str(), code_verifier.as_str());
-        for value in [state, nonce, code_verifier] {
+        for value in [nonce, code_verifier] {
             assert_eq!(value.len(), 43);
             assert!(
                 value
@@ -875,11 +850,7 @@ mod tests {
         assert_ne!(state, nonce);
         assert_ne!(nonce, code_verifier);
         assert_ne!(state, code_verifier);
-        let query = request
-            .url
-            .query_pairs()
-            .into_owned()
-            .collect::<BTreeMap<_, _>>();
+        let query = url.query_pairs().into_owned().collect::<BTreeMap<_, _>>();
         for (key, expected) in [
             ("tenant", "one"),
             ("response_type", "code"),
@@ -891,7 +862,7 @@ mod tests {
         ] {
             assert_eq!(query.get(key).map(String::as_str), Some(expected));
         }
-        assert_eq!(query.get("state"), Some(&request.state));
+        assert_eq!(query.get("state").map(String::as_str), Some(state));
         assert_eq!(query.get("nonce").map(String::as_str), Some(nonce));
         let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         assert_eq!(query.get("code_challenge"), Some(&expected));
@@ -951,7 +922,7 @@ mod tests {
 
         for _ in 0..3 {
             client
-                .authorization_request(&provider, &keys())
+                .authorization_request(&provider, &keys(), "state")
                 .await
                 .expect("authorization request");
         }
@@ -988,7 +959,10 @@ mod tests {
             .await;
         let client = OidcProviderClient::new(loopback_policy()).expect("client");
         let provider = provider(&issuer);
-        let Err(error) = client.authorization_request(&provider, &keys()).await else {
+        let Err(error) = client
+            .authorization_request(&provider, &keys(), "state")
+            .await
+        else {
             panic!("expected the provider outage to fail discovery");
         };
         assert_eq!(error, OidcProviderClientError::Discovery);
@@ -996,7 +970,7 @@ mod tests {
         server.reset().await;
         mount_valid_discovery(&server, &issuer).await;
         client
-            .authorization_request(&provider, &keys())
+            .authorization_request(&provider, &keys(), "state")
             .await
             .expect("recovers without waiting out a TTL");
     }
@@ -1021,7 +995,7 @@ mod tests {
         client: &OidcProviderClient,
         provider: &ResolvedOidcProvider,
         count: usize,
-    ) -> Vec<Result<OidcAuthorizationRequest, OidcProviderClientError>> {
+    ) -> Vec<Result<Url, OidcProviderClientError>> {
         let barrier = Arc::new(Barrier::new(count));
         let requests = (0..count)
             .map(|_index| {
@@ -1030,7 +1004,9 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 tokio::spawn(async move {
                     barrier.wait().await;
-                    client.authorization_request(&provider, &keys()).await
+                    client
+                        .authorization_request(&provider, &keys(), "state")
+                        .await
                 })
             })
             .collect::<Vec<_>>();
@@ -1096,7 +1072,11 @@ mod tests {
         let request = || {
             let client = client.clone();
             let provider = provider.clone();
-            tokio::spawn(async move { client.authorization_request(&provider, &keys()).await })
+            tokio::spawn(async move {
+                client
+                    .authorization_request(&provider, &keys(), "state")
+                    .await
+            })
         };
 
         let lead = request();
@@ -1186,10 +1166,10 @@ mod tests {
             OidcProviderClient::new(coral_outbound::DestinationPolicy::default()).expect("client");
         let provider = provider(&issuer);
         let navigation = client
-            .authorization_request(&provider, &keys())
+            .authorization_request(&provider, &keys(), "state")
             .await
             .expect("navigation");
-        assert_eq!(navigation.url.host_str(), Some("10.0.0.8"));
+        assert_eq!(navigation.host_str(), Some("10.0.0.8"));
         assert_eq!(
             client
                 .exchange_code(&provider, "code", "verifier")
@@ -1459,8 +1439,7 @@ mod tests {
         let identity = client
             .validate_code_exchange(&provider, exchange, "expected-nonce", &clock())
             .await
-            .expect("identity")
-            .0;
+            .expect("identity");
         assert_eq!(identity.subject, "subject");
         assert_eq!(identity.display_name.as_deref(), Some("User"));
         // With the keys fetched, a refused token names its check, not the fetch.

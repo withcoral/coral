@@ -6,15 +6,14 @@ use opentelemetry_sdk::logs::{
     InMemoryLogExporter, LogExporter, LoggerProviderBuilder, SdkLoggerProvider, SimpleLogProcessor,
 };
 use opentelemetry_sdk::trace::{
-    InMemorySpanExporter, SdkTracer, SdkTracerProvider, SimpleSpanProcessor, SpanData,
+    InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor, SpanData,
 };
-use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::{OtlpLogFilter, OtlpSpanFilter};
+use crate::{OtlpLogFilter, OtlpSpanFilter, PastSpanLayer};
 
 /// Records every finished span in memory.
 ///
@@ -76,15 +75,39 @@ impl SpanCapture {
         tracing_subscriber::Registry::default().with(self.layer())
     }
 
-    /// A layer that gives every span it sees trace context and captures it.
+    /// A layer that gives every span it sees trace context and captures it,
+    /// with the spans [`crate::RunTrace::record_past`] records.
     #[must_use]
-    pub fn layer<S>(&self) -> OpenTelemetryLayer<S, SdkTracer>
+    pub fn layer<S>(&self) -> impl Layer<S> + use<S>
     where
         S: tracing::Subscriber + for<'span> LookupSpan<'span>,
     {
+        let tracer = self.provider.tracer("coral-test");
         tracing_opentelemetry::layer()
-            .with_tracer(self.provider.tracer("coral-test"))
+            .with_tracer(tracer.clone())
             .with_level(true)
+            .and_then(PastSpanLayer::new(tracer))
+    }
+
+    /// Every span that has finished once the span named `name` has. A span
+    /// ends when the last task that carries it does, which can be a moment
+    /// after the work it covers returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no span named `name` finishes within 60 s, the bound
+    /// `coral_test_support::EVENTUALLY` gives, which this crate cannot
+    /// name: only a broken test waits that long.
+    pub async fn finished_with(&self, name: &str) -> Vec<SpanData> {
+        const STEP: std::time::Duration = std::time::Duration::from_millis(5);
+        for _ in 0..12_000 {
+            let spans = self.finished();
+            if spans.iter().any(|span| span.name == name) {
+                return spans;
+            }
+            tokio::time::sleep(STEP).await;
+        }
+        panic!("no span {name} finished within 60 s");
     }
 
     /// Every span that has finished so far.
@@ -216,6 +239,16 @@ impl ExportCapture {
             .map(|record| format!("{record:?}"))
             .collect()
     }
+}
+
+/// The spans of `spans` named `name` whose parent is `parent`.
+#[must_use]
+pub fn children<'a>(spans: &'a [SpanData], parent: &SpanData, name: &str) -> Vec<&'a SpanData> {
+    let parent = parent.span_context.span_id();
+    spans
+        .iter()
+        .filter(|span| span.name == name && span.parent_span_id == parent)
+        .collect()
 }
 
 /// The value of `span`'s attribute `key`, as text.

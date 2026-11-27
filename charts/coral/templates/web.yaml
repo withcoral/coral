@@ -1,0 +1,175 @@
+{{- $fullname := include "coral.fullname" . -}}
+{{- include "coral.checkExtraEnv" (list "web.extraEnv" .Values.web.extraEnv (list "PORT" "CORAL_ENDPOINT" "CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT" "CORAL_WEB_AUTH_MODE" "CORAL_WEB_PUBLIC_URL" "CORAL_WEB_AUTH_ISSUER" "AGENTS_WITH_AVAILABLE_PLUGINS" "CORAL_WEB_SESSION_SECRET" "NODE_EXTRA_CA_CERTS")) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-web
+  labels:
+    {{- include "coral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "coral.selectorLabels" (list . "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "coral.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+      annotations:
+        # A new annotation, such as an IRSA role, reaches only new pods.
+        checksum/serviceaccount: {{ toYaml .Values.web.serviceAccount.annotations | sha256sum }}
+        {{- if .Values.web.envoy.enabled }}
+        checksum/envoy: {{ include "coral.envoyConfig" . | sha256sum }}
+        {{- end }}
+        {{- with .Values.web.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $fullname }}-web
+      automountServiceAccountToken: false
+      {{- with include "coral.placement" (list $ .Values.web) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.web.envoy.enabled }}
+      initContainers:
+        # A native sidecar: it starts, and passes its startup probe, before
+        # coral-web starts, and stops after coral-web stops.
+        - name: envoy
+          image: {{ include "coral.image" (list . .Values.web.envoy.image) }}
+          imagePullPolicy: {{ .Values.web.envoy.image.pullPolicy }}
+          restartPolicy: Always
+          args:
+            - --config-path
+            - /etc/envoy/envoy.yaml
+            - --disable-hot-restart
+          ports:
+            - name: envoy-health
+              containerPort: {{ include "coral.port.envoyHealth" . }}
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: envoy-health
+            periodSeconds: 1
+            failureThreshold: 30
+          # No liveness probe: any pod in the cluster can reach the health
+          # port, and a flood there must not restart Envoy and drop every
+          # stream. Kubernetes restarts the sidecar if it exits.
+          resources:
+            {{- toYaml .Values.web.envoy.resources | nindent 12 }}
+          securityContext:
+            {{- include "coral.containerSecurityContext" . | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ include "coral.image" (list . .Values.web.image) }}
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ include "coral.port.web" . }}
+          env:
+            - name: PORT
+              value: {{ include "coral.port.web" . | quote }}
+            - name: CORAL_ENDPOINT
+              {{- if .Values.web.envoy.enabled }}
+              value: http://127.0.0.1:{{ include "coral.port.envoy" . }}
+              {{- else }}
+              value: http://{{ $fullname }}:{{ include "coral.port.grpc" . }}
+              {{- end }}
+            # coral's gRPC listener is plaintext, on the cluster network only.
+            - name: CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT
+              value: "1"
+            - name: CORAL_WEB_AUTH_MODE
+              value: required
+            - name: CORAL_WEB_PUBLIC_URL
+              value: https://{{ .Values.host }}
+            - name: CORAL_WEB_AUTH_ISSUER
+              value: https://{{ include "coral.host.auth" . }}
+            {{- with .Values.web.agentsWithAvailablePlugins }}
+            - name: AGENTS_WITH_AVAILABLE_PLUGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- include "coral.secretEnv" (list . "CORAL_WEB_SESSION_SECRET" "secrets.webSessionSecret" .Values.secrets.webSessionSecret) | nindent 12 }}
+            {{- if .Values.tls.extraCABundle.key }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/coral/extra-ca/ca.crt
+            {{- end }}
+            {{- with .Values.web.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.web.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.tls.extraCABundle.key .Values.web.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.tls.extraCABundle.key }}
+            - name: extra-ca
+              mountPath: /etc/coral/extra-ca
+              readOnly: true
+            {{- end }}
+            {{- with .Values.web.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            {{- include "coral.probeTimings" .Values.web.probes.readiness | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- include "coral.probeTimings" .Values.web.probes.liveness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          securityContext:
+            {{- include "coral.containerSecurityContext" . | nindent 12 }}
+      {{- if or .Values.web.envoy.enabled .Values.tls.extraCABundle.key .Values.web.extraVolumes }}
+      volumes:
+        {{- if .Values.web.envoy.enabled }}
+        - name: envoy-config
+          configMap:
+            name: {{ $fullname }}-envoy
+        {{- end }}
+        {{- include "coral.caBundleVolume" (list "tls.extraCABundle" .Values.tls.extraCABundle "extra-ca") | nindent 8 }}
+        {{- with .Values.web.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+---
+# The UI, for your routing to https://<host>.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-web
+  labels:
+    {{- include "coral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "coral.selectorLabels" (list . "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ include "coral.port.web" . }}
+      targetPort: http

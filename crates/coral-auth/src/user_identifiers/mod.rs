@@ -4,21 +4,11 @@
 //! The Coral User ID is the key of a User, and each identifier is a row that
 //! points at it. One identifier belongs to at most one User, and a User holds
 //! at most one of each kind. An identifier finds its User and grants no
-//! authority.
-//!
-//! No sign-in reads or writes the store yet: the upgrade copies each Subject
-//! into it, and a User made after the upgrade has no row.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the sign-in reads and writes the store in the next change"
-    )
-)]
+//! authority. Every sign-in finds its User here.
 
-mod repository;
+pub(crate) mod repository;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use coral_db::{QueryExecutor, Transaction, UnixNanos};
 
@@ -27,7 +17,7 @@ use crate::{Error, UserId};
 /// The kind of a [`UserIdentifier`]: the channel in which the Identity
 /// Provider uses that name for a person.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum UserIdentifierKind {
+pub enum UserIdentifierKind {
     /// The `sub` of an OIDC sign-in.
     Subject,
     /// The value of a `NameID`: the name of a person at a sign-in that has no
@@ -38,23 +28,27 @@ pub(crate) enum UserIdentifierKind {
 /// One name that the Identity Provider uses for a User. The value is compared
 /// by its bytes: no change of case, no trimming and no Unicode normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UserIdentifier<'a> {
+pub struct UserIdentifier<'a> {
     kind: UserIdentifierKind,
     value: &'a str,
 }
 
 impl<'a> UserIdentifier<'a> {
     /// Names `value` as an identifier of `kind`.
-    pub(crate) const fn new(kind: UserIdentifierKind, value: &'a str) -> Self {
+    #[must_use]
+    pub const fn new(kind: UserIdentifierKind, value: &'a str) -> Self {
         Self { kind, value }
     }
 
-    pub(crate) const fn kind(self) -> UserIdentifierKind {
+    /// The channel of the identifier.
+    #[must_use]
+    pub const fn kind(self) -> UserIdentifierKind {
         self.kind
     }
 
     /// The value, as the Identity Provider sent it.
-    pub(crate) const fn value(self) -> &'a str {
+    #[must_use]
+    pub const fn value(self) -> &'a str {
         self.value
     }
 }

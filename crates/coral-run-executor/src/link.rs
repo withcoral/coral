@@ -81,6 +81,9 @@ const READINESS_SERVICE: &str = "coral.readiness";
 /// What a Run Executor needs to hold its link.
 #[derive(Debug)]
 pub struct RunExecutorConfig {
+    /// Its id, a random UUID at each start: its Hello and its own
+    /// telemetry name it.
+    pub run_executor_id: uuid::Uuid,
     /// Coral's one address.
     pub coral_address: CoralAddress,
     /// The credential every call carries.
@@ -395,7 +398,7 @@ impl Link {
             .http2_keep_alive_interval(KEEPALIVE)
             .keep_alive_timeout(KEEPALIVE);
         let hello = Hello {
-            run_executor_id: uuid::Uuid::new_v4().to_string(),
+            run_executor_id: config.run_executor_id.to_string(),
             protocol_level: PROTOCOL_LEVEL,
             free: config.max_runs_held,
             limits: Some(Limits {

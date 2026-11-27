@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: airspeed
+display_name: Airspeed
+description: Calls, snippets, playbooks and forecasts from Airspeed.
+icons:
+  light: logo.svg
+
+# Airspeed was called Glyphic until May 2026, and its API still lives on
+# glyphic.ai. The document's only server is https://api.glyphic.ai, so the
+# Recipe needs no inputs or servers.
+source:
+  openapi:
+    url: https://api.glyphic.ai/openapi.json
+
+authentication:
+  options:
+    api_key:
+      # Airspeed's API has no OAuth. You request API access from
+      # Airspeed sales. A key reads every call in the organization that is not
+      # private; Airspeed has no per-user or per-team key.
+      method: header_credentials
+      label: Paste an API key
+      description: Create an API key in the API settings of your Airspeed organization.
+      documentation_url: https://docs.goairspeed.com/articles/5968211715-managing-api-keys
+      fields:
+        api_key:
+          label: API key
+      headers:
+        x-api-key:
+          field: api_key

@@ -1,0 +1,38 @@
+{{- if .Values.ingress.enabled -}}
+{{- $routes := include "coral.routes" . | fromYamlArray -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "coral.fullname" . }}
+  labels:
+    {{- include "coral.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls.secretName }}
+  tls:
+    - secretName: {{ . | quote }}
+      hosts:
+        {{- range $routes }}
+        - {{ .host | quote }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range $routes }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .service | quote }}
+                port:
+                  number: {{ .port }}
+    {{- end }}
+{{- end }}

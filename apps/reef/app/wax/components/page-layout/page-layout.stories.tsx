@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect, within } from 'storybook/test'
 
-import { resizeViewport } from '../../../../.storybook/browser'
+import { resizeViewport } from '@/wax/storybook/browser'
 
 import { Banner, Button, Typography } from '@/wax/components'
 import { Brand } from '@/wax/components/brand'

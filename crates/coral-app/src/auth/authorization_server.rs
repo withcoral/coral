@@ -6,14 +6,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
-use super::provider_client::OidcProviderClient;
+use super::query;
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::handler::Handler as _;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -21,6 +21,7 @@ use axum::serve::ListenerExt as _;
 use coral_auth::authorization_codes::AuthorizationCodes;
 use coral_auth::oauth_clients::OAuthClients;
 use coral_auth::{SessionTokenIssuer, UserDirectory};
+use coral_sign_in::{ModeMethod, ModeName};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -32,7 +33,6 @@ mod client_authentication;
 mod client_metadata;
 mod cookies;
 mod provider_callback;
-mod query;
 mod registration;
 mod response;
 mod revoke;
@@ -232,11 +232,12 @@ impl CoralAuthorizationServer {
     /// reverse proxy that forwards at the origin root. Every endpoint is served
     /// and advertised relative to `listeners.auth.public_url`, which must
     /// mount at the root, so a proxy that adds a path prefix strands discovery,
-    /// the authorize route, and the OIDC callback.
+    /// the authorize route, and the sign-in mode's URLs.
     /// # Errors
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
+        let sign_in_mode = self.settings.sign_in_mode(self.outbound_policy)?;
         let state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
@@ -244,6 +245,7 @@ impl CoralAuthorizationServer {
             self.workspace_resource_family,
             self.database,
             self.outbound_policy,
+            sign_in_mode,
             self.providers,
             self.clock,
         )?;
@@ -262,7 +264,7 @@ impl CoralAuthorizationServer {
 }
 
 fn auth_router(state: AuthorizationServerHttpState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
             get(authorization_server_metadata),
@@ -277,12 +279,22 @@ fn auth_router(state: AuthorizationServerHttpState) -> Router {
         .route("/oauth/session/token", post(web_session::token))
         .route("/oauth/session/end", post(web_session::end))
         .route("/oauth/register", post(registration::register))
-        .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
         .route(
             workspace_choice::WORKSPACE_CHOICE_PATH,
             post(workspace_choice::oauth_workspace_post),
-        )
-        .with_state(state)
+        );
+    // One path can take a GET and a POST.
+    let router = state
+        .sign_in_routes
+        .iter()
+        .fold(router, |router, (path, method)| match *method {
+            ModeMethod::Get => router.route(path, get(callback::mode_get)),
+            ModeMethod::Post { body_limit } => router.route(
+                path,
+                post(callback::mode_post.layer(DefaultBodyLimit::max(body_limit))),
+            ),
+        });
+    router.with_state(state)
 }
 
 fn health_routes(router: Router, readiness: Option<crate::ListenerReadiness>) -> Router {
@@ -404,12 +416,17 @@ struct AuthorizationServerHttpState {
     codes: AuthorizationCodes,
     /// Redeems codes and refresh tokens into access tokens.
     tokens: coral_auth::user_tokens::UserTokens,
-    provider_client: OidcProviderClient,
+    /// Begins each sign-in and proves its person.
+    sign_in_mode: Arc<dyn coral_sign_in::SignInMode>,
+    /// The path and method of each of the sign-in mode's URLs, read once
+    /// and checked.
+    sign_in_routes: Arc<[(String, ModeMethod)]>,
     authorization_resources: Arc<BTreeSet<String>>,
     workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
     clients: OAuthClients,
-    /// Domain Module that provisions stable User identities after OIDC validation.
+    /// Domain Module that provisions stable User identities for the people
+    /// the sign-in mode proves.
     user_directory: UserDirectory,
     /// The Workspaces a User can pick when they sign in at the Organization
     /// MCP Endpoint.
@@ -436,9 +453,21 @@ impl AuthorizationServerHttpState {
         workspace_resource_family: Option<WorkspaceMcpUrls>,
         database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
+        (sign_in_name, sign_in_mode): (ModeName, Arc<dyn coral_sign_in::SignInMode>),
         providers: Option<coral_provider::ProviderModule>,
         clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
+        let urls = sign_in_mode.urls();
+        coral_sign_in::ModeUrl::check_all(&urls).map_err(|error| {
+            AuthServerError::Config(format!(
+                "sign-in mode `{}` cannot serve its URLs: {error}",
+                sign_in_name.as_str()
+            ))
+        })?;
+        let sign_in_routes = urls
+            .into_iter()
+            .map(|url| (url.path(sign_in_name), url.method()))
+            .collect();
         // Preserve local MCP client-ID derivation, but never treat an HTTPS
         // MCP base as an operator-registered Reef metadata destination. Only
         // the explicit Reef resource registry can grant private HTTPS fetching.
@@ -470,10 +499,7 @@ impl AuthorizationServerHttpState {
         // Registered clients resolve from the database; every other client ID
         // falls through to its metadata document.
         let clients = OAuthClients::new(database.clone(), Arc::new(client_metadata_resolver));
-        let mut user_directory = UserDirectory::new(database.clone());
-        if let Some((issuer, subject)) = settings.bootstrap_owner() {
-            user_directory = user_directory.with_bootstrap_owner(issuer, subject);
-        }
+        let user_directory = user_directory(database.clone(), sign_in_mode.as_ref());
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         let organization = coral_workspace::OrganizationModule::new(database.clone());
         let tokens = coral_auth::user_tokens::UserTokens::new(database.clone(), session_tokens)
@@ -482,8 +508,8 @@ impl AuthorizationServerHttpState {
             settings,
             codes: AuthorizationCodes::new(database),
             tokens,
-            provider_client: OidcProviderClient::new(outbound_policy)
-                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+            sign_in_mode,
+            sign_in_routes,
             authorization_resources,
             workspace_resource_family: workspace_resource_family.map(Arc::new),
             client_metadata_resolver: Arc::new(clients.clone()),
@@ -525,6 +551,12 @@ impl AuthorizationServerHttpState {
             .issuer()
             .starts_with("https://")
     }
+
+    /// The attributes of every sign-in cookie: this server's, with the
+    /// sign-in mode's `SameSite`.
+    pub(super) fn sign_in_cookie_attributes(&self) -> sign_in_cookie::Attributes {
+        sign_in_cookie::Attributes::new(self.secure_cookies(), self.sign_in_mode.same_site())
+    }
 }
 
 /// What an acceptable authorization resource names on this server.
@@ -544,6 +576,26 @@ impl AuthorizationResource {
     }
 }
 
+/// The User directory, with the first Owner that `mode` names.
+fn user_directory(
+    database: Arc<coral_db::Database>,
+    mode: &dyn coral_sign_in::SignInMode,
+) -> UserDirectory {
+    let directory = UserDirectory::new(database);
+    let Some(person) = mode.first_owner() else {
+        return directory;
+    };
+    let (kind, value) = match person {
+        coral_sign_in::PersonIdentifier::Subject { subject, .. } => {
+            (coral_auth::UserIdentifierKind::Subject, subject)
+        }
+        coral_sign_in::PersonIdentifier::NameId(value) => {
+            (coral_auth::UserIdentifierKind::NameId, value)
+        }
+    };
+    directory.with_bootstrap_owner(coral_auth::UserIdentifier::new(kind, value))
+}
+
 /// Handler state for the route tests in this module's children.
 #[cfg(test)]
 mod test_state {
@@ -552,7 +604,9 @@ mod test_state {
     use coral_test_support::TestDatabase;
 
     use super::AuthorizationServerHttpState;
-    use crate::auth::test_config::{loopback_policy, resolved_settings};
+    use crate::auth::test_config::{
+        loopback_policy, resolved_settings, resolved_test_mode_settings,
+    };
 
     /// The public URL client `client_id`, authenticated as a token request
     /// that presents no credential authenticates it.
@@ -604,6 +658,66 @@ mod test_state {
         resources: &[&str],
     ) -> AuthorizationServerHttpState {
         let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
+        let mode = settings
+            .sign_in_mode(loopback_policy())
+            .expect("OIDC sign-in");
+        state_over(database, settings, session_tokens, resources, mode)
+    }
+
+    /// [`http_state`] with `mode` as the sign-in mode, named `test`.
+    pub(super) fn http_state_with_mode(
+        database: &TestDatabase,
+        provider_issuer: &str,
+        extra: &str,
+        resources: &[&str],
+        mode: Arc<dyn coral_sign_in::SignInMode>,
+    ) -> AuthorizationServerHttpState {
+        let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
+        let name = coral_sign_in::ModeName::new("test").expect("a mode's name");
+        state_over(database, settings, session_tokens, resources, (name, mode))
+    }
+
+    /// The production state over `database` for a build that registers
+    /// `coral-sign-in`'s test mode and a config that selects it, with
+    /// `settings` beside its `sign_in_url` and `extra` as for
+    /// [`http_state`].
+    pub(super) fn test_mode_state(
+        database: &TestDatabase,
+        settings: &str,
+        extra: &str,
+        resources: &[&str],
+    ) -> AuthorizationServerHttpState {
+        let (settings, session_tokens) = resolved_test_mode_settings(settings, extra);
+        let mode = settings
+            .sign_in_mode(loopback_policy())
+            .expect("the test mode");
+        state_over(database, settings, session_tokens, resources, mode)
+    }
+
+    /// A browser that follows no redirect.
+    pub(super) fn browser() -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client")
+    }
+
+    /// Serves `state` on a loopback port, as the server does.
+    pub(super) async fn serve(
+        state: AuthorizationServerHttpState,
+    ) -> super::RunningCoralAuthorizationServer {
+        super::start_listener(state.settings.bind_addr(), super::auth_router(state))
+            .await
+            .expect("the listener starts")
+    }
+
+    fn state_over(
+        database: &TestDatabase,
+        settings: super::ResolvedAuthSettings,
+        session_tokens: coral_auth::SessionTokenIssuer,
+        resources: &[&str],
+        mode: (coral_sign_in::ModeName, Arc<dyn coral_sign_in::SignInMode>),
+    ) -> AuthorizationServerHttpState {
         AuthorizationServerHttpState::new(
             Arc::new(settings),
             session_tokens,
@@ -616,6 +730,7 @@ mod test_state {
             None,
             database.database(),
             loopback_policy(),
+            mode,
             Some(coral_provider::ProviderModule::new(
                 loopback_policy(),
                 database.database(),
@@ -626,6 +741,55 @@ mod test_state {
             Arc::new(coral_db::SystemClock),
         )
         .expect("authorization server state")
+    }
+
+    /// `coral-sign-in`'s test mode at `https://idp.example.test/start`,
+    /// with `settings` beside it.
+    pub(super) fn test_mode(settings: &str) -> Arc<dyn coral_sign_in::SignInMode> {
+        coral_sign_in::testing::mode(&format!(
+            "sign_in_url = 'https://idp.example.test/start'\n{settings}"
+        ))
+    }
+
+    /// A mode that names the sign-in whose value is the whole query, and
+    /// refuses the begin, the check and a sign-in with no cookie with its
+    /// refusal.
+    pub(super) struct Refusing(pub(super) coral_sign_in::Refusal);
+
+    #[async_trait::async_trait]
+    impl coral_sign_in::SignInMode for Refusing {
+        fn urls(&self) -> Vec<coral_sign_in::ModeUrl> {
+            Vec::new()
+        }
+
+        async fn begin(
+            &self,
+            _sign_in: &coral_sign_in::SignInValue,
+            _now: coral_db::UnixNanos,
+        ) -> Result<url::Url, coral_sign_in::Refusal> {
+            Err(self.0.clone())
+        }
+
+        fn names(
+            &self,
+            request: &coral_sign_in::ModeRequest<'_>,
+            _now: coral_db::UnixNanos,
+        ) -> coral_sign_in::Named {
+            coral_sign_in::Named::SignIn(coral_sign_in::SignInValue::new(request.query.to_owned()))
+        }
+
+        fn no_sign_in_cookie(&self, _now: coral_db::UnixNanos) -> coral_sign_in::Refusal {
+            self.0.clone()
+        }
+
+        async fn check(
+            &self,
+            _request: &coral_sign_in::ModeRequest<'_>,
+            _sign_in: &coral_sign_in::SignInValue,
+            _clock: &dyn coral_db::Clock,
+        ) -> Result<coral_sign_in::ProvenPerson, coral_sign_in::Refusal> {
+            Err(self.0.clone())
+        }
     }
 }
 
@@ -795,6 +959,10 @@ mod tests {
             .expect("register the exact extra")
             .with_workspace_resource_family(WorkspaceMcpUrls::new(base).expect("Workspace URLs"));
 
+        let sign_in_mode = prepared
+            .settings
+            .sign_in_mode(prepared.outbound_policy)
+            .expect("OIDC sign-in");
         let state = super::AuthorizationServerHttpState::new(
             prepared.settings,
             prepared.session_tokens,
@@ -802,6 +970,7 @@ mod tests {
             prepared.workspace_resource_family,
             prepared.database,
             prepared.outbound_policy,
+            sign_in_mode,
             None,
             prepared.clock,
         )
@@ -998,10 +1167,7 @@ mod tests {
             .start()
             .await
             .unwrap();
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
+        let client = super::test_state::browser();
         let endpoint = format!("{}/oauth/register", running.endpoint_uri());
         for (body, content_type, code) in [
             ("{".to_string(), "application/json", "invalid_client_metadata"),

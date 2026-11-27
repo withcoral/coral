@@ -10,7 +10,6 @@ import {
 import type { Route } from './+types/app-shell'
 import { requestAuthContext } from '@/auth/server-context'
 import type { BrowserAuth, RequestAuth } from '@/auth/types'
-import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
@@ -22,13 +21,12 @@ import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { ShellFormContext } from '@/views/management/forms'
 import { ToastContainer } from '@/wax/components/toast'
 import { BreadcrumbRoot } from '@/wax/components/breadcrumbs/breadcrumbs'
-import { NavigationRoot } from '@/wax/components/navigation-frame/navigation-frame'
+import { AppFrame } from '@/wax/components/app-frame'
 import { formContext, management, managementFailure, privateHeaders } from '@/lib/management.server'
 import { sidebarWorkspaceView } from '@/lib/management-views.server'
 import { toolGroupAddress } from '@/views/tools/addresses'
 import type { SidebarWorkspace } from '@/components/sidebar/sidebar'
 import type { handle as settingsHandle } from './settings'
-import * as styles from './app-shell.css'
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
@@ -117,8 +115,8 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
     <LocalDeploymentContext value={loaderData.auth.mode === 'disabled'}>
       <EditionContext value={loaderData.edition}>
         <ShellFormContext value={loaderData.form}>
-          <NavigationRoot>
-            <div className={styles.layout}>
+          <AppFrame
+            navigation={
               <Sidebar
                 actionCounts={actionSignal.counts}
                 auth={loaderData.auth}
@@ -132,28 +130,27 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
                 workspace={workspace}
                 form={loaderData.form}
               />
-              <ContentContainer>
-                <ToastContainer />
-                {/* Every page in a workspace names it first in its breadcrumb. */}
-                <BreadcrumbRoot
-                  value={
-                    workspace
-                      ? {
-                          id: 'workspace',
-                          type: 'link',
-                          text: workspace.displayName,
-                          to: workspace.path,
-                        }
-                      : null
-                  }
-                >
-                  <ActionSignalContext value={actionSignal}>
-                    <Outlet />
-                  </ActionSignalContext>
-                </BreadcrumbRoot>
-              </ContentContainer>
-            </div>
-          </NavigationRoot>
+            }
+          >
+            <ToastContainer />
+            {/* Every page in a workspace names it first in its breadcrumb. */}
+            <BreadcrumbRoot
+              value={
+                workspace
+                  ? {
+                      id: 'workspace',
+                      type: 'link',
+                      text: workspace.displayName,
+                      to: workspace.path,
+                    }
+                  : null
+              }
+            >
+              <ActionSignalContext value={actionSignal}>
+                <Outlet />
+              </ActionSignalContext>
+            </BreadcrumbRoot>
+          </AppFrame>
         </ShellFormContext>
       </EditionContext>
     </LocalDeploymentContext>

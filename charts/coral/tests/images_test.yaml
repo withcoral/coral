@@ -1,0 +1,76 @@
+suite: images
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+  - templates/web.yaml
+  - templates/run-executor.yaml
+tests:
+  - it: pulls every image from the mirror that global.imageRegistry names
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    set:
+      global.imageRegistry: registry.internal:5000
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[*].image
+          pattern: ^registry\.internal:5000/withcoral/coral(-web)?:[^:@/]+$
+
+  - it: pulls each image from its own repository and tag
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      coral.image.registry: registry.internal
+      coral.image.repository: mirror/coral
+      coral.image.tag: 1.10.0-patched
+      web.image.registry: registry.internal
+      web.image.repository: mirror/coral-web
+      web.image.tag: 1.10.0-web
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/mirror/coral:1.10.0-patched
+        template: templates/coral.yaml
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/mirror/coral:1.10.0-patched
+        template: templates/run-executor.yaml
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/mirror/coral-web:1.10.0-web
+        template: templates/web.yaml
+
+  - it: pulls by digest when an image sets both a tag and a digest
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    set:
+      global.imageRegistry: registry.internal
+      coral.image.tag: 1.10.0
+      coral.image.digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+      web.image.tag: 1.10.0
+      web.image.digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[*].image
+          pattern: ^registry\.internal/withcoral/coral(@sha256:1{64}|-web@sha256:2{64})$
+
+  - it: gives every pod the pull secrets
+    documentSelector:
+      path: kind
+      value: Deployment
+      matchMany: true
+    set:
+      imagePullSecrets:
+        - name: mirror-pull
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: mirror-pull

@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { utils } from '@/styles/utils'
-import { theme } from '@/wax/theme/theme.css'
+import { utils } from '@/wax/styles/utils'
+import { theme, zIndex } from '@/wax/theme/theme.css'
 export const setupPage = style({ maxWidth: 1120, width: '100%', minWidth: 0 })
 export const sourceGrid = style({
   display: 'grid',
@@ -252,12 +252,14 @@ export const stepHeader = style({
   minWidth: 0,
   position: 'sticky',
   top: 0,
-  zIndex: 1,
   // Content scrolls beneath it, so it needs the page's opaque surface. The
   // padding gives the pinned row room; the margin keeps the unpinned layout.
   background: theme.surface.mainContent,
   paddingBlock: 12,
   marginBlock: -12,
+  // A table raises its heading above its rows. The page's sticky layer keeps
+  // that heading, and anything else raised, beneath this row.
+  zIndex: zIndex.sticky,
 })
 export const stepTitle = style({
   alignItems: 'baseline',
@@ -500,11 +502,19 @@ export const iconError = style({
   minWidth: 0,
   order: 1,
 })
-// The servers that hold their suggested URL, folded into one line under the rest.
-export const foldedServers = style({
-  alignItems: 'center',
+// The servers that hold the recipe's URL, under their heading and guidance.
+export const defaultServers = style({
   display: 'flex',
-  flexWrap: 'wrap',
+  flexDirection: 'column',
   gap: 12,
-  justifyContent: 'space-between',
+  maxWidth: 560,
+  minWidth: 0,
+})
+export const defaultServersText = style({ display: 'flex', flexDirection: 'column', gap: 4 })
+// The fields inside the box that scrolls, with the card's room around them.
+export const defaultServerFields = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  padding: 16,
 })

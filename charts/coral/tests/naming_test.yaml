@@ -1,0 +1,37 @@
+suite: naming
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/configmap.yaml
+  - templates/coral.yaml
+  - templates/web.yaml
+  - templates/run-executor.yaml
+  - templates/serviceaccount.yaml
+  - templates/pdb.yaml
+  - templates/envoy.yaml
+tests:
+  - it: names every object after the release
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: ^prod(-(auth|mcp|web|run-executor|headless|envoy))?$
+
+  - it: fails on a release name that cannot name a Service
+    release:
+      name: prod.v2
+    # The render stops at the first template that fails.
+    template: templates/web.yaml
+    asserts:
+      - failedTemplate:
+          errorPattern: release name "prod.v2" cannot name a Service
+
+  - it: fails on a release name that starts with a digit
+    release:
+      name: 2prod
+    # The render stops at the first template that fails.
+    template: templates/web.yaml
+    asserts:
+      - failedTemplate:
+          errorPattern: release name "2prod" cannot name a Service

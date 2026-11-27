@@ -2,25 +2,11 @@
 //! Callers supply the owning domain transaction.
 //!
 //! A resource's own row holds its version and its times, and the repository
-//! of that row reads them. This Module only decodes them, and still writes
-//! the table that held them before, for a Coral that reads it.
+//! of that row reads and writes them. This Module only decodes them.
 use coral_db::{Transaction, UnixNanos, Version};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
-use crate::{Error, LifecycleTargetKind, ResourceMetadata, UserId, WorkspaceId};
-
-/// The table that held each resource's etag and times before its own row
-/// did. Coral writes it and does not read it.
-#[derive(Iden)]
-enum WorkspaceResourceMetadata {
-    Table,
-    WorkspaceId,
-    Kind,
-    TargetId,
-    Etag,
-    CreatedAt,
-    UpdatedAt,
-}
+use crate::{Error, ResourceMetadata, UserId, WorkspaceId};
 
 #[derive(Iden)]
 enum WorkspaceManagementRequests {
@@ -101,54 +87,6 @@ pub(crate) fn changed_at_version(rows: u64) -> Result<(), Error> {
     } else {
         Err(Error::EtagMismatch)
     }
-}
-
-/// Writes the row that a Coral which still reads this table shows and checks
-/// a resource by: a new etag and the time of the change. This Coral reads
-/// neither.
-pub(super) async fn upsert_metadata(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
-    etag: &str,
-    occurred_at: UnixNanos,
-) -> Result<(), Error> {
-    tx.execute(
-        Query::insert()
-            .into_table(WorkspaceResourceMetadata::Table)
-            .columns([
-                WorkspaceResourceMetadata::WorkspaceId,
-                WorkspaceResourceMetadata::Kind,
-                WorkspaceResourceMetadata::TargetId,
-                WorkspaceResourceMetadata::Etag,
-                WorkspaceResourceMetadata::CreatedAt,
-                WorkspaceResourceMetadata::UpdatedAt,
-            ])
-            .values_panic([
-                workspace.to_string().into(),
-                kind.as_storage_str().into(),
-                id.into(),
-                etag.into(),
-                occurred_at.into(),
-                occurred_at.into(),
-            ])
-            .on_conflict(
-                OnConflict::columns([
-                    WorkspaceResourceMetadata::WorkspaceId,
-                    WorkspaceResourceMetadata::Kind,
-                    WorkspaceResourceMetadata::TargetId,
-                ])
-                .update_columns([
-                    WorkspaceResourceMetadata::Etag,
-                    WorkspaceResourceMetadata::UpdatedAt,
-                ])
-                .to_owned(),
-            )
-            .to_owned(),
-    )
-    .await?;
-    Ok(())
 }
 
 pub(super) async fn insert_request(
