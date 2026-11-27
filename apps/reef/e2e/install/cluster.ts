@@ -25,11 +25,12 @@ import {
 const KIND_NODE_IMAGE =
   'kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
 const CLOUD_PROVIDER_KIND_IMAGE =
-  'registry.k8s.io/cloud-provider-kind/cloud-controller-manager:v0.12.0'
+  'registry.k8s.io/cloud-provider-kind/cloud-controller-manager:v0.12.0@sha256:1b97632e5dfec8f83c7e970cf18cedb9e6b707e272011d712cabf6ab59d323c9'
 const ENVOY_GATEWAY_CHART = 'oci://docker.io/envoyproxy/gateway-helm'
 const ENVOY_GATEWAY_VERSION = 'v1.10.0'
 // The image Reel's own Postgres uses (scripts/postgres.ts), with pgvector.
-const POSTGRES_IMAGE = 'pgvector/pgvector:0.8.2-pg17-trixie'
+const POSTGRES_IMAGE =
+  'pgvector/pgvector:0.8.2-pg17-trixie@sha256:5c97c57367a485a8e99389548db67d441ab1a878f5492c3df04989f34ecf3c75'
 
 const NAMESPACE = 'coral'
 const POSTGRES_HOST = `postgres.${NAMESPACE}.svc.cluster.local`
@@ -51,10 +52,13 @@ export interface InstallOptions {
   keep: boolean
   /** Where the cluster's objects, events and pod logs go when the run ends. */
   evidence: string
+  /** Stops setup when the run is cancelled. Cleanup runs whatever happens. */
+  signal: AbortSignal
 }
 
 /** Creates the cluster and installs Coral into it. */
 export async function startInstall(options: InstallOptions): Promise<Install> {
+  await checkPrerequisites(options)
   const name = `reel-${randomUUID().slice(0, 8)}`
   const work = await mkdtemp(join(tmpdir(), 'reel-install-'))
   const tls = join(work, 'tls')
@@ -69,16 +73,26 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
     KUBECONFIG: kubeconfig,
   }
   const made = { cluster: false, cloudProvider: false }
-  const exec = async (command: string, args: string[], input?: string) => {
-    if (input === undefined) return (await run(command, args, { env, maxBuffer: 1 << 26 })).stdout
-    return pipe(command, args, input, env)
+  // Setup stops when the run is cancelled; evidence and cleanup do not.
+  const command = async (
+    signal: AbortSignal | undefined,
+    program: string,
+    args: string[],
+    input?: string,
+  ) => {
+    if (input === undefined)
+      return (await run(program, args, { env, maxBuffer: 1 << 26, signal })).stdout
+    return pipe(program, args, input, env, signal)
   }
+  const exec = (program: string, args: string[], input?: string) =>
+    command(options.signal, program, args, input)
   const kubectl = (args: string[], input?: string) => exec('kubectl', args, input)
   const apply = (manifest: string) => kubectl(['apply', '-f', '-'], manifest)
 
   const stop = async () => {
     try {
-      if (made.cluster) await collectEvidence(kubectl, options.evidence)
+      if (made.cluster)
+        await collectEvidence((args) => command(undefined, 'kubectl', args), options.evidence)
     } finally {
       if (options.keep) {
         console.log(`Reel kept the install cluster ${name}; its kubeconfig is ${kubeconfig}`)
@@ -588,29 +602,62 @@ async function collectEvidence(kubectl: (args: string[]) => Promise<string>, dir
     'wide',
   ])
   await save('events.txt', ['get', 'events', '--all-namespaces', '--sort-by=.lastTimestamp'])
+  // Every pod's: Envoy Gateway's and CoreDNS's explain a routing failure.
   const pods = await kubectl([
     'get',
     'pods',
-    '--namespace',
-    NAMESPACE,
+    '--all-namespaces',
     '--output',
-    'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}',
+    'jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{"\\n"}{end}',
   ]).catch(() => '')
-  for (const pod of pods.split('\n').filter(Boolean))
-    await save(`${pod}.log`, [
+  for (const pod of pods.split('\n').filter(Boolean)) {
+    const [namespace, name] = pod.split('/')
+    await save(`${namespace}.${name}.log`, [
       'logs',
-      pod,
+      name,
       '--namespace',
-      NAMESPACE,
+      namespace,
       '--all-containers',
       '--timestamps',
     ])
+  }
+}
+
+/** Fails before anything starts, naming what to install or build. */
+async function checkPrerequisites(options: InstallOptions) {
+  for (const [tool, args] of [
+    ['kind', ['version']],
+    ['kubectl', ['version', '--client']],
+    ['helm', ['version']],
+    ['openssl', ['version']],
+  ] as const) {
+    try {
+      await run(tool, [...args])
+    } catch {
+      throw new Error(
+        `The helm-install suite needs ${tool} on PATH; see "The Helm chart on kind" in apps/reef/e2e/README.md`,
+      )
+    }
+  }
+  for (const image of [options.coralImage, options.webImage]) {
+    try {
+      await run('docker', ['image', 'inspect', image])
+    } catch {
+      throw new Error(`No image ${image}; build it with make docker-build reef-docker-build`)
+    }
+  }
 }
 
 /** Runs `command` with `input` on its stdin. */
-function pipe(command: string, args: string[], input: string, env: NodeJS.ProcessEnv) {
+function pipe(
+  command: string,
+  args: string[],
+  input: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(command, args, { env, signal, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => (stdout += chunk))

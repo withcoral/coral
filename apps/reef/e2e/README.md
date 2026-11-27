@@ -55,7 +55,7 @@ no-sign-in deployment, not tests running on your machine.
 `--database sqlite` is the main suite's default. `--database postgres` changes its
 storage configuration, not its scenario selection. Both run all discovered product
 files. Database selection is unavailable for the focused suites: local and Desktop
-use SQLite, and multi-instance uses Postgres. The helm-helm-install suite's Install runs on
+use SQLite, and multi-instance uses Postgres. The helm-install suite's Install runs on
 a Postgres in its cluster.
 Single-User and multi-User stories belong together. Provider OAuth is ordinary
 product coverage, separate from the Coral sign-in used to arrange actors.
@@ -414,7 +414,8 @@ made on the host, because the chart needs them before the identity provider
 starts. Coral fetches the identity provider's metadata only when a user signs
 in.
 
-At the end the host saves every object, every event and every pod's log under
+At the end the host saves the workloads, Gateways and HTTPRoutes, every event,
+and every pod's log, in every namespace, under
 `install/cluster/` in the run directory, then deletes the cluster. Set
 `REEL_KEEP_INSTALL=1` to keep it; Reel prints its kubeconfig. The Install's
 logs are in that folder, not beside the scenario.
@@ -424,10 +425,10 @@ logs are in that folder, not beside the scenario.
 The main suite boots the maintained `oidc-provider` package in memory,
 with per-run keys and synthetic accounts. Its development-adapter warning is
 intentional: this test IdP must disappear at teardown. It is not a Coral auth
-replacement and must never be exposed outside loopback. The helm-helm-install suite's
-Install runs in a cluster, so there it serves HTTPS at `idp.reel.test`, inside
-the disposable container on kind's network, with a certificate from the run's
-throwaway CA.
+replacement and must never be exposed outside loopback. In the helm-install
+suite, Coral runs in a cluster and cannot reach the container's loopback, so the
+identity provider serves HTTPS at `idp.reel.test` from the disposable container,
+on kind's network, with a certificate from the run's throwaway CA.
 
 Reef and Coral run their normal OAuth/OIDC paths: discovery, authorization,
 PKCE, signed ID-token validation, User provisioning,

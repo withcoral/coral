@@ -38,8 +38,11 @@ let interrupted = false
 let imageBuilt = false
 let networkCreated = false
 let install: Install | undefined
+// Stops the helm-install suite's cluster setup, which runs outside `run`.
+const cancel = new AbortController()
 const stop = () => {
   interrupted = true
+  cancel.abort()
   child?.kill('SIGTERM')
   try {
     execFileSync(engine!, ['stop', '--time', '10', name], { stdio: 'ignore', timeout: 15_000 })
@@ -99,7 +102,7 @@ try {
     await mkdir(directory, { recursive: true })
     console.log(`Reel host evidence: ${directory}`)
   }
-  // The helm-helm-install suite's container joins kind's network instead of its own.
+  // The helm-install suite's container joins kind's network instead of its own.
   if (options.suite === 'helm-install') {
     if (engine !== 'docker') throw new Error('The helm-install suite runs kind, which needs Docker')
     install = await startInstall({
@@ -108,6 +111,7 @@ try {
       webImage: process.env.REEL_INSTALL_WEB_IMAGE || 'coral-web:local',
       keep: process.env.REEL_KEEP_INSTALL === '1',
       evidence: join(artifacts[0], 'install', 'cluster'),
+      signal: cancel.signal,
     })
   } else {
     await run(['network', 'create', name])
@@ -140,7 +144,7 @@ try {
     '-e',
     `REEL_SELF_CHECK=${process.env.REEL_SELF_CHECK === '1' ? '1' : '0'}`,
     '-e',
-    // The helm-helm-install suite's cluster brings its own Postgres.
+    // The helm-install suite's cluster brings its own Postgres.
     `REEL_DATABASE=${reelProvisionsDatabase(options.suite) ? options.database : 'none'}`,
     '-e',
     `E2E_SOURCE_COMMIT=${sha}`,

@@ -45,7 +45,7 @@ export function installSettings(env: NodeJS.ProcessEnv): InstallSettings {
   const clientSecret = env.E2E_INSTALL_CLIENT_SECRET
   if (!ownerSubject || !/^reel-[0-9a-f-]{36}$/.test(ownerSubject) || !clientSecret)
     throw new Error(
-      'The helm-install suite runs in the Reel container, against a cluster that install/cluster.ts sets up',
+      'E2E_INSTALL_OWNER_SUBJECT must be reel-<uuid> and E2E_INSTALL_CLIENT_SECRET must be set: the helm-install suite runs in the Reel container, against a cluster that install/cluster.ts sets up',
     )
   return {
     ownerSubject,

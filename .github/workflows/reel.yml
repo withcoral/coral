@@ -66,6 +66,11 @@ jobs:
       # The helm-install suite runs kind, kubectl and Helm on the runner. kind comes
       # from a GitHub release download, so the cache keeps it; pull requests
       # never save it.
+      - name: Check the helm-install suite has its images
+        if: ${{ inputs.suite == 'helm-install' && inputs.images-artifact == '' }}
+        run: |
+          echo 'The helm-install suite needs images-artifact: run it from ci.yml, whose images job saves the images.'
+          exit 1
       - if: ${{ inputs.suite == 'helm-install' }}
         id: install-tools
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -56,6 +56,7 @@ test('An Install from the chart signs a user in, adds a provider and runs a prog
         for (let pages = 0; pages < 10 && (update.state === 'running' || update.has_more); pages++)
           update = (await run.wait(update)).structuredContent
         expect(update.state, JSON.stringify(update.failure)).toBe('succeeded')
+        expect(update.has_more).toBe(false)
         expect(update.final_value).toEqual({ kind: 'value', value: { forecast: 'sunny' } })
         expect(calls).toBe(1)
       })

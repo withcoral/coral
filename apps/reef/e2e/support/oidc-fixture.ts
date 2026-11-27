@@ -60,6 +60,9 @@ export async function startIdentityProvider(
         listener,
       )
     : createServer(listener)
+  // Coral reuses its connections. Node closes an idle one after five seconds,
+  // and a request sent as it closes fails, so close them only at teardown.
+  if (published) server.keepAliveTimeout = 0
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     // The published provider binds every address of its disposable container.

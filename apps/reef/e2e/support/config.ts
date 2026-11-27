@@ -56,7 +56,7 @@ export interface InstancesTarget {
 
 /**
  * Each suite's database. Only main selects one; several Coral Instances share
- * one database only on Postgres. The helm-helm-install suite's Install runs on its own
+ * one database only on Postgres. The helm-install suite's Install runs on its own
  * Postgres, in the cluster.
  */
 const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
@@ -68,7 +68,7 @@ const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
 }
 export const SUITES = Object.keys(SUITE_DATABASE)
 
-/** Whether Reel provisions the suite's database. The helm-helm-install suite's cluster brings its own. */
+/** Whether Reel provisions the suite's database. The helm-install suite's cluster brings its own. */
 export function reelProvisionsDatabase(suite: string) {
   return suite !== 'helm-install'
 }

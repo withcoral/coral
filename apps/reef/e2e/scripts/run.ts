@@ -32,7 +32,7 @@ Examples: --database postgres accounts/    --suite local-mode    --suite multi-i
   process.exit(0)
 }
 const desktop = options.suite === 'desktop'
-// The helm-helm-install suite's cluster runs the images it was given: Reel builds nothing.
+// The helm-install suite's cluster runs the images it was given: Reel builds nothing.
 const install = options.suite === 'helm-install'
 // An installed app replaces the package; the runner then builds nothing for it.
 const installedDesktop = desktop && Boolean(process.env.E2E_DESKTOP_EXECUTABLE)
