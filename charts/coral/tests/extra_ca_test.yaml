@@ -52,8 +52,9 @@ tests:
                 - key: root.pem
                   path: ca.crt
 
-  # SSL_CERT_FILE replaces coral's roots, so a bundle with only the CA would
-  # stop it reaching the OIDC provider and public providers.
+  # coral's TLS loads both variables: the image's own bundle and the CA.
+  # Either one alone would replace the image's roots, and coral would stop
+  # reaching the OIDC provider and public providers.
   - it: gives coral the image's roots plus the CA
     set:
       tls.extraCABundle:
@@ -64,42 +65,30 @@ tests:
       path: kind
       value: Deployment
     asserts:
-      # The bundle holds the image's roots and the CA.
-      - matchRegex:
-          path: spec.template.spec.initContainers[0].command[2]
-          pattern: /etc/ssl/certs/ca-certificates\.crt .*/etc/coral/extra-ca/ca\.crt
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: SSL_CERT_FILE
-            value: /etc/coral/ca-bundle/ca-certificates.crt
+            value: /etc/ssl/certs/ca-certificates.crt
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SSL_CERT_DIR
+            value: /etc/coral/extra-ca
       - contains:
           path: spec.template.spec.containers[0].volumeMounts
           content:
-            name: ca-bundle
-            mountPath: /etc/coral/ca-bundle
+            name: extra-ca
+            mountPath: /etc/coral/extra-ca
             readOnly: true
       - contains:
           path: spec.template.spec.volumes
           content:
-            name: ca-bundle
-            emptyDir: {}
-
-  - it: locks the bundle's init container down like coral
-    set:
-      tls.extraCABundle:
-        configMapName: internal-ca
-        key: root.pem
-    template: templates/coral.yaml
-    documentSelector:
-      path: kind
-      value: Deployment
-    asserts:
-      - equal:
-          path: spec.template.spec.initContainers[0].securityContext
-          value:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
+            name: extra-ca
+            configMap:
+              name: internal-ca
+              items:
+                - key: root.pem
+                  path: ca.crt
+      - notExists:
+          path: spec.template.spec.initContainers

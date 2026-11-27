@@ -39,28 +39,6 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      {{- if .Values.tls.extraCABundle.key }}
-      # SSL_CERT_FILE replaces coral's roots, so this writes the image's roots
-      # and the extra CA into one file for it.
-      initContainers:
-        - name: ca-bundle
-          image: {{ include "coral.image" (list . .Values.coral.image) }}
-          imagePullPolicy: {{ .Values.coral.image.pullPolicy }}
-          command:
-            - sh
-            - -c
-            - cat /etc/ssl/certs/ca-certificates.crt /etc/coral/extra-ca/ca.crt > /etc/coral/ca-bundle/ca-certificates.crt
-          volumeMounts:
-            - name: extra-ca
-              mountPath: /etc/coral/extra-ca
-              readOnly: true
-            - name: ca-bundle
-              mountPath: /etc/coral/ca-bundle
-          resources:
-            {{- toYaml .Values.coral.resources | nindent 12 }}
-          securityContext:
-            {{- include "coral.containerSecurityContext" . | nindent 12 }}
-      {{- end }}
       containers:
         - name: coral
           image: {{ include "coral.image" (list . .Values.coral.image) }}
@@ -89,8 +67,13 @@ spec:
             {{- include "coral.secretEnv" (list . "CORAL_RUN_EXECUTOR_PREVIOUS_TOKEN" "runExecutors.previousToken" .Values.runExecutors.previousToken) | nindent 12 }}
             {{- end }}
             {{- if .Values.tls.extraCABundle.key }}
+            # coral's TLS loads both: the image's own bundle, and every file
+            # in the directory. Either one alone would replace the image's
+            # roots.
             - name: SSL_CERT_FILE
-              value: /etc/coral/ca-bundle/ca-certificates.crt
+              value: /etc/ssl/certs/ca-certificates.crt
+            - name: SSL_CERT_DIR
+              value: /etc/coral/extra-ca
             {{- end }}
             {{- if .Values.database.tls.caBundle.key }}
             - name: PGSSLROOTCERT
@@ -120,8 +103,8 @@ spec:
               readOnly: true
             {{- end }}
             {{- if .Values.tls.extraCABundle.key }}
-            - name: ca-bundle
-              mountPath: /etc/coral/ca-bundle
+            - name: extra-ca
+              mountPath: /etc/coral/extra-ca
               readOnly: true
             {{- end }}
             {{- with .Values.coral.extraVolumeMounts }}
@@ -150,8 +133,6 @@ spec:
         {{- include "coral.caBundleVolume" (list "database.tls.caBundle" .Values.database.tls.caBundle "database-ca") | nindent 8 }}
         {{- if .Values.tls.extraCABundle.key }}
         {{- include "coral.caBundleVolume" (list "tls.extraCABundle" .Values.tls.extraCABundle "extra-ca") | nindent 8 }}
-        - name: ca-bundle
-          emptyDir: {}
         {{- end }}
         {{- with .Values.coral.extraVolumes }}
         {{- toYaml . | nindent 8 }}
