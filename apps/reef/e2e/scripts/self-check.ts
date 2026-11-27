@@ -17,6 +17,7 @@ const support = spawnSync(
     'e2e/support/viewer.test.ts',
     'e2e/support/run.test.ts',
     'e2e/scripts/container.test.ts',
+    'e2e/install/cluster.test.ts',
     'e2e/support/desktop.test.ts',
     'e2e/support/os-processes.test.ts',
     '../../scripts/postgres.test.mjs',

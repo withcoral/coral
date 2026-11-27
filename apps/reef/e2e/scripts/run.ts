@@ -8,6 +8,7 @@ import {
   desktopRoot,
   DISPLAY_ENV,
   reefRoot,
+  reelProvisionsDatabase,
   repoRoot,
 } from '../support/config.ts'
 import { LocalPostgres } from '../../../../scripts/postgres.ts'
@@ -16,9 +17,9 @@ import { validateFixtureTLS } from '../support/provider-fixtures.ts'
 // Only explicit command options select a suite or database, never inherited settings.
 const options = commandOptions(process.argv.slice(2))
 if (options.vitest.includes('--help') || options.vitest.includes('-h')) {
-  console.log(`Reel: the main product suite, plus focused local-mode, Desktop and multi-instance checks.
+  console.log(`Reel: the main product suite, plus focused local-mode, Desktop, multi-instance and helm-install checks.
 
-npm run test:e2e --prefix apps/reef -- [--suite main|local-mode|desktop|multi-instance] [--database sqlite|postgres] [Vitest filters]
+npm run test:e2e --prefix apps/reef -- [--suite main|local-mode|desktop|multi-instance|helm-install] [--database sqlite|postgres] [Vitest filters]
 
 Default: main with genuine sign-in and SQLite.
 Postgres runs the same product scenarios in a disposable database.
@@ -26,10 +27,13 @@ Local mode runs the Reef build that Desktop ships, without Electron.
 Desktop packages the Linux app and drives it in Electron; it needs a display.
 E2E_DESKTOP_EXECUTABLE drives an installed app instead, on Linux or Windows.
 Multi-instance runs two Coral Instances on one disposable Postgres database.
+Helm-install installs the Helm chart on a kind cluster and drives it through its HTTPRoutes.
 Examples: --database postgres accounts/    --suite local-mode    --suite multi-instance`)
   process.exit(0)
 }
 const desktop = options.suite === 'desktop'
+// The helm-install suite's cluster runs the images it was given: Reel builds nothing.
+const install = options.suite === 'helm-install'
 // An installed app replaces the package; the runner then builds nothing for it.
 const installedDesktop = desktop && Boolean(process.env.E2E_DESKTOP_EXECUTABLE)
 const windows = process.platform === 'win32'
@@ -80,7 +84,7 @@ try {
     throw new Error(
       'The desktop suite packages the Linux app; run it in the Reel container, or set E2E_DESKTOP_EXECUTABLE to an installed app',
     )
-  if (options.database === 'postgres') {
+  if (options.database === 'postgres' && reelProvisionsDatabase(options.suite)) {
     if (settings.E2E_BASE_URL || settings.E2E_HARNESS_PROBES === '1')
       throw new Error('Postgres requires a stack that Reel starts, not attached mode or probes')
     database = await new LocalPostgres(settings).provision(settings.E2E_POSTGRES_URL)
@@ -110,6 +114,10 @@ try {
     'E2E_SOURCE_COMMIT',
     'E2E_SOURCE_DIRTY',
     'E2E_RUN_ID',
+    'E2E_INSTALL_OWNER_SUBJECT',
+    'E2E_INSTALL_CLIENT_SECRET',
+    // The install CA, which the container sets for the helm-install suite only.
+    'NODE_EXTRA_CA_CERTS',
     'TMPDIR',
     ...DISPLAY_ENV,
   ])
@@ -172,7 +180,7 @@ try {
       process.off('SIGTERM', forceStop)
     }
   }
-  if (!env.E2E_BASE_URL && !installedDesktop) {
+  if (!env.E2E_BASE_URL && !installedDesktop && !install) {
     if (!env.E2E_CORAL_BINARY)
       await run('cargo', ['build', '--locked', '-p', 'coral-ee', '--bin', 'coral-ee'], repoRoot)
     if (desktop) {
