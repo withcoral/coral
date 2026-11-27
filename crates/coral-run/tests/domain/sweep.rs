@@ -10,6 +10,7 @@ use coral_run_executor::Kind;
 use coral_run_executor::leases;
 use coral_run_executor::wire::v1::RunEnd as WireEnd;
 
+use super::metrics::{counts, measured, owned};
 use super::run_streams::{Scripted, ended, invoke_forecast, take_for};
 
 const SECOND: i64 = 1_000_000_000;
@@ -297,10 +298,42 @@ async fn one_pass_ends_puts_back_and_releases_only_what_no_stream_decided() {
     assert_eq!(sweep.lease_rows().await, [LIVE]);
 }
 
+/// Catches: a put-back that is not counted, or is counted under the wrong
+/// kind: a stale take and a lapsed local child's take each count once, and
+/// a recent take counts nothing.
+#[tokio::test]
+async fn each_put_back_counts_once_by_the_kind_it_was_taken_for() {
+    let (metrics, _guard) = measured();
+    let sweep = Sweep::new().await;
+    sweep.lease(LIVE, Kind::Dialed, START + 60 * SECOND).await;
+    sweep.lease(LOCAL, Kind::Local, START + 1).await;
+    sweep.taken(LIVE, Kind::Dialed, START - 11 * SECOND).await;
+    sweep.taken(LIVE, Kind::Dialed, START - 9 * SECOND).await;
+    sweep.taken(LOCAL, Kind::Local, sweep.now()).await;
+
+    let swept = sweep
+        .runs
+        .sweep_runs()
+        .await
+        .expect("sweep")
+        .expect("elected");
+
+    assert_eq!(swept.put_back, 2);
+    assert_eq!(
+        counts(&metrics, "coral.run.put_backs"),
+        owned(&[
+            ("run_executor.kind=dialed", 1),
+            ("run_executor.kind=local", 1)
+        ])
+    );
+}
+
 /// Catches: a release that ends a Run Executor's Runs after it renewed its
-/// lease, between the pass's read and its write.
+/// lease, between the pass's read and its write, or counts a put-back it
+/// did not write.
 #[tokio::test]
 async fn a_run_executor_that_renews_between_the_read_and_the_write_loses_no_run() {
+    let (metrics, _guard) = measured();
     let sweep = Sweep::new().await;
     sweep.lease(LAPSED, Kind::Dialed, START + 1).await;
     let started = sweep.started(LAPSED, Kind::Dialed).await;
@@ -330,6 +363,7 @@ async fn a_run_executor_that_renews_between_the_read_and_the_write_loses_no_run(
         [sweep.run(&started).await, sweep.run(&unstarted).await],
         before
     );
+    assert_eq!(counts(&metrics, "coral.run.put_backs"), Vec::new());
     let row = leases::find(&*sweep.fixture.database, LAPSED)
         .await
         .expect("read the row")

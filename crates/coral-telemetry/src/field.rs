@@ -65,9 +65,10 @@ const CORAL: &[&str] = &[
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
     // A Run Executor's protocol level and its peer's, when a link refuses
-    // them.
+    // them, and why the listener refused a dial: `credential` or `hello`.
     "coral.run_executor.protocol_level",
     "coral.run_executor.peer_protocol_level",
+    "coral.run_executor.refusal",
     // A local Run Executor: its id, the exit code Coral reaped, and the
     // limit on local children that holds work back.
     "coral.run_executor.id",

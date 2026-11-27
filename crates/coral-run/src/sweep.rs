@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use coral_db::{DatabaseSystem, Transaction, UnixNanos};
 use coral_run_executor::leases::{self, RunExecutorLease};
-use coral_telemetry::safe;
+use coral_telemetry::{metric, safe};
 use coral_workspace::WorkspaceId;
 
 use crate::approval::{self, ApprovalId, DecideWork};
@@ -388,13 +388,14 @@ async fn find_without_worker_claim(
     )
 }
 
-/// Puts `held` back in `transaction` and commits, logging the Run Executor
-/// it was taken for.
+/// Puts `held` back in `transaction` and commits, then counts it by the
+/// kind of Run Executor it was taken for and logs that Run Executor.
 async fn put_back_in(mut transaction: Transaction<'_>, held: &HeldRun) -> Result<bool, Error> {
     if !run_repository::put_back(&mut transaction, held).await? {
         return Ok(false);
     }
     transaction.commit().await?;
+    metric::run_put_back(held.run_executor_kind.metric());
     tracing::info!(
         coral.run.id = safe::id(&HeldRunId::of_held_row(held.run_id.clone())),
         coral.run_executor.id = held

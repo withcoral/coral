@@ -310,12 +310,17 @@ impl Link {
         })
     }
 
-    /// Opens a Run stream on `channel` that sends nothing.
-    async fn run_stream(&self, channel: &Channel) -> Result<Streaming<RunResponse>, Status> {
+    /// Opens a Run stream on `channel` with the `authorization` header that
+    /// sends nothing.
+    async fn run_stream(
+        &self,
+        channel: &Channel,
+        authorization: &str,
+    ) -> Result<Streaming<RunResponse>, Status> {
         let mut request = Request::new(tokio_stream::iter(Vec::<RunRequest>::new()));
         request
             .metadata_mut()
-            .insert("authorization", bearer(TOKEN).parse().unwrap());
+            .insert("authorization", authorization.parse().unwrap());
         let mut client =
             crate::wire::v1::link_service_client::LinkServiceClient::new(channel.clone());
         Ok(client.run(request).await?.into_inner())
@@ -434,6 +439,87 @@ async fn the_credential_admits_both_operator_tokens_and_a_live_local_child_by_ki
         )
         .await;
     assert_eq!(code(opened), Some(Code::Unauthenticated));
+}
+
+/// The refusals `logs` holds: those with `credential`, then those with
+/// `hello`.
+fn refusals(logs: &coral_telemetry::testing::ExportCapture) -> (usize, usize) {
+    let records = logs.log_records();
+    let with = |reason: &str| {
+        let value = format!("{reason:?}");
+        records
+            .iter()
+            .filter(|record| {
+                record.contains("coral.run_executor.refusal") && record.contains(&value)
+            })
+            .count()
+    };
+    (with("credential"), with("hello"))
+}
+
+/// Catches: a refused dial that logs no warning, logs one under the wrong
+/// reason or more than one, or names the credential it refused.
+#[tokio::test]
+async fn each_refused_dial_logs_one_warning_with_its_reason() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    // Records leave through the export filter, which keeps allowlisted keys.
+    let logs = coral_telemetry::testing::ExportCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
+    let link = start(Timing::default()).await;
+    let channel = link.connect().await;
+    let unknown = "an-unknown-token-of-at-least-32-characters";
+    let mut seen = refusals(&logs);
+    let mut refused = |label: &str, code: Option<Code>, expected: Code, logged: (usize, usize)| {
+        assert_eq!(code, Some(expected), "{label}");
+        let now = refusals(&logs);
+        assert_eq!((now.0 - seen.0, now.1 - seen.1), logged, "{label}");
+        seen = now;
+    };
+    let (credential, bad_hello) = ((1, 0), (0, 1));
+
+    let first = Up::Hello(hello(PROTOCOL_LEVEL, 1));
+    let opened = link.open(&channel, &bearer(unknown), first).await;
+    refused("a token", code(opened), Code::Unauthenticated, credential);
+    let opened = link.run_stream(&channel, &bearer(unknown)).await;
+    refused(
+        "a Run stream's",
+        code(opened),
+        Code::Unauthenticated,
+        credential,
+    );
+    let first = Up::Room(Room { free: 1 });
+    let opened = link.open(&channel, &bearer(TOKEN), first).await;
+    refused("no Hello", code(opened), Code::InvalidArgument, bad_hello);
+    let undecodable = Wire {
+        hello: None,
+        undecodable: Some(1),
+    };
+    let opened = link.open_with(&channel, &bearer(TOKEN), undecodable).await;
+    refused(
+        "no decoding",
+        code(opened),
+        Code::InvalidArgument,
+        bad_hello,
+    );
+    let mut not_uuid = hello(PROTOCOL_LEVEL, 1);
+    "not-a-uuid".clone_into(&mut not_uuid.run_executor_id);
+    let opened = link
+        .open(&channel, &bearer(TOKEN), Up::Hello(not_uuid))
+        .await;
+    refused("no UUID", code(opened), Code::InvalidArgument, bad_hello);
+    let first = Up::Hello(hello(PROTOCOL_LEVEL + 2, 1));
+    let opened = link.open(&channel, &bearer(TOKEN), first).await;
+    refused("levels", code(opened), Code::FailedPrecondition, bad_hello);
+
+    let _pull = link.welcomed(&channel, hello(PROTOCOL_LEVEL, 1)).await;
+    assert_eq!(refusals(&logs), seen, "a welcomed dial is no refusal");
+    assert!(
+        logs.log_records()
+            .iter()
+            .all(|record| !record.contains(unknown) && !record.contains(TOKEN)),
+        "a warning names no credential"
+    );
 }
 
 #[tokio::test]
@@ -998,7 +1084,7 @@ async fn a_draining_link_ends_its_pull_streams_and_opens_no_new_one() {
     let link = start_serving(Timing::default(), Some(Arc::new(Moves))).await;
     let channel = link.connect().await;
     // A moved Run stream ends OK after Coral's last message.
-    let mut moved = link.run_stream(&channel).await.unwrap();
+    let mut moved = link.run_stream(&channel, &bearer(TOKEN)).await.unwrap();
     let first = timeout(Duration::from_secs(5), moved.message())
         .await
         .unwrap();

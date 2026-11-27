@@ -236,8 +236,8 @@ impl RunRow {
             time_limit_nanos: self.time_limit_nanos,
             taken_at_unix_nanos: self.taken_at_unix_nanos,
             on_run_executor: self.run_executor_kind.is_some(),
-            on_local_child: self.run_executor_kind.as_deref()
-                == Some(coral_run_executor::Kind::Local.as_storage_str()),
+            on_local_child: taken_kind(self.run_executor_kind.as_deref())
+                == coral_run_executor::Kind::Local,
             committed_request_number: self
                 .committed_request_number
                 .map(u64::try_from)
@@ -383,6 +383,14 @@ fn decode_terminal(
         RunState::Interrupted => RunTerminalOutcome::Interrupted,
     };
     Ok(Some(outcome))
+}
+
+/// The Run Executor kind a take recorded on a row. Text no release writes
+/// reads as dialed, as does a row no take wrote.
+pub(super) fn taken_kind(stored: Option<&str>) -> coral_run_executor::Kind {
+    stored
+        .and_then(coral_run_executor::Kind::from_storage_str)
+        .unwrap_or(coral_run_executor::Kind::Dialed)
 }
 
 #[cfg(test)]

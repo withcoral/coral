@@ -54,6 +54,16 @@ pub(crate) struct RunRecord {
 }
 
 impl RunRecord {
+    /// The kind of Run Executor that took the Run, for a Run a take gave
+    /// to one ([`Self::on_run_executor`]).
+    pub(crate) const fn run_executor_kind(&self) -> coral_run_executor::Kind {
+        if self.on_local_child {
+            coral_run_executor::Kind::Local
+        } else {
+            coral_run_executor::Kind::Dialed
+        }
+    }
+
     /// The Run Trace identifier its terminal diagnostic names: only for a
     /// Run that failed, timed out or was interrupted.
     pub(crate) fn diagnostic_trace_id(&self) -> Option<coral_telemetry::TraceId> {
