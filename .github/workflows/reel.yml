@@ -123,7 +123,7 @@ jobs:
           if [ -n "$REEL_SHARD" ]; then args+=("--shard=${REEL_SHARD/of//}"); fi
           if [ "$REEL_SUITE" = main ]; then
             args+=(--database "$REEL_DATABASE")
-          elif [ "$REEL_SUITE" = multi-instance ] || [ "$REEL_SUITE" = install ]; then
+          elif [ "$REEL_SUITE" = multi-instance ] || [ "$REEL_SUITE" = helm-install ]; then
             : # Each always runs on Postgres and takes no --database.
           elif [ "$REEL_DATABASE" != sqlite ]; then
             echo 'Only the main suite selects a database'
