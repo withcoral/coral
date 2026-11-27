@@ -439,18 +439,35 @@ pub(super) fn fire(
 
 /// An accepted Run of `tool` taken and started on a scripted stream.
 pub(super) async fn started(runs: &RunModule, tool: &ToolFixture) -> (crate::RunId, Scripted) {
+    let (run_id, _claim, stream) = started_as(
+        runs,
+        (&tool.principal, &tool.workspace_id),
+        "await coral.providers.weather.getForecast({});",
+        &taker(Kind::Dialed),
+        || 1,
+    )
+    .await;
+    (run_id, stream)
+}
+
+/// A Run of `source`, accepted as `principal` in `workspace_id`, taken by
+/// `taker` at the instant `taken_at` gives once the Run is accepted, and
+/// started on a scripted stream, with the take's claim.
+pub(super) async fn started_as(
+    runs: &RunModule,
+    (principal, workspace_id): (&AuthenticatedPrincipal, &coral_workspace::WorkspaceId),
+    source: &str,
+    taker: &Taker<'_>,
+    taken_at: impl FnOnce() -> i64,
+) -> (crate::RunId, String, Scripted) {
     let accepted = runs
-        .start(
-            &tool.principal,
-            &tool.workspace_id,
-            submission("await coral.providers.weather.getForecast({});"),
-        )
+        .start(principal, workspace_id, submission(source))
         .await
         .expect("accept a Run");
-    let claim = take(runs).await;
+    let claim = take_for(runs, taker, taken_at()).await;
     let mut stream = Scripted::open(runs, &accepted.run_id().to_string(), &claim);
     stream.start().await;
-    (accepted.run_id().clone(), stream)
+    (accepted.run_id().clone(), claim, stream)
 }
 
 /// Catches: a deadline that terminates the Program before the end is

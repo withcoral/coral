@@ -4,7 +4,7 @@
 //! current-thread runtime, and every thread a loop starts, inherits.
 use super::*;
 
-use super::run_streams::{Scripted, finish_terminated, take, take_for, taker};
+use super::run_streams::{Scripted, finish_terminated, started_as, take, taker};
 use coral_telemetry::testing::{MetricCapture, MetricPoint};
 
 /// A capture every Run in the calling test records to, until the guard drops.
@@ -292,16 +292,15 @@ async fn each_started_run_measures_its_wait_once_and_a_reopen_none() {
         .await;
     let mut started = Vec::new();
     for kind in [Kind::Dialed, Kind::Local] {
-        let accepted = fixture
-            .runs
-            .start(&principal, &workspace_id, submission("return 1;"))
-            .await
-            .expect("accept a Run");
-        let taken_at = fixture.clock.next.load(Ordering::SeqCst);
-        let claim = take_for(&fixture.runs, &taker(kind), taken_at).await;
-        let mut stream = Scripted::open(&fixture.runs, &accepted.run_id().to_string(), &claim);
-        stream.start().await;
-        started.push((kind, accepted.run_id().clone(), claim, stream));
+        let (run_id, claim, stream) = started_as(
+            &fixture.runs,
+            (&principal, &workspace_id),
+            "return 1;",
+            &taker(kind),
+            || fixture.clock.next.load(Ordering::SeqCst),
+        )
+        .await;
+        started.push((kind, run_id, claim, stream));
     }
     // Each kind's one point, and its sum: the Run's wait in seconds.
     let waits = || {

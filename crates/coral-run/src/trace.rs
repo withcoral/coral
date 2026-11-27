@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_catalog::ExecutionBinding;
+use coral_db::UnixNanos;
 
 use coral_telemetry::RunTrace;
 use coral_telemetry::{metric, safe};
@@ -126,7 +127,6 @@ pub(crate) fn record_run_accepted(principal: &coral_workspace::Principal) {
 /// have dated the acceptance or the take, so the start is held at or after
 /// the acceptance, and the take between the two.
 pub(crate) fn record_start(run: &RunRecord, started_at: i64) {
-    use coral_db::UnixNanos;
     let accepted = UnixNanos::new(run.accepted_at_unix_nanos);
     let started = UnixNanos::new(started_at).max(accepted);
     let kind = if run.on_local_child {

@@ -268,35 +268,30 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
 /// `coral.run.start` from the take to its start mark.
 #[tokio::test]
 async fn a_taken_run_traces_its_wait_in_the_queue_and_to_its_start() {
-    use super::run_streams::{Scripted, take_for, taker};
+    use super::run_streams::{started_as, taker};
     capture();
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:run-wait", "Trace a Run's wait")
         .await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("return 1;"))
-        .await
-        .expect("accept the Run");
     // Dated after the acceptance and before the start, on the test clock.
-    let taken_at = fixture.clock.next.load(Ordering::SeqCst);
-    let claim = take_for(
+    let (run_id, _claim, _stream) = started_as(
         &fixture.runs,
+        (&principal, &workspace_id),
+        "return 1;",
         &taker(coral_run_executor::Kind::Dialed),
-        taken_at,
+        || fixture.clock.next.load(Ordering::SeqCst),
     )
     .await;
-    let mut stream = Scripted::open(&fixture.runs, &accepted.run_id().to_string(), &claim);
-    stream.start().await;
-    let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
-    let (accepted_at, started_at) = (
+    let run = fixture.run_record(&workspace_id, &run_id).await;
+    let (accepted_at, taken_at, started_at) = (
         run.accepted_at_unix_nanos,
+        run.taken_at_unix_nanos.expect("a take"),
         run.execution_started_at_unix_nanos.expect("a start mark"),
     );
     assert!(accepted_at < taken_at && taken_at < started_at);
 
-    let spans = of_run(accepted.run_id());
+    let spans = of_run(&run_id);
     let accept = only(&spans, "coral.run.accept");
     let (queue, start) = (
         only(&spans, "coral.run.queue"),
@@ -325,7 +320,7 @@ async fn a_taken_run_traces_its_wait_in_the_queue_and_to_its_start() {
         );
         assert_eq!(
             attribute(span, "coral.run.id").as_deref(),
-            Some(accepted.run_id().as_str())
+            Some(run_id.as_str())
         );
     }
 }
