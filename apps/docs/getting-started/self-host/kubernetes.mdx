@@ -86,21 +86,6 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
 
 5. Route the three hosts. To have the chart render an Ingress or Gateway API HTTPRoutes, set `ingress` or `httpRoute` in your values. Or route each host to its Service yourself. The UI and MCP stream their responses, so your controller needs some settings. See [Kubernetes routing](/getting-started/self-host/kubernetes-routing).
 
-   For example, with ingress-nginx and cert-manager:
-
-   ```yaml
-   ingress:
-     enabled: true
-     className: nginx
-     annotations:
-       cert-manager.io/cluster-issuer: letsencrypt
-       nginx.ingress.kubernetes.io/proxy-buffering: "off"
-       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-     tls:
-       secretName: coral-tls
-   ```
-
    Run `helm upgrade` with the same arguments as `helm install` to apply a change to your values.
 
 6. Open the Coral UI at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`, or `https://<hosts.mcp>` if you set `hosts.mcp`.

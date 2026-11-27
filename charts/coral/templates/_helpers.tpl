@@ -42,18 +42,15 @@ port behind it. coral's gRPC Service is never among them.
 */}}
 {{- define "coral.routes" -}}
 {{- $fullname := include "coral.fullname" . -}}
-- name: web
-  host: {{ regexReplaceAll ":[0-9]+$" .Values.host "" }}
-  service: {{ $fullname }}-web
-  port: {{ include "coral.port.web" . }}
-- name: auth
-  host: {{ regexReplaceAll ":[0-9]+$" (include "coral.host.auth" .) "" }}
-  service: {{ $fullname }}-auth
-  port: {{ include "coral.port.auth" . }}
-- name: mcp
-  host: {{ regexReplaceAll ":[0-9]+$" (include "coral.host.mcp" .) "" }}
-  service: {{ $fullname }}-mcp
-  port: {{ include "coral.port.mcp" . }}
+{{- $routes := list
+  (list .Values.host "web" (include "coral.port.web" .))
+  (list (include "coral.host.auth" .) "auth" (include "coral.port.auth" .))
+  (list (include "coral.host.mcp" .) "mcp" (include "coral.port.mcp" .)) -}}
+{{- range $routes }}
+- host: {{ regexReplaceAll ":[0-9]+$" (index . 0) "" }}
+  service: {{ $fullname }}-{{ index . 1 }}
+  port: {{ index . 2 }}
+{{- end -}}
 {{- end -}}
 
 {{/* Ports. Coral's listeners bind them; the Services expose them. */}}

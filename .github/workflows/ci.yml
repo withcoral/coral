@@ -340,7 +340,8 @@ jobs:
 
   # Lints, renders and validates the Helm chart, and runs its helm-unittest
   # suites. The cache keeps kubeconform and helm-unittest, which come from
-  # GitHub release downloads; pull requests never save it.
+  # GitHub release downloads, and the schemas kubeconform reads; pull requests
+  # never save it.
   chart:
     name: Chart / Checks
     needs: changes
@@ -364,7 +365,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.TOOLS }}
-          key: chart-tools-${{ env.KUBECONFORM_VERSION }}-${{ env.HELM_UNITTEST_VERSION }}
+          key: chart-tools-${{ env.KUBECONFORM_VERSION }}-${{ env.HELM_UNITTEST_VERSION }}-schemas
       - name: Download kubeconform and helm-unittest
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         run: |
@@ -379,16 +380,19 @@ jobs:
           tar -xzf unittest.tgz untt-linux-amd64
           mv untt-linux-amd64 untt
           rm kubeconform.tgz unittest.tgz
-      - if: ${{ steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.TOOLS }}
-          key: chart-tools-${{ env.KUBECONFORM_VERSION }}-${{ env.HELM_UNITTEST_VERSION }}
       - run: echo "$TOOLS" >> "$GITHUB_PATH"
       # The helm-unittest binary runs the suites without a plugin install.
       - run: make chart-checks
         env:
           HELM_UNITTEST: untt
+          # Kept with the tools, so a cache hit downloads no schema.
+          KUBECONFORM_CACHE: ${{ env.TOOLS }}/schemas
+      # Saved after the checks, so that it keeps the schemas they downloaded.
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TOOLS }}
+          key: chart-tools-${{ env.KUBECONFORM_VERSION }}-${{ env.HELM_UNITTEST_VERSION }}-schemas
 
   # The one check to require. It passes when every gate passed or its paths
   # did not change. A skipped job passes a required check by itself, so

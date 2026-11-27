@@ -5,6 +5,8 @@
 #
 # Needs helm, kubeconform and helm-unittest. HELM_UNITTEST names the command
 # that runs the suites: by default the helm plugin, `helm unittest`.
+# KUBECONFORM_CACHE, when set, names a directory where kubeconform keeps the
+# schemas it downloads.
 set -euo pipefail
 
 chart=charts/coral
@@ -12,6 +14,11 @@ chart=charts/coral
 # supports.
 kube_versions=(1.35.0 1.37.0)
 read -r -a unittest <<<"${HELM_UNITTEST:-helm unittest}"
+cache=()
+if [[ -n "${KUBECONFORM_CACHE:-}" ]]; then
+  mkdir -p "$KUBECONFORM_CACHE"
+  cache=(-cache "$KUBECONFORM_CACHE")
+fi
 # Kubernetes' own schemas don't cover HTTPRoute, a CRD: this catalog does. It
 # is pinned to a commit so that a change upstream can't fail a check.
 crd_schemas='https://raw.githubusercontent.com/datreeio/CRDs-catalog/b50f3fbc45169a14b6d2d3f767b32fd96ef4a3fa/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
@@ -30,7 +37,7 @@ for values in "$chart"/ci/*.yaml; do
   for version in "${kube_versions[@]}"; do
     helm template coral "$chart" -f "$values" --kube-version "$version" \
       | kubeconform -strict -summary -kubernetes-version "$version" \
-        -schema-location default -schema-location "$crd_schemas" -
+        -schema-location default -schema-location "$crd_schemas" "${cache[@]}" -
   done
 done
 
