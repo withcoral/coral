@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://cal.com/docs/api-reference/v2/introduction
+# Official icon: https://github.com/calcom/cal.com/blob/089a39f59f39f4cd613ab0064dc23117b080c538/apps/web/public/cal-com-icon.svg
+schema_version: 1
+id: cal_com
+display_name: Cal.com
+description: Bookings, event types, teams, schedules and availability from Cal.com.
+icons:
+  light: logo.svg
+
+source:
+  openapi:
+    # Cal.com's own API v2 document, from Cal.com's repository. Later
+    # commits do not load: calcom/cal.com#28387 gives two Operations the same
+    # operationId, and since calcom/cal.com#28903 the repository describes
+    # Cal.diy, whose document drops the Teams and Organizations endpoints that
+    # api.cal.com serves. This commit, 17 March 2026, is the last one before
+    # both. Its 272 Operations include personal and team event types, teams
+    # and their memberships, and bookings by event type or team.
+    url: https://raw.githubusercontent.com/calcom/cal.com/089a39f59f39f4cd613ab0064dc23117b080c538/docs/api-reference/v2/openapi.json
+
+authentication:
+  options:
+    api_key:
+      # Cal.com reads the key from `Authorization: Bearer`. Test keys start
+      # with cal_ and live keys with cal_live_.
+      method: bearer
+      label: Paste an API key
+      description: Create an API key under Settings, then Security, in Cal.com.
+      documentation_url: https://cal.com/docs/api-reference/v2/introduction
+
+servers:
+  # The document declares an empty servers list, and each path starts with
+  # /v2, so the base URL is the API host alone.
+  '#/servers':
+    base_url: https://api.cal.com

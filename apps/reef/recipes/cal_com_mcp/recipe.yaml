@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://cal.com/docs/mcp-server
+# The hosted server speaks Streamable HTTP and authorizes with OAuth 2.1. It
+# takes no API key; the API key is only for the local stdio server
+# @calcom/cal-mcp, which Coral cannot reach.
+schema_version: 1
+id: cal_com_mcp
+# The catalog offers this beside the OpenAPI Recipe, on the one cal_com card.
+service: cal_com
+display_name: Cal.com
+description: Bookings, event types, teams and availability from Cal.com.
+icons:
+  light: logo.svg
+
+source:
+  mcp:
+    url: https://mcp.cal.com/mcp
+
+authentication:
+  options:
+    oauth:
+      # MCP authorization metadata supplies the endpoints and scopes. The
+      # server registers clients dynamically or reads a Client ID Metadata
+      # Document, so the Recipe names no client.
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://cal.com/docs/mcp-server
+      flow: authorization_code
