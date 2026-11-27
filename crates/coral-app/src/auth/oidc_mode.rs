@@ -17,6 +17,10 @@ use super::config::{config_error, invalid_provider};
 use super::error::AuthServerError;
 use coral_outbound::{Configured, EndpointUrl};
 
+mod sign_in;
+
+pub(super) use sign_in::OidcMode;
+
 const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
 
 /// Query parameters reserved to the authorization request.

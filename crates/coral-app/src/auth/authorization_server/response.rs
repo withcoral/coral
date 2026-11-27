@@ -9,13 +9,17 @@
 //!
 //! # Trust
 //!
-//! Only two kinds of value reach a response body or a `Location` here: a
-//! `&'static str` chosen by the calling handler, and values the client itself
-//! supplied and Coral stored. Nothing an upstream provider sends is passed in,
-//! so a provider cannot steer a redirect or place text in an error.
+//! Only three kinds of value reach a response body or a `Location` here: a
+//! `&'static str` chosen by the calling handler, a sign-in mode's
+//! [`Refusal`], whose text is fixed or the checked form `<code> <time>`, and
+//! values the client itself supplied and Coral stored. Nothing an upstream
+//! provider sends is passed in, so a provider cannot steer a redirect or
+//! place text in an error.
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use coral_sign_in::Refusal;
+use coral_telemetry::safe;
 use url::Url;
 
 /// A redirect target already checked against a client's registration.
@@ -71,6 +75,17 @@ impl TrustedRedirect {
         self.redirect("error", error, Some(description))
     }
 
+    /// Redirects the browser back to the client with a sign-in mode's
+    /// refusal, and logs it as [`log_refusal`] does.
+    pub(super) fn refused(&self, refusal: &Refusal) -> Response {
+        log_refusal(refusal);
+        self.redirect(
+            "error",
+            refusal.error().as_str(),
+            Some(refusal.description()),
+        )
+    }
+
     fn redirect(&self, key: &str, value: &str, description: Option<&str>) -> Response {
         let mut url = self.url.clone();
         let mut query = url.query_pairs_mut();
@@ -92,6 +107,30 @@ impl TrustedRedirect {
 /// to be sent, so the error is rendered here rather than redirected — a
 /// redirect to an unvalidated URI would make Coral the open redirector.
 pub(super) fn direct_error(error: &'static str, description: &'static str) -> Response {
+    direct(error, description)
+}
+
+/// Reports a sign-in mode's refusal directly, as [`direct_error`] does, and
+/// logs it as [`log_refusal`] does.
+pub(super) fn direct_refusal(refusal: &Refusal) -> Response {
+    log_refusal(refusal);
+    direct(refusal.error().as_str(), refusal.description())
+}
+
+/// Logs a refusal in the form `<code> <time>` by its code. A fixed
+/// refusal's code is the mode's to log, where it knows what failed.
+fn log_refusal(refusal: &Refusal) {
+    if refusal.checked().is_some()
+        && let Some(code) = refusal.code()
+    {
+        tracing::warn!(
+            error.type = safe::kind(code),
+            "The sign-in mode refused the sign-in"
+        );
+    }
+}
+
+fn direct(error: &str, description: &str) -> Response {
     let body = serde_json::json!({
         "error": error,
         "error_description": description,

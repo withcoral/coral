@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
-use coral_db::UnixNanos;
+use coral_db::{Clock, UnixNanos};
 use coral_edition::EnterpriseFeature;
 use serde::de::DeserializeOwned;
 use url::Url;
@@ -293,14 +293,25 @@ pub trait SignInMode: Send + Sync {
     /// Checks `request` against the sign-in `sign_in`, whose cookie core
     /// found and opened, and returns the person it proves.
     ///
+    /// The mode reads `clock`, the deployment's clock, once, after its last
+    /// answer from another server: an instant read before that answer can
+    /// date a proof the server has only just issued in the future.
+    ///
     /// # Errors
     /// Returns the refusal that ends the sign-in.
     async fn check(
         &self,
         request: &ModeRequest<'_>,
         sign_in: &SignInValue,
-        now: UnixNanos,
+        clock: &dyn Clock,
     ) -> Result<ProvenPerson, Refusal>;
+
+    /// The person who signs in as the Organization's first Owner, as the
+    /// mode's settings name them, or `None` when they name no one. Core
+    /// reads it once, when the server starts.
+    fn first_owner(&self) -> Option<PersonIdentifier<'_>> {
+        None
+    }
 }
 
 /// A sign-in's random value. Core makes it when the sign-in begins, and finds
@@ -355,54 +366,136 @@ pub enum Named {
     Refused(Refusal),
 }
 
-/// Why a mode ends a sign-in, as the description that the client receives.
-///
-/// The mode writes the description. Core sends it only in the form
-/// `<code> <time>`, which [`Self::checked`] checks: one space, a code of at
-/// most 64 lowercase letters, digits or `_` that starts with a letter, and
-/// the time in RFC 3339 UTC to the second.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Refusal(String);
+/// The text core sends for a refusal whose description does not have the
+/// form `<code> <time>`.
+pub const DENIED: &str = "authorization was denied";
 
-impl Refusal {
-    /// The refusal with `code` at `now`, in the form that core sends. The
-    /// code must be at most 64 lowercase letters, digits or `_`, starting
-    /// with a letter: for any other, [`Self::checked`] refuses the refusal,
-    /// and core sends none of its text.
-    #[must_use]
-    pub fn new(code: &str, now: UnixNanos) -> Self {
-        let time = chrono::DateTime::from_timestamp_nanos(now.get());
-        Self(format!("{code} {}", time.format(TIME_FORMAT)))
-    }
+/// The text of [`Refusal::failed`].
+const FAILED: &str = "authorization failed";
 
-    /// A refusal whose description the mode wrote itself.
-    #[must_use]
-    pub const fn from_description(description: String) -> Self {
-        Self(description)
-    }
+/// The OAuth error that a refusal sends to the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalError {
+    /// `access_denied`: the person, their provider or the mode refused.
+    AccessDenied,
+    /// `invalid_request`: the answer at the mode's URL is not one it reads.
+    InvalidRequest,
+    /// `server_error`: the sign-in failed, and the person can try again.
+    ServerError,
+}
 
-    /// The description, when it has the form that core sends. Its code,
-    /// which the log records, is the text before the space.
+impl RefusalError {
+    /// The error as OAuth writes it.
     #[must_use]
-    pub fn checked(&self) -> Option<&str> {
-        let (code, time) = self.0.split_once(' ')?;
-        (is_token(code, 64, |c| c == '_') && is_time(time)).then_some(&self.0)
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessDenied => "access_denied",
+            Self::InvalidRequest => "invalid_request",
+            Self::ServerError => "server_error",
+        }
     }
 }
 
-/// `YYYY-MM-DDTHH:MM:SSZ`, and a time that exists. A leap second (`:60`) is
-/// refused, as Reef refuses one.
-fn is_time(value: &str) -> bool {
-    value.len() == 20
-        && value.bytes().enumerate().all(|(index, byte)| match index {
-            4 | 7 => byte == b'-',
-            10 => byte == b'T',
-            13 | 16 => byte == b':',
-            17 => (b'0'..=b'5').contains(&byte),
-            19 => byte == b'Z',
-            _ => byte.is_ascii_digit(),
-        })
-        && chrono::NaiveDateTime::parse_from_str(value, TIME_FORMAT).is_ok()
+/// Why a mode ends a sign-in: the OAuth error and the description that the
+/// client receives, and a code.
+///
+/// A refusal that [`Self::new`] makes is described in the form
+/// `<code> <time>`, which Reef shows, and core logs its code. The others
+/// send a fixed text, and their code is for the mode's own log, written
+/// where the mode knows what failed. Each code is text that the mode's code
+/// fixes, never a request's or a setting's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    error: RefusalError,
+    code: &'static str,
+    description: Description,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Description {
+    /// `<code> <time>`, sent only when the code has the form of one.
+    Form(String),
+    Fixed(&'static str),
+}
+
+impl Refusal {
+    /// `access_denied`, described as `<code> <time>` at `now`. The code must
+    /// be at most 64 lowercase letters, digits or `_`, starting with a
+    /// letter: for any other, core sends [`DENIED`] and none of the code.
+    #[must_use]
+    pub fn new(code: &'static str, now: UnixNanos) -> Self {
+        let time = chrono::DateTime::from_timestamp_nanos(now.get());
+        Self {
+            error: RefusalError::AccessDenied,
+            code,
+            description: Description::Form(format!("{code} {}", time.format(TIME_FORMAT))),
+        }
+    }
+
+    /// `access_denied` with [`DENIED`]: the person or their provider
+    /// refused.
+    #[must_use]
+    pub const fn denied(code: &'static str) -> Self {
+        Self::fixed(RefusalError::AccessDenied, code, DENIED)
+    }
+
+    /// `server_error` with "authorization failed": the sign-in failed on
+    /// Coral's side or the provider's.
+    #[must_use]
+    pub const fn failed(code: &'static str) -> Self {
+        Self::fixed(RefusalError::ServerError, code, FAILED)
+    }
+
+    /// `invalid_request` with `text`.
+    #[must_use]
+    pub const fn invalid(code: &'static str, text: &'static str) -> Self {
+        Self::fixed(RefusalError::InvalidRequest, code, text)
+    }
+
+    const fn fixed(error: RefusalError, code: &'static str, text: &'static str) -> Self {
+        Self {
+            error,
+            code,
+            description: Description::Fixed(text),
+        }
+    }
+
+    /// The OAuth error to send.
+    #[must_use]
+    pub const fn error(&self) -> RefusalError {
+        self.error
+    }
+
+    /// The description in the form `<code> <time>`, when [`Self::new`] made
+    /// the refusal and its code has the form of one.
+    #[must_use]
+    pub fn checked(&self) -> Option<&str> {
+        match &self.description {
+            Description::Form(description) => is_code(self.code).then_some(description.as_str()),
+            Description::Fixed(_) => None,
+        }
+    }
+
+    /// The description to send: the checked form, [`DENIED`] in its place
+    /// when the form is wrong, or the fixed text.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        match &self.description {
+            Description::Form(_) => self.checked().unwrap_or(DENIED),
+            Description::Fixed(text) => text,
+        }
+    }
+
+    /// The code, when it has the form of one.
+    #[must_use]
+    pub fn code(&self) -> Option<&'static str> {
+        is_code(self.code).then_some(self.code)
+    }
+}
+
+/// At most 64 lowercase letters, digits or `_`, starting with a letter.
+fn is_code(value: &str) -> bool {
+    is_token(value, 64, |c| c == '_')
 }
 
 /// The person a mode proved.
@@ -412,9 +505,12 @@ fn is_time(value: &str) -> bool {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProvenPerson {
     identifier: Identifier,
+    display_name: Option<String>,
     name: Option<String>,
     email: Option<String>,
-    email_verified: bool,
+    email_verified: Option<bool>,
+    hosted_domain: Option<String>,
+    observed_at: Option<UnixNanos>,
 }
 
 /// Prints no field: a person's identifier, name and email are personal data.
@@ -461,24 +557,45 @@ impl ProvenPerson {
     const fn of(identifier: Identifier) -> Self {
         Self {
             identifier,
+            display_name: None,
             name: None,
             email: None,
-            email_verified: false,
+            email_verified: None,
+            hosted_domain: None,
+            observed_at: None,
         }
     }
 
-    /// Adds the person's name and email, and whether the mode verified the
-    /// email.
+    /// Adds the name Coral shows for the person.
+    #[must_use]
+    pub fn with_display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name;
+        self
+    }
+
+    /// Adds the person's profile: their name and email, whether the
+    /// provider says it verified the email (`None` when it says nothing),
+    /// and the domain the provider hosts them under.
     #[must_use]
     pub fn with_profile(
         mut self,
         name: Option<String>,
         email: Option<String>,
-        email_verified: bool,
+        email_verified: Option<bool>,
+        hosted_domain: Option<String>,
     ) -> Self {
         self.name = name;
         self.email = email;
         self.email_verified = email_verified;
+        self.hosted_domain = hosted_domain;
+        self
+    }
+
+    /// Adds the instant the provider issued the profile at. A sign-in
+    /// whose profile is older than the one a User holds keeps that one.
+    #[must_use]
+    pub const fn with_observed_at(mut self, observed_at: UnixNanos) -> Self {
+        self.observed_at = Some(observed_at);
         self
     }
 
@@ -493,6 +610,12 @@ impl ProvenPerson {
         }
     }
 
+    /// The name Coral shows for the person.
+    #[must_use]
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
+    }
+
     /// The person's name.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
@@ -505,10 +628,24 @@ impl ProvenPerson {
         self.email.as_deref()
     }
 
-    /// Whether the mode verified the email.
+    /// Whether the provider says it verified the email, or `None` when it
+    /// says nothing.
     #[must_use]
-    pub const fn email_verified(&self) -> bool {
+    pub const fn email_verified(&self) -> Option<bool> {
         self.email_verified
+    }
+
+    /// The domain the provider hosts the person under.
+    #[must_use]
+    pub fn hosted_domain(&self) -> Option<&str> {
+        self.hosted_domain.as_deref()
+    }
+
+    /// The instant the provider issued the profile at, when the mode knows
+    /// it.
+    #[must_use]
+    pub const fn observed_at(&self) -> Option<UnixNanos> {
+        self.observed_at
     }
 }
 

@@ -9,7 +9,8 @@ use std::time::Duration;
 use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
-use super::provider_client::OidcProviderClient;
+use super::oidc_mode::OidcMode;
+use super::query;
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 use axum::Router;
@@ -32,7 +33,6 @@ mod client_authentication;
 mod client_metadata;
 mod cookies;
 mod provider_callback;
-mod query;
 mod registration;
 mod response;
 mod revoke;
@@ -237,6 +237,7 @@ impl CoralAuthorizationServer {
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
+        let sign_in_mode = oidc_sign_in(&self.settings, self.outbound_policy)?;
         let state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
@@ -244,6 +245,7 @@ impl CoralAuthorizationServer {
             self.workspace_resource_family,
             self.database,
             self.outbound_policy,
+            sign_in_mode,
             self.providers,
             self.clock,
         )?;
@@ -404,12 +406,14 @@ struct AuthorizationServerHttpState {
     codes: AuthorizationCodes,
     /// Redeems codes and refresh tokens into access tokens.
     tokens: coral_auth::user_tokens::UserTokens,
-    provider_client: OidcProviderClient,
+    /// Begins each sign-in and proves its person.
+    sign_in_mode: Arc<dyn coral_sign_in::SignInMode>,
     authorization_resources: Arc<BTreeSet<String>>,
     workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
     clients: OAuthClients,
-    /// Domain Module that provisions stable User identities after OIDC validation.
+    /// Domain Module that provisions stable User identities for the people
+    /// the sign-in mode proves.
     user_directory: UserDirectory,
     /// The Workspaces a User can pick when they sign in at the Organization
     /// MCP Endpoint.
@@ -436,6 +440,7 @@ impl AuthorizationServerHttpState {
         workspace_resource_family: Option<WorkspaceMcpUrls>,
         database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
+        sign_in_mode: Arc<dyn coral_sign_in::SignInMode>,
         providers: Option<coral_provider::ProviderModule>,
         clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
@@ -470,13 +475,7 @@ impl AuthorizationServerHttpState {
         // Registered clients resolve from the database; every other client ID
         // falls through to its metadata document.
         let clients = OAuthClients::new(database.clone(), Arc::new(client_metadata_resolver));
-        let mut user_directory = UserDirectory::new(database.clone());
-        if let Some(subject) = settings.bootstrap_owner_subject() {
-            user_directory = user_directory.with_bootstrap_owner(coral_auth::UserIdentifier::new(
-                coral_auth::UserIdentifierKind::Subject,
-                subject,
-            ));
-        }
+        let user_directory = user_directory(database.clone(), sign_in_mode.as_ref());
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         let organization = coral_workspace::OrganizationModule::new(database.clone());
         let tokens = coral_auth::user_tokens::UserTokens::new(database.clone(), session_tokens)
@@ -485,8 +484,7 @@ impl AuthorizationServerHttpState {
             settings,
             codes: AuthorizationCodes::new(database),
             tokens,
-            provider_client: OidcProviderClient::new(outbound_policy)
-                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+            sign_in_mode,
             authorization_resources,
             workspace_resource_family: workspace_resource_family.map(Arc::new),
             client_metadata_resolver: Arc::new(clients.clone()),
@@ -545,6 +543,41 @@ impl AuthorizationResource {
     pub(super) fn picks_workspace(&self) -> bool {
         *self == Self::Mcp(coral_mcp::McpEndpoint::Organization)
     }
+}
+
+/// The OIDC sign-in of `settings`, which reaches its provider under
+/// `policy`.
+fn oidc_sign_in(
+    settings: &ResolvedAuthSettings,
+    policy: coral_outbound::DestinationPolicy,
+) -> Result<Arc<dyn coral_sign_in::SignInMode>, AuthServerError> {
+    let mode = OidcMode::new(
+        settings.provider().clone(),
+        Arc::clone(settings.handshake_keys()),
+        policy,
+    )
+    .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?;
+    Ok(Arc::new(mode))
+}
+
+/// The User directory, with the first Owner that `mode` names.
+fn user_directory(
+    database: Arc<coral_db::Database>,
+    mode: &dyn coral_sign_in::SignInMode,
+) -> UserDirectory {
+    let directory = UserDirectory::new(database);
+    let Some(person) = mode.first_owner() else {
+        return directory;
+    };
+    let (kind, value) = match person {
+        coral_sign_in::PersonIdentifier::Subject { subject, .. } => {
+            (coral_auth::UserIdentifierKind::Subject, subject)
+        }
+        coral_sign_in::PersonIdentifier::NameId(value) => {
+            (coral_auth::UserIdentifierKind::NameId, value)
+        }
+    };
+    directory.with_bootstrap_owner(coral_auth::UserIdentifier::new(kind, value))
 }
 
 /// Handler state for the route tests in this module's children.
@@ -607,6 +640,29 @@ mod test_state {
         resources: &[&str],
     ) -> AuthorizationServerHttpState {
         let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
+        let mode = super::oidc_sign_in(&settings, loopback_policy()).expect("OIDC sign-in");
+        state_over(database, settings, session_tokens, resources, mode)
+    }
+
+    /// [`http_state`] with `mode` as the sign-in mode.
+    pub(super) fn http_state_with_mode(
+        database: &TestDatabase,
+        provider_issuer: &str,
+        extra: &str,
+        resources: &[&str],
+        mode: Arc<dyn coral_sign_in::SignInMode>,
+    ) -> AuthorizationServerHttpState {
+        let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
+        state_over(database, settings, session_tokens, resources, mode)
+    }
+
+    fn state_over(
+        database: &TestDatabase,
+        settings: super::ResolvedAuthSettings,
+        session_tokens: coral_auth::SessionTokenIssuer,
+        resources: &[&str],
+        mode: Arc<dyn coral_sign_in::SignInMode>,
+    ) -> AuthorizationServerHttpState {
         AuthorizationServerHttpState::new(
             Arc::new(settings),
             session_tokens,
@@ -619,6 +675,7 @@ mod test_state {
             None,
             database.database(),
             loopback_policy(),
+            mode,
             Some(coral_provider::ProviderModule::new(
                 loopback_policy(),
                 database.database(),
@@ -629,6 +686,46 @@ mod test_state {
             Arc::new(coral_db::SystemClock),
         )
         .expect("authorization server state")
+    }
+
+    /// `coral-sign-in`'s test mode at `https://idp.example.test/start`,
+    /// with `settings` beside it.
+    pub(super) fn test_mode(settings: &str) -> Arc<dyn coral_sign_in::SignInMode> {
+        coral_sign_in::testing::mode(&format!(
+            "sign_in_url = 'https://idp.example.test/start'\n{settings}"
+        ))
+    }
+
+    /// A mode that names the sign-in whose value is the whole query, and
+    /// refuses the begin and the check with its refusal.
+    pub(super) struct Refusing(pub(super) coral_sign_in::Refusal);
+
+    #[async_trait::async_trait]
+    impl coral_sign_in::SignInMode for Refusing {
+        async fn begin(
+            &self,
+            _sign_in: &coral_sign_in::SignInValue,
+            _now: coral_db::UnixNanos,
+        ) -> Result<url::Url, coral_sign_in::Refusal> {
+            Err(self.0.clone())
+        }
+
+        fn names(
+            &self,
+            request: &coral_sign_in::ModeRequest<'_>,
+            _now: coral_db::UnixNanos,
+        ) -> coral_sign_in::Named {
+            coral_sign_in::Named::SignIn(coral_sign_in::SignInValue::new(request.query.to_owned()))
+        }
+
+        async fn check(
+            &self,
+            _request: &coral_sign_in::ModeRequest<'_>,
+            _sign_in: &coral_sign_in::SignInValue,
+            _clock: &dyn coral_db::Clock,
+        ) -> Result<coral_sign_in::ProvenPerson, coral_sign_in::Refusal> {
+            Err(self.0.clone())
+        }
     }
 }
 
@@ -798,6 +895,8 @@ mod tests {
             .expect("register the exact extra")
             .with_workspace_resource_family(WorkspaceMcpUrls::new(base).expect("Workspace URLs"));
 
+        let sign_in_mode = super::oidc_sign_in(&prepared.settings, prepared.outbound_policy)
+            .expect("OIDC sign-in");
         let state = super::AuthorizationServerHttpState::new(
             prepared.settings,
             prepared.session_tokens,
@@ -805,6 +904,7 @@ mod tests {
             prepared.workspace_resource_family,
             prepared.database,
             prepared.outbound_policy,
+            sign_in_mode,
             None,
             prepared.clock,
         )
