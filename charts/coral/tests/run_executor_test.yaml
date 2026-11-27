@@ -15,8 +15,6 @@ tests:
           path: spec.template.spec.volumes
       - notExists:
           path: spec.template.spec.containers[0].volumeMounts
-      - notExists:
-          path: spec.template.spec.serviceAccountName
       - equal:
           path: spec.template.spec.securityContext
           value:

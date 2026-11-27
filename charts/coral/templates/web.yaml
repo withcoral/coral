@@ -1,4 +1,5 @@
 {{- $fullname := include "coral.fullname" . -}}
+{{- include "coral.checkExtraEnv" (list "web.extraEnv" .Values.web.extraEnv (list "PORT" "CORAL_ENDPOINT" "CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT" "CORAL_WEB_AUTH_MODE" "CORAL_WEB_PUBLIC_URL" "CORAL_WEB_AUTH_ISSUER" "AGENTS_WITH_AVAILABLE_PLUGINS" "CORAL_WEB_SESSION_SECRET" "NODE_EXTRA_CA_CERTS")) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,7 +22,14 @@ spec:
       labels:
         {{- include "coral.labels" . | nindent 8 }}
         app.kubernetes.io/component: web
+      annotations:
+        # A new annotation, such as an IRSA role, reaches only new pods.
+        checksum/serviceaccount: {{ toYaml .Values.web.serviceAccount.annotations | sha256sum }}
+        {{- with .Values.web.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
+      serviceAccountName: {{ $fullname }}-web
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -57,6 +65,28 @@ spec:
               value: {{ join "," . | quote }}
             {{- end }}
             {{- include "coral.secretEnv" (list . "CORAL_WEB_SESSION_SECRET" "secrets.webSessionSecret" .Values.secrets.webSessionSecret) | nindent 12 }}
+            {{- if .Values.tls.extraCABundle.key }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/coral/extra-ca/ca.crt
+            {{- end }}
+            {{- with .Values.web.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.web.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.tls.extraCABundle.key .Values.web.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.tls.extraCABundle.key }}
+            - name: extra-ca
+              mountPath: /etc/coral/extra-ca
+              readOnly: true
+            {{- end }}
+            {{- with .Values.web.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -71,6 +101,13 @@ spec:
             {{- toYaml .Values.web.resources | nindent 12 }}
           securityContext:
             {{- include "coral.containerSecurityContext" . | nindent 12 }}
+      {{- if or .Values.tls.extraCABundle.key .Values.web.extraVolumes }}
+      volumes:
+        {{- include "coral.caBundleVolume" (list "tls.extraCABundle" .Values.tls.extraCABundle "extra-ca") | nindent 8 }}
+        {{- with .Values.web.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
 ---
 # The UI, for your routing to https://<host>.
 apiVersion: v1

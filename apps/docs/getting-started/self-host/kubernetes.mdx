@@ -19,7 +19,7 @@ To try Coral without a Postgres server, use [Docker Compose](/getting-started/se
 ## Prerequisites
 
 - **Kubernetes 1.35 or later**, and Helm 3.8 or later.
-- **Postgres**, with pgvector 0.7 or later and `pg_trgm`. Create both extensions in Coral's database before you install, or give Coral's database role permission to create them. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector). If your server does not have pgvector, set `semantic_search_enabled: false` under `config.search` in your values.
+- **Postgres**, with pgvector 0.7 or later and `pg_trgm`. Create both extensions in Coral's database before you install, or give Coral's database role permission to create them. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector). If your server does not have pgvector, set `semantic_search_enabled: false` under `config.search` in your values. Coral connects with `sslmode=verify-full`: if a private CA signs your server's certificate, see [Postgres with a private CA](#postgres-with-a-private-ca).
 - **An OIDC provider.** Register `https://auth.<coral-host>/auth/oidc/callback` as the redirect URI. If you set `hosts.auth`, register `https://<hosts.auth>/auth/oidc/callback` instead.
 - **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller or a Gateway, with certificates from cert-manager or your load balancer. See [Routing](#routing).
 
@@ -103,7 +103,28 @@ Render again from the new chart for each upgrade.
 
 ### Postgres with a private CA
 
-The chart cannot mount a CA bundle yet. If your Postgres server's certificate comes from a private CA, set `sslmode=require` in `CORAL_DATABASE_URL`. Coral then encrypts the connection, but does not check the server's certificate.
+Coral needs `sslmode=verify-full` in `CORAL_DATABASE_URL` for a remote database, so it checks the server's certificate. If a private CA signs that certificate, such as Amazon RDS's CA, give the chart the CA's PEM bundle:
+
+1. Put the bundle in a ConfigMap or a Secret. For Amazon RDS:
+
+   ```shell
+   curl -fsSLo global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+   kubectl -n coral create configmap rds-ca --from-file=global-bundle.pem
+   ```
+
+2. Name it in your values:
+
+   ```yaml
+   database:
+     tls:
+       caBundle:
+         configMapName: rds-ca
+         key: global-bundle.pem
+   ```
+
+   For a Secret, set `secretName` instead of `configMapName`.
+
+The chart mounts the bundle in the `coral` pods and sets `PGSSLROOTCERT` to it.
 
 ## Routing
 
@@ -149,6 +170,19 @@ With an Ingress, do one of these:
 With HTTPRoutes, your Gateway's listeners hold the certificates.
 
 Coral's public URLs always use `https`, so serve each host over HTTPS.
+
+#### A private CA for your hosts
+
+To sign users in, `coral` and `coral-web` call Coral's own hosts from inside the cluster, and check their certificates. If a private CA signs those certificates, sign-in fails until both trust it. Put the CA's PEM bundle in a ConfigMap or a Secret, and name it in your values:
+
+```yaml
+tls:
+  extraCABundle:
+    configMapName: internal-ca
+    key: ca.crt
+```
+
+The pods trust this CA as well as the public CAs, so they still reach your OIDC provider. Restart the pods after you change the CA.
 
 ### Examples
 
@@ -226,6 +260,120 @@ spec:
       streamIdleTimeout: 3600s
 ```
 
+## Secrets
+
+### Rotate a secret
+
+The pods read their secrets when they start. After you change a Secret, restart the pods:
+
+```shell
+kubectl -n coral rollout restart deployment/coral deployment/coral-web deployment/coral-run-executor
+```
+
+To restart them each time a Secret changes, install a controller such as [Reloader](https://github.com/stakater/Reloader). Reloader reads its annotation on each Deployment, not on the pods, so add it with `kubectl`:
+
+```shell
+kubectl -n coral annotate deployment coral coral-web coral-run-executor reloader.stakater.com/auto="true"
+```
+
+Do not rotate `CORAL_CREDENTIALS_KEY`: Coral cannot read the credentials it encrypted with the old key. To rotate the Run Executor token, see [Run Executors](#run-executors).
+
+### Keep secrets in External Secrets Operator
+
+The chart reads a Secret, so any tool that writes one works. With [External Secrets Operator](https://external-secrets.io), an `ExternalSecret` can write the chart's Secret from your secret manager.
+
+This example reads Coral's keys from a JSON secret, `coral/prod`, in AWS Secrets Manager. It builds `CORAL_DATABASE_URL` from the user name and password that Amazon RDS keeps in its own secret. It assumes a `ClusterSecretStore` named `aws-secrets-manager`:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  target:
+    # The Secret that the chart reads: the release's name.
+    name: coral
+    template:
+      engineVersion: v2
+      # Keep the keys from dataFrom, and add the database URL.
+      mergePolicy: Merge
+      data:
+        CORAL_DATABASE_URL: "postgres://{{ .username | urlquery | replace \"+\" \"%20\" }}:{{ .password | urlquery | replace \"+\" \"%20\" }}@coral.abc123.eu-west-2.rds.amazonaws.com:5432/coral?sslmode=verify-full"
+  data:
+    - secretKey: username
+      remoteRef:
+        key: rds!db-0123abcd-4567-89ef-0123-456789abcdef
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: rds!db-0123abcd-4567-89ef-0123-456789abcdef
+        property: password
+  # A JSON object with CORAL_CREDENTIALS_KEY, CORAL_SESSION_SIGNING_KEY,
+  # CORAL_OIDC_CLIENT_SECRET, CORAL_WEB_SESSION_SECRET and
+  # CORAL_RUN_EXECUTOR_TOKEN, and CORAL_LICENSE if you have a License.
+  dataFrom:
+    - extract:
+        key: coral/prod
+```
+
+`urlquery` escapes the special characters in the user name and password, and `replace` turns the `+` it writes for a space into `%20`, so the URL stays valid. Amazon RDS needs its CA: see [Postgres with a private CA](#postgres-with-a-private-ca).
+
+## Cloud access and other settings
+
+Each of `coral` and `web` takes these values, as Kubernetes writes them:
+
+- `extraEnv`, `extraEnvFrom`, `extraVolumes` and `extraVolumeMounts`, for the container.
+- `podAnnotations`, for the pods.
+- `serviceAccount.annotations`. Each runs as its own ServiceAccount: `coral` for `coral`, and `coral-web` for `coral-web`.
+
+An `extraEnv` entry cannot set a variable that the chart sets, such as `CORAL_ENDPOINT`. Use the chart's value for it instead.
+
+Run Executors take only `extraEnv`, with a `name` and a `value`. They run as their own ServiceAccount, `coral-run-executor`, with no annotations. A Run Executor reads no Secret but its token's, and has no volume. Do not put a secret in its `extraEnv`.
+
+### AWS access with EKS Pod Identity
+
+A [secret store](/reference/configuration#secret_stores) in AWS Secrets Manager needs AWS credentials in the `coral` pods. On EKS, use Pod Identity:
+
+1. Create an IAM role that Pod Identity can assume, and that can read the secrets. See [Give the role least privilege](/reference/configuration#give-the-role-least-privilege).
+2. Associate the role with the `coral` ServiceAccount:
+
+   ```shell
+   aws eks create-pod-identity-association --cluster-name <cluster> \
+     --namespace coral --service-account coral \
+     --role-arn arn:aws:iam::111122223333:role/coral-secrets
+   ```
+
+3. Add the store to your values. Secret stores need the [Enterprise Edition](/reference/editions), so add `CORAL_LICENSE` to the Secret and set `secrets.license.enabled: true` too.
+
+   ```yaml
+   config:
+     secret_stores:
+       - name: prod-aws
+         kind: aws-secrets-manager
+         account_id: "111122223333"
+         region: eu-west-2
+   ```
+
+4. Run `helm upgrade`. The new `coral` pods get credentials from Pod Identity.
+
+To use IAM roles for service accounts (IRSA) instead, replace steps 1 and 2. Create a role that trusts your cluster's OIDC provider for the `coral` ServiceAccount in the `coral` namespace, and that can read the secrets. A role that trusts Pod Identity does not work for IRSA. Then set the role on the ServiceAccount:
+
+```yaml
+coral:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/coral-secrets
+```
+
+### Usage Reports
+
+Coral sends an anonymous [usage report](/reference/configuration#usage-data) each day. To stop it, set `usageReports.enabled: false`.
+
 ## Run Executors
 
 Run Executors run your users' programs, each in its own pod, apart from Coral's secrets. Each pod holds only its token. It runs as a non-root user on a read-only file system, with no capabilities, no service account token and no volumes. No value changes this.
@@ -259,11 +407,7 @@ Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first, and the re
 
 3. To go back one release, run `helm rollback coral --namespace coral`. To go back further, restore your backup.
 
-A change to your values rolls the pods when you run `helm upgrade`. To pick up a changed Secret, restart the pods:
-
-```shell
-kubectl -n coral rollout restart deployment/coral deployment/coral-web deployment/coral-run-executor
-```
+A change to your values rolls the pods when you run `helm upgrade`. To pick up a changed Secret, see [Rotate a secret](#rotate-a-secret).
 
 ## Offering a Coral plugin
 

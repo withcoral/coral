@@ -1,0 +1,31 @@
+suite: usage reports
+release:
+  name: prod
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+tests:
+  - it: sends Usage Reports by default
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_DISABLE_USAGE_DATA
+          any: true
+
+  - it: stops Usage Reports when they are off
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      usageReports.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CORAL_DISABLE_USAGE_DATA
+            value: "1"

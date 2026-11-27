@@ -8,6 +8,7 @@ templates:
   - templates/coral.yaml
   - templates/web.yaml
   - templates/run-executor.yaml
+  - templates/serviceaccount.yaml
 tests:
   - it: names every object after the release
     asserts:

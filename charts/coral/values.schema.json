@@ -190,6 +190,51 @@
         }
       }
     },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tls"
+      ],
+      "properties": {
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "caBundle"
+          ],
+          "properties": {
+            "caBundle": {
+              "$ref": "#/definitions/caBundle"
+            }
+          }
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "extraCABundle"
+      ],
+      "properties": {
+        "extraCABundle": {
+          "$ref": "#/definitions/caBundle"
+        }
+      }
+    },
+    "usageReports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
     "config": {
       "type": "object",
       "description": "Coral's config.toml, merged on top of the chart's settings.",
@@ -231,7 +276,13 @@
         "image",
         "replicas",
         "resources",
-        "probes"
+        "probes",
+        "podAnnotations",
+        "serviceAccount",
+        "extraEnv",
+        "extraEnvFrom",
+        "extraVolumes",
+        "extraVolumeMounts"
       ],
       "properties": {
         "image": {
@@ -263,6 +314,45 @@
               "$ref": "#/definitions/probe"
             }
           }
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/annotations"
+        },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "annotations"
+          ],
+          "properties": {
+            "annotations": {
+              "$ref": "#/definitions/annotations"
+            }
+          }
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/envVar"
+          }
+        },
+        "extraEnvFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/volume"
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/volumeMount"
+          }
         }
       }
     },
@@ -273,7 +363,13 @@
         "image",
         "replicas",
         "resources",
-        "probes"
+        "probes",
+        "podAnnotations",
+        "serviceAccount",
+        "extraEnv",
+        "extraEnvFrom",
+        "extraVolumes",
+        "extraVolumeMounts"
       ],
       "properties": {
         "image": {
@@ -311,6 +407,45 @@
             "pattern": "^[A-Za-z0-9]+([ ._-][A-Za-z0-9]+)*$",
             "maxLength": 32
           }
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/annotations"
+        },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "annotations"
+          ],
+          "properties": {
+            "annotations": {
+              "$ref": "#/definitions/annotations"
+            }
+          }
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/envVar"
+          }
+        },
+        "extraEnvFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/volume"
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/volumeMount"
+          }
         }
       }
     },
@@ -324,7 +459,8 @@
         "token",
         "previousToken",
         "resources",
-        "probes"
+        "probes",
+        "extraEnv"
       ],
       "properties": {
         "replicas": {
@@ -362,6 +498,13 @@
             "liveness": {
               "$ref": "#/definitions/probe"
             }
+          }
+        },
+        "extraEnv": {
+          "type": "array",
+          "description": "Plain values only: a Run Executor reads no Secret but its token's.",
+          "items": {
+            "$ref": "#/definitions/plainEnvVar"
           }
         }
       }
@@ -467,6 +610,102 @@
       "type": "object",
       "additionalProperties": {
         "type": "string"
+      }
+    },
+    "caBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configMapName",
+        "secretName",
+        "key"
+      ],
+      "properties": {
+        "configMapName": {
+          "type": "string"
+        },
+        "secretName": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      }
+    },
+    "envVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string"
+        },
+        "valueFrom": {
+          "type": "object"
+        }
+      },
+      "not": {
+        "required": [
+          "value",
+          "valueFrom"
+        ],
+        "properties": {
+          "value": {
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "plainEnvVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "volume": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "volumeMount": {
+      "type": "object",
+      "required": [
+        "name",
+        "mountPath"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mountPath": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   }
