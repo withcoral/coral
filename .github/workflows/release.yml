@@ -2,13 +2,15 @@ name: Release
 
 # Builds, signs and publishes Desktop to the v1 update feed, and the runtime
 # and coral-web images and the Helm chart to GHCR, as one release: no
-# artifact is visible until every artifact is verified. Each Desktop platform
-# job compiles and stages with no credentials, then hands the staged build to
-# xtask, which owns packaging, signing, notarization and verification. Every Desktop asset goes
-# to a draft release in the feed repository, which updaters ignore. The images
-# are pushed by digest only, which no tag reaches. The promote job publishes
-# the release whole: it tags the images, pushes and signs the chart, attaches
-# images.txt to this repository's release, then publishes the draft.
+# artifact is visible until every artifact is verified, but for the chart,
+# which is public for the seconds between its push and its signature. Each
+# Desktop platform job compiles and stages with no credentials, then hands the
+# staged build to xtask, which owns packaging, signing, notarization and
+# verification. Every Desktop asset goes to a draft release in the feed
+# repository, which updaters ignore. The images are pushed by digest only,
+# which no tag reaches. The promote job publishes the release whole: it tags
+# the images, pushes and signs the chart, attaches images.txt to this
+# repository's release, then publishes the draft.
 #
 # The feed never lives in withcoral/coral, whose releases the 0.x app
 # polls, or that app would update itself into this one.
