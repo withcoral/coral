@@ -71,7 +71,9 @@ spec:
             httpGet:
               path: /ready
               port: envoy-health
-            {{- include "coral.probeTimings" .Values.web.probes.liveness | nindent 12 }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.web.envoy.resources | nindent 12 }}
           securityContext:

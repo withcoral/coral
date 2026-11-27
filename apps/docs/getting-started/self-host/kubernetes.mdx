@@ -391,7 +391,9 @@ To rotate the token without downtime:
 
 ## The Envoy sidecar
 
-Each `coral-web` pod runs an Envoy sidecar. Envoy sends each of the pod's gRPC requests to the next `coral` pod in turn. It finds the pods through the `coral-headless` Service. Without Envoy, a `coral-web` pod keeps one connection to the `coral` Service, so one `coral` pod takes all of that pod's load.
+Each `coral-web` pod runs an Envoy sidecar. Envoy sends each of the pod's gRPC requests to the next `coral` pod in turn. It finds the pods through the `coral-headless` Service. Without Envoy, a `coral-web` pod keeps one connection to the `coral` Service. One `coral` pod then takes all of that pod's load.
+
+Envoy picks a `coral` pod when a request starts. A long request, such as a live update stream, stays on its pod. After you add `coral` pods, these requests move only when they reconnect.
 
 The sidecar uses the upstream `envoyproxy/envoy` image, pinned by digest. To pull it from your own registry, set `global.imageRegistry` or `web.envoy.image`. To size it, set `web.envoy.resources`.
 

@@ -71,7 +71,7 @@ tests:
           path: spec.template.spec.initContainers[0].image
           value: registry.internal/envoyproxy/envoy@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
 
-  - it: rolls coral-web when the Envoy config changes
+  - it: puts the Envoy config's checksum on the pod, so a change rolls it
     template: templates/web.yaml
     documentSelector:
       path: kind
