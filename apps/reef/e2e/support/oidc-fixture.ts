@@ -34,7 +34,7 @@ const starting: RequestListener = (_request, response) => {
 
 /**
  * Serves the identity provider at a fixed HTTPS hostname, for a Coral that
- * runs elsewhere and cannot reach this process's loopback: the install suite's
+ * runs elsewhere and cannot reach this process's loopback: the helm-install suite's
  * cluster. The owner's subject and the client secret are fixed before Coral
  * starts, so they come from its setup. Without these, the provider listens on
  * loopback HTTP at a free port, and makes both up.

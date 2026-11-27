@@ -21,7 +21,7 @@ update-ca-certificates >/dev/null
 mkdir -p "$HOME/.pki/nssdb"
 certutil -N -d "sql:$HOME/.pki/nssdb" --empty-password
 certutil -A -d "sql:$HOME/.pki/nssdb" -n reel -t 'C,,' -i "$E2E_TLS_DIRECTORY/trusted-ca.pem"
-# The install suite's host made a CA for the cluster's Gateway, identity
+# The helm-install suite's host made a CA for the cluster's Gateway, identity
 # provider and Postgres. Chromium, the system and Node trust it too.
 if [[ -f /run/reel-install/ca.pem ]]; then
   cp /run/reel-install/ca.pem /usr/local/share/ca-certificates/reel-install.crt

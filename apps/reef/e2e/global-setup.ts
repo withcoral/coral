@@ -121,7 +121,7 @@ async function startInstallTarget(settings: InstallSettings) {
     await ready(web)
     return {
       target: {
-        name: 'install' as const,
+        name: 'helm-install' as const,
         baseURL: web,
         mcpURL: `https://${INSTALL_HOSTS.mcp}`,
         publicOrigins: [web, auth, `https://${INSTALL_HOSTS.mcp}`],

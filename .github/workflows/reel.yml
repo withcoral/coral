@@ -19,7 +19,7 @@ on:
         description: This run's part of the suite, such as 1of4
         type: string
         default: ""
-      # The install suite's coral and coral-web images, which the images job
+      # The helm-install suite's coral and coral-web images, which the images job
       # saves in this run.
       images-artifact:
         type: string
@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: Product journeys, focused local-mode checks, the packaged Desktop app, or two Coral Instances. The install suite runs from ci.yml, which builds its images.
+        description: Product journeys, focused local-mode checks, the packaged Desktop app, or two Coral Instances. The helm-install suite runs from ci.yml, which builds its images.
         type: choice
         options: [main, local-mode, desktop, multi-instance]
         default: main
@@ -63,17 +63,17 @@ jobs:
       - uses: ./.github/actions/npm-install
         with:
           packages: apps/reef
-      # The install suite runs kind, kubectl and Helm on the runner. kind comes
+      # The helm-install suite runs kind, kubectl and Helm on the runner. kind comes
       # from a GitHub release download, so the cache keeps it; pull requests
       # never save it.
-      - if: ${{ inputs.suite == 'install' }}
+      - if: ${{ inputs.suite == 'helm-install' }}
         id: install-tools
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.TOOLS }}
           key: install-tools-${{ env.KIND_VERSION }}-${{ env.KUBECTL_VERSION }}
       - name: Download kind and kubectl
-        if: ${{ inputs.suite == 'install' && steps.install-tools.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.suite == 'helm-install' && steps.install-tools.outputs.cache-hit != 'true' }}
         run: |
           mkdir -p "$TOOLS"
           cd "$TOOLS"
@@ -82,24 +82,24 @@ jobs:
           curl -fsSLo kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
           echo "$KUBECTL_SHA256  kubectl" | sha256sum -c -
           chmod +x kind kubectl
-      - if: ${{ inputs.suite == 'install' && steps.install-tools.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
+      - if: ${{ inputs.suite == 'helm-install' && steps.install-tools.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.TOOLS }}
           key: install-tools-${{ env.KIND_VERSION }}-${{ env.KUBECTL_VERSION }}
-      - if: ${{ inputs.suite == 'install' }}
+      - if: ${{ inputs.suite == 'helm-install' }}
         run: echo "$TOOLS" >> "$GITHUB_PATH"
-      - if: ${{ inputs.suite == 'install' }}
+      - if: ${{ inputs.suite == 'helm-install' }}
         uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v4.3.2
-      - if: ${{ inputs.suite == 'install' }}
+      - if: ${{ inputs.suite == 'helm-install' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ inputs.images-artifact }}
-      - name: Load the install suite's images
-        if: ${{ inputs.suite == 'install' }}
-        run: zstd -dc install-images.tar.zst | docker load
+      - name: Load the helm-install suite's images
+        if: ${{ inputs.suite == 'helm-install' }}
+        run: zstd -dc helm-install-images.tar.zst | docker load
       # Keeps the Reel image's layers and cache mounts between runs.
       - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
         with:
@@ -107,8 +107,8 @@ jobs:
       - name: Record the suite
         env:
           # The harness checks itself once per suite, in the first shard.
-          # The install suite builds neither Coral nor Reef, which the check needs.
-          REEL_SELF_CHECK: ${{ inputs.suite != 'install' && (!inputs.shard || startsWith(inputs.shard, '1of')) && '1' || '0' }}
+          # The helm-install suite builds neither Coral nor Reef, which the check needs.
+          REEL_SELF_CHECK: ${{ inputs.suite != 'helm-install' && (!inputs.shard || startsWith(inputs.shard, '1of')) && '1' || '0' }}
           E2E_FILM: ${{ inputs.film && '1' || '0' }}
           REEL_SUITE: ${{ inputs.suite }}
           REEL_DATABASE: ${{ inputs.database }}
@@ -136,7 +136,7 @@ jobs:
         if: ${{ always() && (failure() || cancelled() || github.event.repository.private) }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: reel-${{ inputs.suite }}-${{ (inputs.suite == 'multi-instance' || inputs.suite == 'install') && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reel-${{ inputs.suite }}-${{ (inputs.suite == 'multi-instance' || inputs.suite == 'helm-install') && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/
           if-no-files-found: warn
           retention-days: 7

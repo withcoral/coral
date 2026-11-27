@@ -1,4 +1,4 @@
-// What the install suite's host-side setup (install/cluster.ts) and its test
+// What the helm-install suite's host-side setup (install/cluster.ts) and its test
 // process agree on: the Install's hosts, the identity provider's, and how the
 // container learns the rest. Both sides import this file and nothing else from
 // each other.
@@ -45,7 +45,7 @@ export function installSettings(env: NodeJS.ProcessEnv): InstallSettings {
   const clientSecret = env.E2E_INSTALL_CLIENT_SECRET
   if (!ownerSubject || !/^reel-[0-9a-f-]{36}$/.test(ownerSubject) || !clientSecret)
     throw new Error(
-      'The install suite runs in the Reel container, against a cluster that install/cluster.ts sets up',
+      'The helm-install suite runs in the Reel container, against a cluster that install/cluster.ts sets up',
     )
   return {
     ownerSubject,

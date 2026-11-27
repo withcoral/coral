@@ -35,7 +35,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       images: ${{ steps.filter.outputs.images }}
       desktop-app: ${{ steps.filter.outputs.desktop-app }}
-      install: ${{ steps.filter.outputs.install }}
+      helm-install: ${{ steps.filter.outputs.helm-install }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -78,16 +78,16 @@ jobs:
               - '!apps/docs/**'
               - '!apps/desktop/**'
               - '!apps/reef/e2e/**'
-            # Desktop's macOS and Windows jobs and the install suite cost the
+            # Desktop's macOS and Windows jobs and the helm-install suite cost the
             # most, so they are the only ones that name their inputs.
             # desktop.yml also runs nightly.
             desktop-app:
               - '{.github/**,apps/desktop/**}'
-            # The install suite: the chart, migrations, .proto files, and Reel,
+            # The helm-install suite: the chart, migrations, .proto files, and Reel,
             # whose harness it runs on, but not the other suites' scenarios.
-            install:
+            helm-install:
               - '{.github/**,charts/**,crates/coral-db/migrations/**,**/*.proto,apps/reef/e2e/**}'
-              - '!apps/reef/e2e/scenarios/!(install)/**'
+              - '!apps/reef/e2e/scenarios/!(helm-install)/**'
 
   rust:
     name: Rust / Checks
@@ -260,8 +260,8 @@ jobs:
   images:
     name: Images / Tests
     needs: changes
-    # The install suite installs these images, so it needs them built too.
-    if: ${{ needs.changes.outputs.images != 'false' || needs.changes.outputs.install != 'false' }}
+    # The helm-install suite installs these images, so it needs them built too.
+    if: ${{ needs.changes.outputs.images != 'false' || needs.changes.outputs.helm-install != 'false' }}
     # The runtime image's build compiles the release binary.
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 60
@@ -279,14 +279,14 @@ jobs:
         with:
           cache-key: images
       - run: make docker-test
-      # The install suite loads both images into its kind cluster.
-      - if: ${{ needs.changes.outputs.install != 'false' }}
-        run: docker save coral:local coral-web:local | zstd -T0 -3 > install-images.tar.zst
-      - if: ${{ needs.changes.outputs.install != 'false' }}
+      # The helm-install suite loads both images into its kind cluster.
+      - if: ${{ needs.changes.outputs.helm-install != 'false' }}
+        run: docker save coral:local coral-web:local | zstd -T0 -3 > helm-install-images.tar.zst
+      - if: ${{ needs.changes.outputs.helm-install != 'false' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: install-images
-          path: install-images.tar.zst
+          name: helm-install-images
+          path: helm-install-images.tar.zst
           # Already compressed, and needed only by this run.
           compression-level: 0
           retention-days: 1
@@ -360,14 +360,14 @@ jobs:
 
   # Installs the chart on kind, from the images job's images, and drives the
   # Install through its HTTPRoutes as a user and an MCP client would.
-  reel-install:
+  reel-helm-install:
     name: Reel
     needs: [changes, images]
-    if: ${{ needs.changes.outputs.install != 'false' }}
+    if: ${{ needs.changes.outputs.helm-install != 'false' }}
     uses: ./.github/workflows/reel.yml
     with:
-      suite: install
-      images-artifact: install-images
+      suite: helm-install
+      images-artifact: helm-install-images
 
   # Lints, renders and validates the Helm chart, and runs its helm-unittest
   # suites. The cache keeps kubeconform and helm-unittest, which come from
@@ -430,7 +430,7 @@ jobs:
   # requiring the gates one by one would also pass when `changes` fails.
   required:
     name: Required
-    needs: [changes, chart, rust, ee-boundary, rust-embedded-js, postgres, rust-windows, reef, images, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance, reel-install]
+    needs: [changes, chart, rust, ee-boundary, rust-embedded-js, postgres, rust-windows, reef, images, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance, reel-helm-install]
     if: ${{ always() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5

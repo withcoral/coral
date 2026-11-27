@@ -39,7 +39,7 @@ export interface Target {
     | 'local-mode'
     | 'desktop'
     | 'multi-instance'
-    | 'install'
+    | 'helm-install'
     | 'attached-local'
     | 'harness'
   authentication?: AuthenticationTarget
@@ -56,7 +56,7 @@ export interface InstancesTarget {
 
 /**
  * Each suite's database. Only main selects one; several Coral Instances share
- * one database only on Postgres. The install suite's Install runs on its own
+ * one database only on Postgres. The helm-helm-install suite's Install runs on its own
  * Postgres, in the cluster.
  */
 const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
@@ -64,13 +64,13 @@ const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
   'local-mode': 'sqlite',
   desktop: 'sqlite',
   'multi-instance': 'postgres',
-  install: 'postgres',
+  'helm-install': 'postgres',
 }
 export const SUITES = Object.keys(SUITE_DATABASE)
 
-/** Whether Reel provisions the suite's database. The install suite's cluster brings its own. */
+/** Whether Reel provisions the suite's database. The helm-helm-install suite's cluster brings its own. */
 export function reelProvisionsDatabase(suite: string) {
-  return suite !== 'install'
+  return suite !== 'helm-install'
 }
 
 /** Rejects a suite, or a database the suite does not run on. Harness probes run on SQLite. */
@@ -174,7 +174,7 @@ export function commandOptions(args: string[]) {
       else database = value
     } else if (flag === '--desktop' || flag === '--project') {
       throw new Error(
-        'Select --suite main, local-mode, desktop, multi-instance or install; use --database postgres for main',
+        'Select --suite main, local-mode, desktop, multi-instance or helm-install; use --database postgres for main',
       )
     } else vitest.push(argument)
   }
@@ -262,7 +262,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
             },
           }
         : undefined,
-    install: suite === 'install' ? installSettings(env) : undefined,
+    install: suite === 'helm-install' ? installSettings(env) : undefined,
     film: env.E2E_FILM === '1',
     ffmpegBinary: env.E2E_FFMPEG_BINARY || 'ffmpeg',
     probes,

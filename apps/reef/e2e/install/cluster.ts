@@ -1,4 +1,4 @@
-// Sets up the install suite's cluster on the host, before the Reel container
+// Sets up the helm-install suite's cluster on the host, before the Reel container
 // starts, and takes it down after: a kind cluster with Envoy Gateway, a
 // test-only Postgres and an Install from charts/coral. The Reel container then
 // joins kind's Docker network and drives the Install from outside, as a user

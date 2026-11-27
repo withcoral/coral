@@ -99,9 +99,9 @@ try {
     await mkdir(directory, { recursive: true })
     console.log(`Reel host evidence: ${directory}`)
   }
-  // The install suite's container joins kind's network instead of its own.
-  if (options.suite === 'install') {
-    if (engine !== 'docker') throw new Error('The install suite runs kind, which needs Docker')
+  // The helm-helm-install suite's container joins kind's network instead of its own.
+  if (options.suite === 'helm-install') {
+    if (engine !== 'docker') throw new Error('The helm-install suite runs kind, which needs Docker')
     install = await startInstall({
       // Built from this checkout: make docker-build reef-docker-build.
       coralImage: process.env.REEL_INSTALL_CORAL_IMAGE || 'coral:local',
@@ -140,7 +140,7 @@ try {
     '-e',
     `REEL_SELF_CHECK=${process.env.REEL_SELF_CHECK === '1' ? '1' : '0'}`,
     '-e',
-    // The install suite's cluster brings its own Postgres.
+    // The helm-helm-install suite's cluster brings its own Postgres.
     `REEL_DATABASE=${reelProvisionsDatabase(options.suite) ? options.database : 'none'}`,
     '-e',
     `E2E_SOURCE_COMMIT=${sha}`,

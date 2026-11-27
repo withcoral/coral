@@ -94,24 +94,24 @@ test('routine setup needs no host provisioning and Postgres remains runner-owned
   )
 })
 
-test('the install suite drives a cluster that brings its own Postgres and sign-in settings', () => {
-  assert.deepEqual(commandOptions(['--suite', 'install']), {
-    suite: 'install',
+test('the helm-install suite drives a cluster that brings its own Postgres and sign-in settings', () => {
+  assert.deepEqual(commandOptions(['--suite', 'helm-install']), {
+    suite: 'helm-install',
     database: 'postgres',
     vitest: [],
   })
   assert.throws(
-    () => commandOptions(['--suite', 'install', '--database', 'postgres']),
+    () => commandOptions(['--suite', 'helm-install', '--database', 'postgres']),
     /Only the main suite selects a database/,
   )
   // Without the host's setup, the suite fails at once, not at sign-in.
   assert.throws(
-    () => bootstrapConfig({ E2E_SUITE: 'install', E2E_DATABASE: 'postgres' }),
+    () => bootstrapConfig({ E2E_SUITE: 'helm-install', E2E_DATABASE: 'postgres' }),
     /install\/cluster\.ts sets up/,
   )
   const ownerSubject = 'reel-00000000-0000-4000-8000-000000000000'
   const config = bootstrapConfig({
-    E2E_SUITE: 'install',
+    E2E_SUITE: 'helm-install',
     E2E_DATABASE: 'postgres',
     E2E_INSTALL_OWNER_SUBJECT: ownerSubject,
     E2E_INSTALL_CLIENT_SECRET: 'fixture-secret',
