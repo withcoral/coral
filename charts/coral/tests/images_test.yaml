@@ -24,18 +24,26 @@ tests:
     documentSelector:
       path: kind
       value: Deployment
-      matchMany: true
     set:
       coral.image.registry: registry.internal
       coral.image.repository: mirror/coral
       coral.image.tag: 1.10.0-patched
       web.image.registry: registry.internal
       web.image.repository: mirror/coral-web
-      web.image.tag: 1.10.0-patched
+      web.image.tag: 1.10.0-web
     asserts:
-      - matchRegex:
-          path: spec.template.spec.containers[*].image
-          pattern: ^registry\.internal/mirror/coral(-web)?:1\.10\.0-patched$
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/mirror/coral:1.10.0-patched
+        template: templates/coral.yaml
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/mirror/coral:1.10.0-patched
+        template: templates/run-executor.yaml
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/mirror/coral-web:1.10.0-web
+        template: templates/web.yaml
 
   - it: pulls by digest when an image sets both a tag and a digest
     documentSelector:
