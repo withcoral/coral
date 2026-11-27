@@ -463,7 +463,15 @@ mod tests {
         extra: &str,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        let mut state = http_state(database, issuer, extra, &[RESOURCE]);
+        faked(http_state(database, issuer, extra, &[RESOURCE]), resolver)
+    }
+
+    /// `state` with client metadata resolved by `resolver`, on a clock that
+    /// reads `NOW`.
+    fn faked(
+        mut state: AuthorizationServerHttpState,
+        resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> AuthorizationServerHttpState {
         state.client_metadata_resolver = resolver;
         state.clock = Arc::new(ManualClock::starting_at(NOW));
         state
@@ -1876,13 +1884,14 @@ mod tests {
         let database = database().await;
         let auth_state = |mode| {
             let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-            state_with(
+            let state = super::super::test_state::http_state_with_mode(
                 &database,
                 "https://provider.invalid",
                 &trusting(CLIENT_ID),
-                resolver,
-            )
-            .with_sign_in_mode(mode, database.database())
+                &[RESOURCE],
+                mode,
+            );
+            faked(state, resolver)
         };
         let app = auth_state(super::super::test_state::test_mode(""));
         let response = request(app.clone(), &pairs()).await;
@@ -1896,9 +1905,15 @@ mod tests {
             .into_owned()
             .collect::<BTreeMap<_, _>>();
         let sign_in = query.get("sign_in").expect("the sign-in's value");
-        // The value is as long as OIDC's `state` was, so a sign-in begun
+        // The value has the form OIDC's `state` had, so a sign-in begun
         // before an upgrade finishes after it.
         assert_eq!(sign_in.len(), 43);
+        assert!(
+            sign_in
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+            "{sign_in}"
+        );
         let session = returned_session(&app, &response, sign_in);
         assert_eq!(session.request.client_id, CLIENT_ID);
 

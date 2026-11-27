@@ -237,6 +237,7 @@ impl CoralAuthorizationServer {
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
+        let sign_in_mode = oidc_sign_in(&self.settings, self.outbound_policy)?;
         let state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
@@ -244,6 +245,7 @@ impl CoralAuthorizationServer {
             self.workspace_resource_family,
             self.database,
             self.outbound_policy,
+            sign_in_mode,
             self.providers,
             self.clock,
         )?;
@@ -438,6 +440,7 @@ impl AuthorizationServerHttpState {
         workspace_resource_family: Option<WorkspaceMcpUrls>,
         database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
+        sign_in_mode: Arc<dyn coral_sign_in::SignInMode>,
         providers: Option<coral_provider::ProviderModule>,
         clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
@@ -472,14 +475,6 @@ impl AuthorizationServerHttpState {
         // Registered clients resolve from the database; every other client ID
         // falls through to its metadata document.
         let clients = OAuthClients::new(database.clone(), Arc::new(client_metadata_resolver));
-        let sign_in_mode: Arc<dyn coral_sign_in::SignInMode> = Arc::new(
-            OidcMode::new(
-                settings.provider().clone(),
-                Arc::clone(settings.handshake_keys()),
-                outbound_policy,
-            )
-            .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
-        );
         let user_directory = user_directory(database.clone(), sign_in_mode.as_ref());
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         let organization = coral_workspace::OrganizationModule::new(database.clone());
@@ -500,19 +495,6 @@ impl AuthorizationServerHttpState {
             providers,
             clock,
         })
-    }
-
-    /// The state with `mode` in place of the OIDC sign-in, and the first
-    /// Owner it names.
-    #[cfg(test)]
-    fn with_sign_in_mode(
-        mut self,
-        mode: Arc<dyn coral_sign_in::SignInMode>,
-        database: Arc<coral_db::Database>,
-    ) -> Self {
-        self.user_directory = user_directory(database, mode.as_ref());
-        self.sign_in_mode = mode;
-        self
     }
 
     /// What authorization requests that target `resource` reach, or `None`
@@ -561,6 +543,21 @@ impl AuthorizationResource {
     pub(super) fn picks_workspace(&self) -> bool {
         *self == Self::Mcp(coral_mcp::McpEndpoint::Organization)
     }
+}
+
+/// The OIDC sign-in of `settings`, which reaches its provider under
+/// `policy`.
+fn oidc_sign_in(
+    settings: &ResolvedAuthSettings,
+    policy: coral_outbound::DestinationPolicy,
+) -> Result<Arc<dyn coral_sign_in::SignInMode>, AuthServerError> {
+    let mode = OidcMode::new(
+        settings.provider().clone(),
+        Arc::clone(settings.handshake_keys()),
+        policy,
+    )
+    .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?;
+    Ok(Arc::new(mode))
 }
 
 /// The User directory, with the first Owner that `mode` names.
@@ -643,6 +640,29 @@ mod test_state {
         resources: &[&str],
     ) -> AuthorizationServerHttpState {
         let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
+        let mode = super::oidc_sign_in(&settings, loopback_policy()).expect("OIDC sign-in");
+        state_over(database, settings, session_tokens, resources, mode)
+    }
+
+    /// [`http_state`] with `mode` as the sign-in mode.
+    pub(super) fn http_state_with_mode(
+        database: &TestDatabase,
+        provider_issuer: &str,
+        extra: &str,
+        resources: &[&str],
+        mode: Arc<dyn coral_sign_in::SignInMode>,
+    ) -> AuthorizationServerHttpState {
+        let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
+        state_over(database, settings, session_tokens, resources, mode)
+    }
+
+    fn state_over(
+        database: &TestDatabase,
+        settings: super::ResolvedAuthSettings,
+        session_tokens: coral_auth::SessionTokenIssuer,
+        resources: &[&str],
+        mode: Arc<dyn coral_sign_in::SignInMode>,
+    ) -> AuthorizationServerHttpState {
         AuthorizationServerHttpState::new(
             Arc::new(settings),
             session_tokens,
@@ -655,6 +675,7 @@ mod test_state {
             None,
             database.database(),
             loopback_policy(),
+            mode,
             Some(coral_provider::ProviderModule::new(
                 loopback_policy(),
                 database.database(),
@@ -874,6 +895,8 @@ mod tests {
             .expect("register the exact extra")
             .with_workspace_resource_family(WorkspaceMcpUrls::new(base).expect("Workspace URLs"));
 
+        let sign_in_mode = super::oidc_sign_in(&prepared.settings, prepared.outbound_policy)
+            .expect("OIDC sign-in");
         let state = super::AuthorizationServerHttpState::new(
             prepared.settings,
             prepared.session_tokens,
@@ -881,6 +904,7 @@ mod tests {
             prepared.workspace_resource_family,
             prepared.database,
             prepared.outbound_policy,
+            sign_in_mode,
             None,
             prepared.clock,
         )

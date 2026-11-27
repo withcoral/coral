@@ -227,7 +227,7 @@ async fn provision(
         Ok(LoginProvisioning::Disabled) => Err(ProvisioningFailure::Disabled),
         Ok(LoginProvisioning::IssuerMismatch) => {
             tracing::warn!(
-                "Sign-in refused a login whose subject is already bound to a different \
+                "OIDC callback refused a login whose subject is already bound to a different \
                  provider issuer; reconcile that user directory row before this login can succeed"
             );
             Err(ProvisioningFailure::IssuerMismatch)
@@ -235,7 +235,7 @@ async fn provision(
         Err(error) => {
             tracing::warn!(
                 error.type = safe::kind(provisioning_error_code(&error)),
-                "Sign-in could not provision the verified login"
+                "OIDC callback could not provision the verified login"
             );
             Err(ProvisioningFailure::Unavailable)
         }
@@ -1517,7 +1517,13 @@ mod tests {
         database: &TestDatabase,
         mode: Arc<dyn coral_sign_in::SignInMode>,
     ) -> AuthorizationServerHttpState {
-        state(database, "https://provider.invalid").with_sign_in_mode(mode, database.database())
+        super::super::test_state::http_state_with_mode(
+            database,
+            "https://provider.invalid",
+            "",
+            &[RESOURCE],
+            mode,
+        )
     }
 
     /// Runs the mode's answer `raw` from the browser that started the
