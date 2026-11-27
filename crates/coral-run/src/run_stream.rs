@@ -627,7 +627,7 @@ impl RunModule {
         admitted: crate::shutdown::Admitted,
         resume: Option<Resume>,
     ) {
-        let local_child = run.on_local_child;
+        let local_child = run.run_executor_kind == Some(coral_run_executor::Kind::Local);
         let accepted = AcceptedRun {
             id: run.id,
             workspace_id: run.workspace_id,

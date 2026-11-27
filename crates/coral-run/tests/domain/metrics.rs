@@ -4,7 +4,7 @@
 //! current-thread runtime, and every thread a loop starts, inherits.
 use super::*;
 
-use super::run_streams::{Scripted, finish_terminated, started_as, take, taker};
+use super::run_streams::{Scripted, ended, finish_terminated, started_as, take, taker};
 use coral_telemetry::testing::{MetricCapture, MetricPoint};
 
 /// A capture every Run in the calling test records to, until the guard drops.
@@ -22,7 +22,7 @@ pub(super) fn measured() -> (MetricCapture, tracing::subscriber::DefaultGuard) {
 
 /// The points of `name` as their attributes, `key=value` joined by `,`, and
 /// a counter's sum or a histogram's count.
-fn counts(capture: &MetricCapture, name: &str) -> Vec<(String, u64)> {
+pub(super) fn counts(capture: &MetricCapture, name: &str) -> Vec<(String, u64)> {
     let mut counts = capture
         .named(name)
         .into_iter()
@@ -54,7 +54,7 @@ fn level(capture: &MetricCapture, name: &str) -> Vec<f64> {
         .collect()
 }
 
-fn owned(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
+pub(super) fn owned(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
     pairs
         .iter()
         .map(|(attributes, count)| ((*attributes).to_string(), *count))
@@ -334,6 +334,80 @@ async fn each_started_run_measures_its_wait_once_and_a_reopen_none() {
         run_response::Message::Committed(_)
     ));
     assert_eq!(waits(), measured, "a reopen measures no wait");
+}
+
+/// Catches: an accepted reopen of a started Run that is not counted, or is
+/// counted under the wrong kind, and a first open or a refused reopen that
+/// counts.
+#[tokio::test]
+async fn each_accepted_reopen_counts_one_reconnect_by_kind() {
+    use coral_run_executor::Kind;
+    use coral_run_executor::PROTOCOL_LEVEL;
+    use coral_run_executor::wire::v1::{Awaited, Open, RunEnd as WireEnd, run_response};
+    let (metrics, _guard) = measured();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:reconnects", "Count reconnects")
+        .await;
+    let reconnects = || counts(&metrics, "coral.run.reconnects");
+    // No loop holds the Run once its stream is gone.
+    let detach = async |run_id: &crate::RunId, stream: Scripted| {
+        drop(stream);
+        wait_until(|| !fixture.runs.has_loop(run_id)).await;
+    };
+    let mut started = Vec::new();
+    for kind in [Kind::Dialed, Kind::Local] {
+        let (run_id, claim, stream) = started_as(
+            &fixture.runs,
+            (&principal, &workspace_id),
+            "return 1;",
+            &taker(kind),
+            || fixture.clock.next.load(Ordering::SeqCst),
+        )
+        .await;
+        detach(&run_id, stream).await;
+        started.push((run_id, claim));
+    }
+    assert_eq!(reconnects(), Vec::new(), "a start is no reconnect");
+
+    for (run_id, claim) in &started {
+        let mut reopened = Scripted::open(&fixture.runs, &run_id.to_string(), claim);
+        assert!(matches!(
+            reopened.next().await,
+            run_response::Message::Committed(_)
+        ));
+        detach(run_id, reopened).await;
+    }
+    let counted = owned(&[
+        ("run_executor.kind=dialed", 1),
+        ("run_executor.kind=local", 1),
+    ]);
+    assert_eq!(reconnects(), counted);
+
+    // An `Open` whose awaited list breaks the protocol is refused, and the
+    // Run it interrupted opens no more.
+    let (run_id, claim) = started.first().expect("a dialed Run");
+    let mut refused = Scripted::open_with(
+        &fixture.runs,
+        Open {
+            run_id: run_id.to_string(),
+            claim_id: claim.clone(),
+            protocol_level: PROTOCOL_LEVEL,
+            awaited: vec![Awaited {
+                number: 0,
+                perform: 0,
+            }],
+        },
+    );
+    let (read, closing) = refused.read_to_close().await;
+    assert!(
+        read.is_empty() && matches!(closing, coral_run_executor::Closing::InvalidArgument(_)),
+        "{read:?} {closing:?}"
+    );
+    assert_eq!(reconnects(), counted, "a refused reopen counts nothing");
+    let mut ended_run = Scripted::open(&fixture.runs, &run_id.to_string(), claim);
+    assert_eq!(ended_run.next().await, ended(WireEnd::Interrupted));
+    assert_eq!(reconnects(), counted, "an ended Run's open counts nothing");
 }
 
 /// Catches: a start whose answer the database lost that is not measured

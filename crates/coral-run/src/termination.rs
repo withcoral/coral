@@ -190,7 +190,7 @@ impl RunModule {
         // chunk that moves the head: the head fences a reopen after this
         // read, and the holder one before it.
         if by == Interrupter::Loop
-            && run.on_run_executor
+            && run.run_executor_kind.is_some()
             && run.holder_instance_id.as_ref() != Some(&self.instance)
         {
             return Err(Error::ClaimMismatch);

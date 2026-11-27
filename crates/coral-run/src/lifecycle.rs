@@ -43,11 +43,11 @@ pub(crate) struct RunRecord {
     /// When a take gave the Run to a Run Executor, on the clock of the
     /// Coral Instance that served the take.
     pub(crate) taken_at_unix_nanos: Option<i64>,
-    /// A take gave the Run to a Run Executor.
-    pub(crate) on_run_executor: bool,
-    /// The Run Executor that took it is a local child, so its Run stream
-    /// reaches only its parent Coral Instance.
-    pub(crate) on_local_child: bool,
+    /// The kind of Run Executor whose take holds the Run; `None` while no
+    /// take does: before the first, after a put-back, or on an older
+    /// release's Run Owner's Run. A local child's Run stream reaches only its
+    /// parent Coral Instance.
+    pub(crate) run_executor_kind: Option<coral_run_executor::Kind>,
     /// The highest Run stream request number committed.
     pub(crate) committed_request_number: Option<u64>,
     pub(crate) last_commit_at_unix_nanos: Option<i64>,
@@ -105,7 +105,7 @@ impl RunRecord {
     /// claim fences, takes no chunk of a loop.
     pub(crate) fn holds_loop_claim(&self, claim_id: &str) -> bool {
         self.execution_claim_id.as_deref() == Some(claim_id)
-            && self.on_run_executor
+            && self.run_executor_kind.is_some()
             && self.worker_claim_id.is_none()
     }
 
@@ -142,7 +142,7 @@ impl RunRecord {
     pub(crate) fn runs_on_run_executor(&self) -> bool {
         self.state == RunState::Running
             && self.worker_claim_id.is_none()
-            && (!self.execution_started() || self.on_run_executor)
+            && (!self.execution_started() || self.run_executor_kind.is_some())
     }
 
     pub(crate) const fn execution_started(&self) -> bool {

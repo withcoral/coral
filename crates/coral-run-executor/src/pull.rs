@@ -104,7 +104,8 @@ impl Kind {
     }
 
     /// The kind a row records, or `None` for text no release writes.
-    pub(crate) fn from_storage_str(stored: &str) -> Option<Self> {
+    #[must_use]
+    pub fn from_storage_str(stored: &str) -> Option<Self> {
         [Self::Local, Self::Dialed]
             .into_iter()
             .find(|kind| kind.as_storage_str() == stored)
@@ -1154,13 +1155,7 @@ impl LinkService for PullService {
         &self,
         request: Request<Streaming<RunRequest>>,
     ) -> Result<Response<Self::RunStream>, Status> {
-        let authorization = request
-            .metadata()
-            .get("authorization")
-            .and_then(|value| value.to_str().ok());
-        self.link.credentials.admit(authorization).ok_or_else(|| {
-            Status::unauthenticated("the Run Executor credential is not accepted")
-        })?;
+        self.admit(&request)?;
         let server =
             self.link.run_streams.clone().ok_or_else(|| {
                 Status::unimplemented("this Coral Instance serves no Run streams")
@@ -1194,28 +1189,32 @@ impl LinkService for PullService {
         &self,
         request: Request<Streaming<PullRequest>>,
     ) -> Result<Response<Self::PullStream>, Status> {
-        let authorization = request
-            .metadata()
-            .get("authorization")
-            .and_then(|value| value.to_str().ok());
-        let admitted = self.link.credentials.admit(authorization).ok_or_else(|| {
-            Status::unauthenticated("the Run Executor credential is not accepted")
-        })?;
+        let admitted = self.admit(&request)?;
         self.refuse_while_draining()?;
         let mut inbound = request.into_inner();
         // A Run Executor sends Hello with the call; one that sends none
         // within a keepalive holds nothing open, shutdown included.
         let first = timeout(KEEPALIVE, inbound.message()).await.ok();
-        let Some(pull_request::Message::Hello(hello)) = first
+        // A message that does not decode is a bad Hello; a transport error,
+        // such as a cancel, is no refusal.
+        let first = first
             .transpose()
-            .map_err(|status| undecodable(&status).unwrap_or(status))?
-            .flatten()
-            .and_then(|request| request.message)
+            .map_err(|status| match undecodable(&status) {
+                Some(violation) => refused(Refusal::Hello, violation),
+                None => status,
+            })?;
+        let Some(pull_request::Message::Hello(hello)) =
+            first.flatten().and_then(|request| request.message)
         else {
-            return Err(Status::invalid_argument("the pull stream opens with Hello"));
+            return Err(refused(
+                Refusal::Hello,
+                Status::invalid_argument("the pull stream opens with Hello"),
+            ));
         };
         if hello.protocol_level.abs_diff(PROTOCOL_LEVEL) > 1 {
+            // The refusal's one warning, which also names both levels.
             tracing::warn!(
+                coral.run_executor.refusal = safe::kind(Refusal::Hello.as_str()),
                 coral.run_executor.protocol_level = safe::number(PROTOCOL_LEVEL),
                 coral.run_executor.peer_protocol_level = safe::number(hello.protocol_level),
                 "the Run Executor's protocol level is more than one apart; refusing its pull stream"
@@ -1225,7 +1224,12 @@ impl LinkService for PullService {
             ));
         }
         let run_executor_id = uuid::Uuid::try_parse(&hello.run_executor_id)
-            .map_err(|_invalid| Status::invalid_argument("the Run Executor id is not a UUID"))?
+            .map_err(|_invalid| {
+                refused(
+                    Refusal::Hello,
+                    Status::invalid_argument("the Run Executor id is not a UUID"),
+                )
+            })?
             .to_string();
         let opened = Instant::now();
         let kind = admitted.0;
@@ -1261,6 +1265,21 @@ impl LinkService for PullService {
 }
 
 impl PullService {
+    /// The kind and credential that admit `request`'s bearer token. A token
+    /// the listener does not admit is refused, and logged without its value.
+    fn admit<M>(&self, request: &Request<M>) -> Result<(Kind, CredentialId), Status> {
+        let authorization = request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok());
+        self.link.credentials.admit(authorization).ok_or_else(|| {
+            refused(
+                Refusal::Credential,
+                Status::unauthenticated("the Run Executor credential is not accepted"),
+            )
+        })
+    }
+
     /// A draining Coral Instance opens no pull stream: the Run Executor
     /// opens it on another. A stream that opens past this check is born
     /// closing. The Run module refuses a new Run stream.
@@ -1364,6 +1383,35 @@ fn drain(streams: &PullStreams, stream: StreamId, deadline: Pin<&mut Sleep>) -> 
     let until = streams.close(stream);
     deadline.reset(until);
     until
+}
+
+/// Why the listener refused a dial, as `coral.run_executor.refusal` names
+/// it, so that an operator can tell a wrong credential from a bad handshake.
+#[derive(Clone, Copy, Debug)]
+enum Refusal {
+    /// The bearer token admits no Run Executor.
+    Credential,
+    /// The pull stream did not open with a sound `Hello`.
+    Hello,
+}
+
+impl Refusal {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Credential => "credential",
+            Self::Hello => "hello",
+        }
+    }
+}
+
+/// Logs one refused dial with its reason, and answers `status`. The warning
+/// names no credential and no field of the Run Executor's messages.
+fn refused(refusal: Refusal, status: Status) -> Status {
+    tracing::warn!(
+        coral.run_executor.refusal = safe::kind(refusal.as_str()),
+        "the Run Executor listener refused a dial"
+    );
+    status
 }
 
 /// The violation that ends a pull stream when `status`, an inbound error,

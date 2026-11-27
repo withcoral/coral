@@ -103,6 +103,8 @@ struct Catalog {
     run_duration: Histogram<f64>,
     run_phase_duration: Histogram<f64>,
     run_start_wait: Histogram<f64>,
+    run_put_backs: Counter<u64>,
+    run_reconnects: Counter<u64>,
     run_active: Level,
     run_queue: RunQueueGauges,
     run_executor_linked: LabeledLevel<RunExecutorKind>,
@@ -444,6 +446,16 @@ impl Metrics {
             run_start_wait: seconds(
                 "coral.run.start.wait",
                 "How long a Program Run waited from its acceptance to its start.",
+            ),
+            run_put_backs: counter(
+                "coral.run.put_backs",
+                "{run}",
+                "Taken Program Runs that never started and wait again: a take not started in time, or a Run of a Run Executor that is gone.",
+            ),
+            run_reconnects: counter(
+                "coral.run.reconnects",
+                "{stream}",
+                "Run streams that this Coral Instance reopened for a Program Run that had already started.",
             ),
             run_active: Level::new(
                 &meter,
@@ -1058,6 +1070,26 @@ pub fn run_start_wait(kind: RunExecutorKind, wait: Duration) {
             wait.as_secs_f64(),
             &[KeyValue::new("run_executor.kind", kind.as_str())],
         );
+    });
+}
+
+/// Counts one taken Program Run that never started and waits again, taken
+/// for a Run Executor of `kind`.
+pub fn run_put_back(kind: RunExecutorKind) {
+    with(|catalog| {
+        catalog
+            .run_put_backs
+            .add(1, &[KeyValue::new("run_executor.kind", kind.as_str())]);
+    });
+}
+
+/// Counts one Run stream reopened for a started Program Run, held by a Run
+/// Executor of `kind`.
+pub fn run_reconnected(kind: RunExecutorKind) {
+    with(|catalog| {
+        catalog
+            .run_reconnects
+            .add(1, &[KeyValue::new("run_executor.kind", kind.as_str())]);
     });
 }
 

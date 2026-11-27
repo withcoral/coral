@@ -5,10 +5,11 @@
 //! release's Run Owner's Run is never one.
 
 use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
+use coral_run_executor::Kind;
 use coral_workspace::WorkspaceId;
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 
-use super::run_row::UndecodableRun;
+use super::run_row::{UndecodableRun, taken_kind};
 use super::{ProgramRunRecords, running_without_worker_claim, taken};
 use crate::types::HeldRunId;
 use crate::{CoralInstanceId, Error, RunId};
@@ -75,15 +76,17 @@ pub(crate) struct HeldRun {
     pub(crate) claim: String,
     /// The Run Executor the take gave it to.
     pub(crate) run_executor_id: Option<String>,
+    /// That Run Executor's kind, as the take recorded it.
+    pub(crate) run_executor_kind: Option<Kind>,
 }
 
-type HeldRow = (String, String, String, Option<String>);
+type HeldRow = (String, String, String, Option<String>, Option<String>);
 
 impl HeldRun {
     /// The Run a row names, or the error that names the Run when its stored
     /// identity does not decode.
     fn decode(
-        (workspace_id, run_id, claim, run_executor_id): HeldRow,
+        (workspace_id, run_id, claim, run_executor_id, run_executor_kind): HeldRow,
     ) -> Result<Self, UndecodableRun> {
         let parsed = RunId::parse(&run_id).ok();
         let invalid = || UndecodableRun {
@@ -95,6 +98,7 @@ impl HeldRun {
             run_id: parsed.clone().ok_or_else(invalid)?,
             claim,
             run_executor_id,
+            run_executor_kind: taken_kind(run_executor_kind.as_deref()),
         })
     }
 }
@@ -115,6 +119,7 @@ async fn held_runs(
                     ProgramRunRecords::Id,
                     ProgramRunRecords::ExecutionClaimId,
                     ProgramRunRecords::RunExecutorId,
+                    ProgramRunRecords::RunExecutorKind,
                 ])
                 .from(ProgramRunRecords::Table)
                 .cond_where(taken().add(condition))

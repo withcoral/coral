@@ -138,6 +138,18 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "s",
         &["run_executor.kind"],
     ),
+    (
+        "coral.run.put_backs",
+        "counter",
+        "{run}",
+        &["run_executor.kind"],
+    ),
+    (
+        "coral.run.reconnects",
+        "counter",
+        "{stream}",
+        &["run_executor.kind"],
+    ),
     ("coral.run.active", "gauge", "{run}", &[]),
     ("coral.run.waiting", "gauge", "{run}", &[]),
     ("coral.run.waiting.age", "gauge", "s", &[]),
@@ -316,6 +328,8 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     );
     drop(run_phase(RunPhase::Execute));
     run_start_wait(RunExecutorKind::Dialed, Duration::from_millis(80));
+    run_put_back(RunExecutorKind::Dialed);
+    run_reconnected(RunExecutorKind::Local);
     let active = run_active();
     run_queue_read(Some(RunQueue {
         waiting: 2,

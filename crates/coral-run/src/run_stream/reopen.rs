@@ -4,7 +4,8 @@
 //! before, and answers `Committed`. The loop is
 //! rebuilt from the ledger: the head, the output total, the request order
 //! after the watermark, and each open Invocation; the resent requests apply
-//! on top, and `Started` goes out again.
+//! on top, and `Started` goes out again. Each accepted reopen counts as
+//! `coral.run.reconnects`; a refused one counts nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use std::sync::atomic::Ordering;
 use coral_provider::ResolvedInvocationTool;
 use coral_run_executor::wire::v1::{Awaited, RunEnd as WireEnd};
 use coral_run_executor::{Closing, SHUTTING_DOWN};
+use coral_telemetry::metric;
 use coral_workspace::AuthenticatedPrincipal;
 
 use super::program::stream_violated;
@@ -112,6 +114,9 @@ impl RunModule {
         let Some(deadline_at_unix_nanos) = run.deadline_at_unix_nanos else {
             return link.close(Closing::Unavailable("the started Run has no deadline"));
         };
+        if let Some(kind) = run.run_executor_kind {
+            metric::run_reconnected(kind.metric());
+        }
         link.committed(Some(resume.watermark));
         let started = StartedExecution {
             head: run.chunk_sequence,
