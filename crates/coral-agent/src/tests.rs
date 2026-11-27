@@ -593,7 +593,7 @@ async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
         _ => panic!("the third message is the result of exec: {thread:?}"),
     };
     let brief = format!(
-        "task_id: {}\ndate: 2026-11-18\n\n{MESSAGE}",
+        "task_id: {}\ndatetime: 2026-11-18 12:00 UTC (Wednesday)\n\n{MESSAGE}",
         task_id.as_str()
     );
     let assistant = |content| Message {

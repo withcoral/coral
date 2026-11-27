@@ -632,11 +632,15 @@ impl TurnFailure {
 }
 
 /// The first message of a Sub-agent's thread: the `task_id` its `exec` calls
-/// pass and the date, which the system prompt says the brief holds, then the
-/// lead's message.
+/// pass and the current UTC date, time and weekday, which the system prompt
+/// says the brief holds, then the lead's message.
 fn brief(task_id: &TaskId, now: UnixNanos, message: &str) -> String {
-    let date = chrono::DateTime::from_timestamp_nanos(now.get()).date_naive();
-    format!("task_id: {}\ndate: {date}\n\n{message}", task_id.as_str())
+    let datetime =
+        chrono::DateTime::from_timestamp_nanos(now.get()).format("%Y-%m-%d %H:%M UTC (%A)");
+    format!(
+        "task_id: {}\ndatetime: {datetime}\n\n{message}",
+        task_id.as_str()
+    )
 }
 
 /// Inserts the Sub-agent under a new identifier. Only an insert proves that
@@ -656,4 +660,35 @@ async fn insert_sub_agent(
         }
     }
     Err(Error::IdentifierIssuance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Catches: a brief header that drops the time, weekday or UTC label,
+    // includes seconds, or rounds sub-minute timestamps up.
+    #[test]
+    fn brief_formats_utc_date_minute_and_weekday() {
+        let task_id = TaskId::parse("quiet-harbor-calm-tide").unwrap();
+        for (rfc3339, expected) in [
+            (
+                "2026-11-18T09:05:42.123456789Z",
+                "2026-11-18 09:05 UTC (Wednesday)",
+            ),
+            (
+                "2026-11-22T23:59:59.999999999Z",
+                "2026-11-22 23:59 UTC (Sunday)",
+            ),
+        ] {
+            let nanos = chrono::DateTime::parse_from_rfc3339(rfc3339)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap();
+            assert_eq!(
+                brief(&task_id, UnixNanos::new(nanos), "Check invoices."),
+                format!("task_id: quiet-harbor-calm-tide\ndatetime: {expected}\n\nCheck invoices.")
+            );
+        }
+    }
 }
