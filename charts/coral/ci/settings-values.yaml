@@ -1,4 +1,4 @@
-# Every hook, both CA bundles, and Usage Reports off. CI renders and
+# Every hook and both CA bundles on, and Usage Reports off. CI renders and
 # validates the chart with it.
 host: coral.example.com
 config:
@@ -61,8 +61,6 @@ web:
     - name: scratch
       mountPath: /scratch
 runExecutors:
-  podAnnotations:
-    example.com/team: platform
   extraEnv:
     - name: TZ
       value: UTC

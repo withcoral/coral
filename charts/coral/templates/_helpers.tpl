@@ -245,6 +245,7 @@ key. Call with (list "values.path" $bundle "volume-name").
 {{- define "coral.caBundleVolume" -}}
 {{- $path := index . 0 -}}
 {{- $bundle := index . 1 -}}
+{{- include "coral.checkCABundle" (list $path $bundle) -}}
 {{- if $bundle.key -}}
 {{- if and $bundle.configMapName $bundle.secretName -}}
 {{- fail (printf "%s: set configMapName or secretName, not both" $path) -}}
@@ -262,5 +263,28 @@ key. Call with (list "values.path" $bundle "volume-name").
     items:
       - key: {{ $bundle.key | quote }}
         path: ca.crt
+{{- end -}}
+{{- end -}}
+
+{{/* Fails on a CA bundle that names a source but no key. Call with (list "values.path" $bundle). */}}
+{{- define "coral.checkCABundle" -}}
+{{- $bundle := index . 1 -}}
+{{- if and (or $bundle.configMapName $bundle.secretName) (not $bundle.key) -}}
+{{- fail (printf "%s: set key to name the PEM bundle in the ConfigMap or Secret" (index . 0)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Fails when extraEnv sets a variable the chart sets: Kubernetes would keep the
+last one, and silently replace the chart's. Call with
+(list "values.path" $extraEnv (list "NAME" ...)).
+*/}}
+{{- define "coral.checkExtraEnv" -}}
+{{- $path := index . 0 -}}
+{{- $owned := index . 2 -}}
+{{- range $env := index . 1 -}}
+{{- if has $env.name $owned -}}
+{{- fail (printf "%s sets %s, which the chart sets" $path $env.name) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

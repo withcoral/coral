@@ -83,3 +83,11 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "database.tls.caBundle: set configMapName or secretName to name where the key is"
+
+  - it: fails on a CA bundle with a source and no key
+    set:
+      database.tls.caBundle:
+        configMapName: rds-ca
+    asserts:
+      - failedTemplate:
+          errorPattern: "database.tls.caBundle: set key to name the PEM bundle in the ConfigMap or Secret"

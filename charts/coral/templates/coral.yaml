@@ -1,4 +1,6 @@
 {{- $fullname := include "coral.fullname" . -}}
+{{- include "coral.checkCABundle" (list "tls.extraCABundle" .Values.tls.extraCABundle) -}}
+{{- include "coral.checkExtraEnv" (list "coral.extraEnv" .Values.coral.extraEnv (list "CORAL_CONFIG" "CORAL_DATABASE_URL" "CORAL_CREDENTIALS_KEY" "CORAL_SESSION_SIGNING_KEY" "CORAL_OIDC_CLIENT_SECRET" "CORAL_RUN_EXECUTOR_TOKEN" "CORAL_RUN_EXECUTOR_PREVIOUS_TOKEN" "CORAL_LICENSE" "CORAL_DISABLE_USAGE_DATA" "PGSSLROOTCERT" "SSL_CERT_FILE" "SSL_CERT_DIR")) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,6 +26,8 @@ spec:
       annotations:
         # A values change that changes config.toml rolls the pods.
         checksum/config: {{ include "coral.configToml" . | sha256sum }}
+        # A new annotation, such as an IRSA role, reaches only new pods.
+        checksum/serviceaccount: {{ toYaml .Values.coral.serviceAccount.annotations | sha256sum }}
         {{- with .Values.coral.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

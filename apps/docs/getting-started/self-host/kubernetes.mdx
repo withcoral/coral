@@ -270,7 +270,11 @@ The pods read their secrets when they start. After you change a Secret, restart 
 kubectl -n coral rollout restart deployment/coral deployment/coral-web deployment/coral-run-executor
 ```
 
-To restart them each time a Secret changes, install a controller such as [Reloader](https://github.com/stakater/Reloader), and add its annotation to `coral.podAnnotations`, `web.podAnnotations` and `runExecutors.podAnnotations`. For example, `reloader.stakater.com/auto: "true"`.
+To restart them each time a Secret changes, install a controller such as [Reloader](https://github.com/stakater/Reloader). Reloader reads its annotation on each Deployment, not on the pods, so add it with `kubectl`:
+
+```shell
+kubectl -n coral annotate deployment coral coral-web coral-run-executor reloader.stakater.com/auto="true"
+```
 
 Do not rotate `CORAL_CREDENTIALS_KEY`: Coral cannot read the credentials it encrypted with the old key. To rotate the Run Executor token, see [Run Executors](#run-executors).
 
@@ -299,7 +303,7 @@ spec:
       # Keep the keys from dataFrom, and add the database URL.
       mergePolicy: Merge
       data:
-        CORAL_DATABASE_URL: "postgres://{{ .username | urlquery }}:{{ .password | urlquery }}@coral.abc123.eu-west-2.rds.amazonaws.com:5432/coral?sslmode=verify-full"
+        CORAL_DATABASE_URL: "postgres://{{ .username | urlquery | replace \"+\" \"%20\" }}:{{ .password | urlquery | replace \"+\" \"%20\" }}@coral.abc123.eu-west-2.rds.amazonaws.com:5432/coral?sslmode=verify-full"
   data:
     - secretKey: username
       remoteRef:
@@ -311,13 +315,13 @@ spec:
         property: password
   # A JSON object with CORAL_CREDENTIALS_KEY, CORAL_SESSION_SIGNING_KEY,
   # CORAL_OIDC_CLIENT_SECRET, CORAL_WEB_SESSION_SECRET and
-  # CORAL_RUN_EXECUTOR_TOKEN.
+  # CORAL_RUN_EXECUTOR_TOKEN, and CORAL_LICENSE if you have a License.
   dataFrom:
     - extract:
         key: coral/prod
 ```
 
-`urlquery` escapes the special characters in the password, so the URL stays valid. Amazon RDS needs its CA: see [Postgres with a private CA](#postgres-with-a-private-ca).
+`urlquery` escapes the special characters in the user name and password, and `replace` turns the `+` it writes for a space into `%20`, so the URL stays valid. Amazon RDS needs its CA: see [Postgres with a private CA](#postgres-with-a-private-ca).
 
 ## Cloud access and other settings
 
@@ -327,7 +331,9 @@ Each of `coral` and `web` takes these values, as Kubernetes writes them:
 - `podAnnotations`, for the pods.
 - `serviceAccount.annotations`. Each runs as its own ServiceAccount: `coral` for `coral`, and `coral-web` for `coral-web`.
 
-Run Executors take `podAnnotations`, and `extraEnv` with a `name` and a `value` only. A Run Executor holds no secret but its token, and no volume.
+An `extraEnv` entry cannot set a variable that the chart sets, such as `CORAL_ENDPOINT`. Use the chart's value for it instead.
+
+Run Executors take only `extraEnv`, with a `name` and a `value`. They run as their own ServiceAccount, `coral-run-executor`, with no annotations. A Run Executor reads no Secret but its token's, and has no volume. Do not put a secret in its `extraEnv`.
 
 ### AWS access with EKS Pod Identity
 
@@ -342,7 +348,7 @@ A [secret store](/reference/configuration#secret_stores) in AWS Secrets Manager 
      --role-arn arn:aws:iam::111122223333:role/coral-secrets
    ```
 
-3. Add the store to your values. Secret stores need the [Enterprise Edition](/reference/editions), so set `secrets.license.enabled: true` too.
+3. Add the store to your values. Secret stores need the [Enterprise Edition](/reference/editions), so add `CORAL_LICENSE` to the Secret and set `secrets.license.enabled: true` too.
 
    ```yaml
    config:
@@ -355,7 +361,7 @@ A [secret store](/reference/configuration#secret_stores) in AWS Secrets Manager 
 
 4. Run `helm upgrade`. The new `coral` pods get credentials from Pod Identity.
 
-To use IAM roles for service accounts (IRSA) instead, skip step 2. Set the role on the ServiceAccount:
+To use IAM roles for service accounts (IRSA) instead, replace steps 1 and 2. Create a role that trusts your cluster's OIDC provider for the `coral` ServiceAccount in the `coral` namespace, and that can read the secrets. A role that trusts Pod Identity does not work for IRSA. Then set the role on the ServiceAccount:
 
 ```yaml
 coral:

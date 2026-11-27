@@ -128,7 +128,7 @@ coral:
       timeoutSeconds: 5
       failureThreshold: 6
 
-  # Annotations on the pods, such as reloader.stakater.com/auto: "true".
+  # Annotations on the pods.
   podAnnotations: {}
   # The pods run as their own ServiceAccount, named <release>. Its annotations
   # can give the pods cloud access, such as eks.amazonaws.com/role-arn for
@@ -169,7 +169,7 @@ web:
       timeoutSeconds: 5
       failureThreshold: 6
 
-  # Annotations on the pods, such as reloader.stakater.com/auto: "true".
+  # Annotations on the pods.
   podAnnotations: {}
   # The pods run as their own ServiceAccount, named <release>-web. Its annotations
   # can give the pods cloud access, such as eks.amazonaws.com/role-arn for
@@ -191,10 +191,10 @@ runExecutors:
   maxRunsHeld: 8
   # Time a stopping Run Executor has to finish the Runs it holds.
   terminationGracePeriodSeconds: 300
-  # Annotations on the pods.
-  podAnnotations: {}
-  # More env vars, as {name, value} only: a Run Executor reads no secret but
-  # its token, and has no volumes.
+  # More env vars, as {name, value} only: a Run Executor reads no Secret but
+  # its token's, and has no volumes. Don't put a secret in a value. There is
+  # no annotation hook, since an annotation can make a webhook inject a secret
+  # or a volume.
   extraEnv: []
   # Required. At least 32 characters. Coral and every Run Executor read it.
   token:

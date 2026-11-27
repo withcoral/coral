@@ -460,7 +460,6 @@
         "previousToken",
         "resources",
         "probes",
-        "podAnnotations",
         "extraEnv"
       ],
       "properties": {
@@ -501,12 +500,9 @@
             }
           }
         },
-        "podAnnotations": {
-          "$ref": "#/definitions/annotations"
-        },
         "extraEnv": {
           "type": "array",
-          "description": "Plain values only: a Run Executor reads no secret but its token.",
+          "description": "Plain values only: a Run Executor reads no Secret but its token's.",
           "items": {
             "$ref": "#/definitions/plainEnvVar"
           }
@@ -638,6 +634,7 @@
     },
     "envVar": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "name"
       ],
@@ -645,6 +642,12 @@
         "name": {
           "type": "string",
           "minLength": 1
+        },
+        "value": {
+          "type": "string"
+        },
+        "valueFrom": {
+          "type": "object"
         }
       }
     },
