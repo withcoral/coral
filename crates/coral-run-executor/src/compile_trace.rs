@@ -1,9 +1,10 @@
 //! A compile's one span, Coral's (ADR 0027, Telemetry): `coral.compile`,
 //! from the wait for a compiler to the answer. It names how the compile's
-//! last compiler call ended: whether Coral relayed it, and the Run Executor
-//! that answered it. Each call notes its end as it ends, and the span
-//! records the last call's once the compile is over, since a field once
-//! recorded cannot be taken back.
+//! last compiler call went: whether Coral relayed it, and the Run Executor
+//! that answered it. Each call notes where it went when it is sent, and
+//! the Run Executor that answered it once it answers. The span records the
+//! last call's note once the compile is over, since a field once recorded
+//! cannot be taken back.
 
 use std::cell::RefCell;
 use std::future::Future;
