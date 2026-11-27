@@ -694,10 +694,10 @@ jobs:
           path: chart/
           if-no-files-found: error
 
-  # The chart gates: what every chart PR checks, on the release's commit. They
-  # read the release's own chart artifact and images, so they prove what
-  # promote publishes. The Reel workflow keeps no secret, and these jobs pass
-  # it none.
+  # The chart gates. chart-checks runs every chart PR's checks on the chart's
+  # source at the release's commit. The install and air-gap gates read the
+  # release's own chart artifact and images.txt, so they prove what promote
+  # publishes. The Reel workflow keeps no secret, and these jobs pass it none.
   chart-checks:
     name: Gate the chart on its checks
     needs: validate
