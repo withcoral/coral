@@ -1,0 +1,10 @@
+# Medium: 32 Runs at once.
+# A starting point, until a load test confirms it. Copy these values into your
+# own, or pass this file with -f after them. Each Run Executor holds 8 Runs; see
+# "Sizing" in the Kubernetes docs for the memory each needs and for Postgres.
+coral:
+  replicas: 3
+web:
+  replicas: 3
+runExecutors:
+  replicas: 4

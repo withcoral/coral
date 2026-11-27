@@ -405,3 +405,31 @@ static_resources:
                       address: {{ include "coral.fullname" . }}-headless.{{ .Release.Namespace }}.svc
                       port_value: {{ include "coral.port.grpc" . }}
 {{- end -}}
+
+{{/*
+Where a component's pods run, and how they spread. Call with
+(list $ .Values.component). The spread may name {{ .Release.Name }}.
+*/}}
+{{- define "coral.placement" -}}
+{{- $root := index . 0 -}}
+{{- $values := index . 1 -}}
+{{- with $values.topologySpreadConstraints }}
+topologySpreadConstraints:
+  {{- tpl (toYaml .) $root | nindent 2 }}
+{{- end }}
+{{- with $values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $values.priorityClassName }}
+priorityClassName: {{ . | quote }}
+{{- end }}
+{{- end -}}

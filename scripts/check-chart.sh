@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks the Helm chart in charts/coral: lint, the values schema, a render of
-# each values file in ci/, kubeconform on the oldest and newest Kubernetes
-# minors the chart supports, and the helm-unittest suites.
+# each values file in ci/ and each size example in examples/, kubeconform on
+# the oldest and newest Kubernetes minors the chart supports, and the
+# helm-unittest suites.
 #
 # Needs helm, kubeconform and helm-unittest. HELM_UNITTEST names the command
 # that runs the suites: by default the helm plugin, `helm unittest`.
@@ -26,20 +27,31 @@ crd_schemas='https://raw.githubusercontent.com/datreeio/CRDs-catalog/b50f3fbc451
 
 cd "$(dirname "$0")/.."
 
-for values in "$chart"/ci/*.yaml; do
-  echo "== $values"
+# Lints, renders and validates the chart with the values files it is given.
+check() {
+  local args=()
+  for values in "$@"; do args+=(-f "$values"); done
+  echo "== $*"
   # Lint also checks the values against values.schema.json.
-  helm lint --strict "$chart" -f "$values"
-  rendered="$(helm template coral "$chart" -f "$values")"
+  helm lint --strict "$chart" "${args[@]}"
+  rendered="$(helm template coral "$chart" "${args[@]}")"
   if grep -qx 'kind: Secret' <<<"$rendered"; then
-    echo "$values renders a Secret: the chart never renders one" >&2
+    echo "$* renders a Secret: the chart never renders one" >&2
     exit 1
   fi
   for version in "${kube_versions[@]}"; do
-    helm template coral "$chart" -f "$values" --kube-version "$version" \
+    helm template coral "$chart" "${args[@]}" --kube-version "$version" \
       | kubeconform -strict -summary -kubernetes-version "$version" \
         -schema-location default -schema-location "$crd_schemas" ${cache[@]+"${cache[@]}"} -
   done
+}
+
+for values in "$chart"/ci/*.yaml; do
+  check "$values"
+done
+# The size examples hold sizes only, so they go on top of the least values.
+for example in "$chart"/examples/*.yaml; do
+  check "$chart/ci/default-values.yaml" "$example"
 done
 
 "${unittest[@]}" "$chart"

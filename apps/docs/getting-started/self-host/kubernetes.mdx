@@ -379,8 +379,8 @@ Coral sends an anonymous [usage report](/reference/configuration#usage-data) eac
 Run Executors run your users' programs, each in its own pod, apart from Coral's secrets. Each pod holds only its token. It runs as a non-root user on a read-only file system, with no capabilities, no service account token and no volumes. No value changes this.
 
 - `runExecutors.replicas` sets the number of pods. The default is 2.
-- `runExecutors.maxRunsHeld` sets the most runs that one pod holds at once. The default is 8. If you raise it, raise the pod's memory limit too.
-- Set run limits, such as `execution_heap_bytes`, under `config.runtime`.
+- `runExecutors.maxRunsHeld` sets the most runs that one pod holds at once. The default is 8. If you raise it, raise the pod's memory limit too: see [Run Executor memory](#run-executor-memory).
+- Each Run Executor gives a program a 128 MiB heap, and its compiler 512 MiB. To change them, set `CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES` and `CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES`, in bytes, in `runExecutors.extraEnv`. `execution_heap_bytes` and `compiler_heap_bytes` under `config.runtime` do not reach the Run Executors' pods.
 
 To rotate the token without downtime:
 
@@ -388,6 +388,52 @@ To rotate the token without downtime:
 2. Set `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW`, and run `helm upgrade --wait`. Coral then accepts both tokens.
 3. Set `runExecutors.token.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW` and `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN`, and run `helm upgrade --wait`. The Run Executors then use the new token. Do not start step 4 until the upgrade finishes.
 4. Set `runExecutors.previousToken.key` to `""`, and run `helm upgrade`. Then remove the old key from the Secret.
+
+## Sizing
+
+The chart's defaults suit a small production install. Each component runs 2 replicas:
+
+| Component     | Replicas | CPU request | Memory |
+| ------------- | -------- | ----------- | ------ |
+| `coral`       | 2        | 500m        | 2Gi    |
+| `coral-web`   | 2        | 250m        | 768Mi  |
+| Run Executors | 2        | 250m        | 3Gi    |
+
+Each `coral-web` pod also runs an [Envoy sidecar](#the-envoy-sidecar), with a 50m CPU request and 64Mi of memory.
+
+Each container requests CPU and has no CPU limit, so it can use spare CPU on its node. Its memory request equals its limit, so when memory runs short, the node evicts it only after pods that use more than they request. Change any of these under `resources` for the component.
+
+To size up, copy the values from one of the examples in [`charts/coral/examples`](https://github.com/withcoral/coral/tree/main/charts/coral/examples). These are starting points, not tested limits.
+
+| Size | `coral` | `coral-web` | Run Executors | Runs at once | Postgres       | Postgres connections |
+| ---- | ------- | ----------- | ------------- | ------------ | -------------- | -------------------- |
+| S    | 2       | 2           | 2             | 16           | 2 vCPU, 4 GiB  | about 40             |
+| M    | 3       | 3           | 4             | 32           | 4 vCPU, 8 GiB  | about 55             |
+| L    | 4       | 4           | 8             | 64           | 8 vCPU, 16 GiB | about 70             |
+
+To run more programs at once, add Run Executor replicas before you raise `maxRunsHeld`.
+
+### Run Executor memory
+
+Each Run Executor holds up to `maxRunsHeld` runs, and one compiler. Give its pod at least this much memory:
+
+```text
+maxRunsHeld × (program heap + 64 MiB) + compiler heap + 64 MiB + 512 MiB
+```
+
+V8 adds 64 MiB to each heap when Coral stops it. The last 512 MiB is for the process itself. With the defaults, a 128 MiB program heap and a 512 MiB compiler heap, that is 8 × 192 MiB + 576 MiB + 512 MiB = 2,624 MiB. So the default limit is 3Gi. To change the heaps, see [Run Executors](#run-executors).
+
+### Postgres
+
+- Use at least 2 vCPU and 4 GiB. For production, run it across 2 or more zones.
+- Allow (`coral` replicas + 1) × 11 connections, plus headroom. Each `coral` pod opens 11, and an upgrade runs one more pod for a while. Run Executors never connect.
+- Start with 20 GiB of storage, and turn on automatic growth. The search index grows with your data.
+
+### Node drains and spread
+
+- A PodDisruptionBudget lets a node drain take one pod at a time from each component with 2 or more replicas. To turn them off, set `podDisruptionBudget.enabled: false`.
+- Each component spreads its pods across nodes and zones when it can. To change the spread, replace `topologySpreadConstraints` for the component. To turn it off, set it to `[]`.
+- To choose the nodes a component runs on, set its `nodeSelector`, `tolerations`, `affinity` or `priorityClassName`.
 
 ## The Envoy sidecar
 

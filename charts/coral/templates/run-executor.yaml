@@ -30,6 +30,9 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}-run-executor
       automountServiceAccountToken: false
+      {{- with include "coral.placement" (list $ .Values.runExecutors) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       enableServiceLinks: false
       terminationGracePeriodSeconds: {{ .Values.runExecutors.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
