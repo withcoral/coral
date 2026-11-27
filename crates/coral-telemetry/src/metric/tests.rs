@@ -139,7 +139,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "coral.run_executor.linked",
         "gauge",
         "{stream}",
-        &["coral.run_executor.kind"],
+        &["run_executor.kind"],
     ),
     (
         "coral.invocation.started",

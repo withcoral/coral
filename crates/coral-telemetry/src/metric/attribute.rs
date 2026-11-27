@@ -350,7 +350,7 @@ attribute! {
 }
 
 attribute! {
-    /// Which credential admitted a Run Executor, for `coral.run_executor.kind`.
+    /// Which credential admitted a Run Executor, for `run_executor.kind`.
     RunExecutorKind {
         /// A local child that this Coral Instance started.
         Local => "local",

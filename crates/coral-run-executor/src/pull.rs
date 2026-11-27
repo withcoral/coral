@@ -84,7 +84,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The kind as `coral.run_executor.kind` reports it.
+    /// The kind as `run_executor.kind` reports it.
     const fn metric(self) -> metric::RunExecutorKind {
         match self {
             Self::Local => metric::RunExecutorKind::Local,

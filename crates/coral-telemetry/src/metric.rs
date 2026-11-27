@@ -446,7 +446,7 @@ impl Metrics {
                 "coral.run_executor.linked",
                 "{stream}",
                 "Pull streams of Run Executors that this Coral Instance holds, by the credential that admitted them. A stream that closes at its connection age counts until it ends, so a Run Executor that redials here counts twice for a moment.",
-                |kind: RunExecutorKind| vec![KeyValue::new("coral.run_executor.kind", kind.as_str())],
+                |kind: RunExecutorKind| vec![KeyValue::new("run_executor.kind", kind.as_str())],
             ),
             invocation_started: counter(
                 "coral.invocation.started",

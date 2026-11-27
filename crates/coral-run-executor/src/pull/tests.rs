@@ -1016,7 +1016,7 @@ fn the_linked_gauge_counts_each_held_stream_by_kind() {
                 .filter(|point| {
                     point
                         .attributes
-                        .get("coral.run_executor.kind")
+                        .get("run_executor.kind")
                         .map(String::as_str)
                         == Some(kind)
                 })
