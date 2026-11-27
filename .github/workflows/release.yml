@@ -1,10 +1,10 @@
 name: Release
 
 # Builds, signs and publishes Desktop to the v1 update feed, and the runtime
-# and coral-web images and the Helm chart to GHCR, as one release: no artifact is visible until
-# every artifact is verified. Each Desktop platform job compiles and stages
-# with no credentials, then hands the staged build to xtask, which owns
-# packaging, signing, notarization and verification. Every Desktop asset goes
+# and coral-web images and the Helm chart to GHCR, as one release: no
+# artifact is visible until every artifact is verified. Each Desktop platform
+# job compiles and stages with no credentials, then hands the staged build to
+# xtask, which owns packaging, signing, notarization and verification. Every Desktop asset goes
 # to a draft release in the feed repository, which updaters ignore. The images
 # are pushed by digest only, which no tag reaches. The promote job publishes
 # the release whole: it tags the images, pushes and signs the chart, attaches
@@ -438,8 +438,11 @@ jobs:
           VERSION: ${{ needs.images.outputs.version }}
         run: scripts/check-images-txt.sh "chart/coral-${VERSION}.tgz" chart/images.txt
 
-      # Pushing the version again replaces its tag, so a rerun pushes and
-      # signs again. The chart's version is its only tag.
+      # helm package is not reproducible, so a rerun would push another
+      # digest. A version whose tag already carries this workflow's signature
+      # stays as it is. helm push cannot push without a tag: the chart is
+      # public, unsigned, for the seconds until cosign signs it, and if
+      # signing fails the release fails with it there.
       - name: Push, sign and verify the chart
         env:
           VERSION: ${{ needs.images.outputs.version }}
@@ -447,6 +450,17 @@ jobs:
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          chart="${CHART_REPOSITORY#oci://}/coral"
+          verify() {
+            cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG_NAME}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$1" > /dev/null
+          }
+          if verify "${chart}:${VERSION}" 2>/dev/null; then
+            echo "${chart}:${VERSION} is already pushed and signed"
+            exit 0
+          fi
           helm registry login ghcr.io --username "$REGISTRY_USER" --password-stdin <<<"$REGISTRY_PASSWORD"
           helm push "chart/coral-${VERSION}.tgz" "$CHART_REPOSITORY" 2>&1 | tee "$RUNNER_TEMP/helm-push.txt"
           digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "$RUNNER_TEMP/helm-push.txt")"
@@ -454,17 +468,13 @@ jobs:
             echo "helm push printed no digest." >&2
             exit 1
           fi
-          chart="${CHART_REPOSITORY#oci://}/coral"
           tagged="sha256:$(docker buildx imagetools inspect --raw "${chart}:${VERSION}" | sha256sum | cut -d' ' -f1)"
           if [ "$tagged" != "$digest" ]; then
             echo "${chart}:${VERSION} resolves to ${tagged}, not the pushed ${digest}." >&2
             exit 1
           fi
           cosign sign --yes "${chart}@${digest}"
-          cosign verify \
-            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG_NAME}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "${chart}@${digest}" > /dev/null
+          verify "${chart}@${digest}"
           echo "Pushed and signed ${chart}:${VERSION}@${digest}"
 
       # A rerun replaces the asset.

@@ -46,7 +46,7 @@ while read -r line; do
   fi
 done <"$images_txt"
 
-if ! diff <(echo "$rendered") <(sort -u <<<"${listed%$'\n'}") >&2; then
+if ! diff <(echo "$rendered") <(sort <<<"${listed%$'\n'}") >&2; then
   echo "The chart's images (<) differ from images.txt's (>)" >&2
   status=1
 fi
