@@ -6,42 +6,57 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
-use super::super::id_token::ValidatedOidcIdentity;
 use super::super::sealed_handshake::SignInSession;
-use super::response::{TrustedRedirect, direct_error};
-use super::{AuthorizationServerHttpState, query, sign_in_cookie};
+use super::response::{TrustedRedirect, direct_error, direct_refusal};
+use super::{AuthorizationServerHttpState, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedLogin};
 use coral_db::UnixNanos;
+use coral_sign_in::{ModeRequest, Named, PersonIdentifier, ProvenPerson, SignInValue};
 use coral_telemetry::safe;
 use coral_workspace::UserId;
 
+/// The OIDC callback, the URL the provider sends the browser back to.
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
     RawQuery(raw_query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(query) = parse_query(raw_query.as_deref().unwrap_or_default()) else {
-        return direct_error("invalid_request", "OIDC callback request is malformed");
+    let request = ModeRequest {
+        query: raw_query.as_deref().unwrap_or_default(),
+        body: b"",
     };
-    let Some(oidc_state) = query.state.as_deref().filter(|state| !state.is_empty()) else {
-        return direct_error("invalid_request", "OIDC callback state is required");
+    finish(&state, &request, &headers).await
+}
+
+/// Finishes the sign-in that `request`, at one of the sign-in mode's URLs,
+/// names.
+async fn finish(
+    state: &AuthorizationServerHttpState,
+    request: &ModeRequest<'_>,
+    headers: &HeaderMap,
+) -> Response {
+    // The sign-in is live if it has not expired when its answer arrives.
+    let arrived = state.clock.now();
+    let sign_in = match state.sign_in_mode.names(request, arrived) {
+        Named::SignIn(sign_in) => sign_in,
+        Named::NoSignIn => return invalid_state(),
+        Named::Refused(refusal) => return direct_refusal(&refusal),
     };
     // A browser that did not start this sign-in has no cookie for it.
     let secure = state.secure_cookies();
-    let Some((cookie_name, sealed)) = sign_in_cookie::find(&headers, oidc_state, secure) else {
+    let Some((cookie_name, sealed)) = sign_in_cookie::find(headers, sign_in.as_str(), secure)
+    else {
         return invalid_state();
     };
-    // The sign-in is live if it has not expired when its callback arrives.
-    let arrived = state.clock.now();
     let session = SignInSession::open(
         state.settings.handshake_keys(),
-        oidc_state,
+        sign_in.as_str(),
         &sealed,
         arrived.whole_seconds(),
     );
     let mut response = match session {
-        Some(session) => complete(&state, &query, oidc_state, session, &headers).await,
+        Some(session) => complete(state, request, &sign_in, session, headers).await,
         None => invalid_state(),
     };
     if let Some(clear) = sign_in_cookie::clear_header(&cookie_name, secure) {
@@ -57,71 +72,30 @@ fn invalid_state() -> Response {
     )
 }
 
-/// Finishes the sign-in `session` describes with the provider's answer in `query`.
+/// Finishes the sign-in `session` describes with the mode's answer in
+/// `request`.
 async fn complete(
     state: &AuthorizationServerHttpState,
-    query: &CallbackQuery,
-    oidc_state: &str,
+    request: &ModeRequest<'_>,
+    sign_in: &SignInValue,
     session: SignInSession,
     headers: &HeaderMap,
 ) -> Response {
     let Some(trusted) = trusted_redirect(&session) else {
         return direct_error("server_error", "authorization failed");
     };
-    let provider_code = match classify_result(query) {
-        Ok(CallbackResult::Code(code)) => code,
-        Ok(CallbackResult::AccessDenied) => {
-            return trusted.error("access_denied", "authorization was denied");
-        }
-        Ok(CallbackResult::ProviderError) => {
-            return trusted.error("server_error", "authorization failed");
-        }
-        Err(()) => {
-            return trusted.error("invalid_request", "OIDC callback response is invalid");
-        }
-    };
-    let provider = state.settings.provider();
-    let exchange = match state
-        .provider_client
-        .exchange_code(
-            provider,
-            &provider_code,
-            &state.settings.handshake_keys().pkce_verifier(oidc_state),
-        )
+    let person = match state
+        .sign_in_mode
+        .check(request, sign_in, state.clock.as_ref())
         .await
     {
-        Ok(exchange) => exchange,
-        Err(error) => {
-            tracing::warn!(
-                error.type = safe::kind(error.code()),
-                "OIDC callback could not exchange the provider code"
-            );
-            return trusted.error("server_error", "authorization failed");
-        }
+        Ok(person) => person,
+        Err(refusal) => return trusted.refused(&refusal),
     };
-    // `now` is the instant the provider's tokens were validated at, read
-    // after the provider's last answer. It dates everything the sign-in
+    // Read after the mode's last answer, `now` dates everything the sign-in
     // decides from here: the login, the Workspace choice and the code.
-    let (identity, now) = match state
-        .provider_client
-        .validate_code_exchange(
-            provider,
-            exchange,
-            &state.settings.handshake_keys().nonce(oidc_state),
-            state.clock.as_ref(),
-        )
-        .await
-    {
-        Ok(validated) => validated,
-        Err(error) => {
-            tracing::warn!(
-                error.type = safe::kind(error.code()),
-                "OIDC callback could not validate the provider identity"
-            );
-            return trusted.error("server_error", "authorization failed");
-        }
-    };
-    let user_id = match provision(&state.user_directory, &identity, now).await {
+    let now = state.clock.now();
+    let user_id = match provision(&state.user_directory, &person, now).await {
         Ok(user_id) => user_id,
         Err(outcome) => return outcome.into_error(&trusted),
     };
@@ -131,15 +105,12 @@ async fn complete(
         .authorization_resource(&session.request.resource)
         .is_some_and(|target| target.picks_workspace())
     {
-        let signed_in_as = identity
-            .email
-            .as_deref()
-            .or(identity.display_name.as_deref());
+        let signed_in_as = person.email().or(person.display_name());
         return super::workspace_choice::offer(
             state,
             headers,
             &trusted,
-            oidc_state,
+            sign_in.as_str(),
             user_id,
             signed_in_as,
             session,
@@ -150,7 +121,7 @@ async fn complete(
     issue_code(
         state,
         &trusted,
-        oidc_state,
+        sign_in.as_str(),
         &session.request.grant(&user_id, None),
         now,
     )
@@ -168,7 +139,7 @@ pub(super) async fn issue_code(
     grant: &AuthorizationGrant,
     now: UnixNanos,
 ) -> Response {
-    let Ok(authorization_code) = random_code() else {
+    let Ok(authorization_code) = random_token() else {
         tracing::warn!("Sign-in could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
@@ -229,32 +200,34 @@ impl ProvisioningFailure {
 /// The login is recorded at `now`.
 async fn provision(
     user_directory: &UserDirectory,
-    identity: &ValidatedOidcIdentity,
+    person: &ProvenPerson,
     now: UnixNanos,
 ) -> Result<UserId, ProvisioningFailure> {
-    let provisioning = user_directory
-        .provision_login(
-            VerifiedLogin::oidc(
-                &identity.issuer,
-                &identity.subject,
-                identity.display_name.as_deref(),
-                now,
-            )
-            .with_profile(coral_workspace::VerifiedUserProfile::new(
-                identity.profile_name.as_deref(),
-                identity.email.as_deref(),
-                identity.email_verified,
-                identity.hosted_domain.as_deref(),
-            ))
-            .with_profile_observed_at(identity.profile_observed_at),
-        )
-        .await;
+    let login = match person.identifier() {
+        PersonIdentifier::Subject { issuer, subject } => {
+            VerifiedLogin::oidc(issuer, subject, person.display_name(), now)
+        }
+        PersonIdentifier::NameId(value) => {
+            VerifiedLogin::name_id(value, person.display_name(), now)
+        }
+    }
+    .with_profile(coral_workspace::VerifiedUserProfile::new(
+        person.name(),
+        person.email(),
+        person.email_verified(),
+        person.hosted_domain(),
+    ));
+    let login = match person.observed_at() {
+        Some(observed_at) => login.with_profile_observed_at(observed_at),
+        None => login,
+    };
+    let provisioning = user_directory.provision_login(login).await;
     match provisioning {
         Ok(LoginProvisioning::Provisioned(user_id)) => Ok(user_id),
         Ok(LoginProvisioning::Disabled) => Err(ProvisioningFailure::Disabled),
         Ok(LoginProvisioning::IssuerMismatch) => {
             tracing::warn!(
-                "OIDC callback refused a login whose subject is already bound to a different \
+                "Sign-in refused a login whose subject is already bound to a different \
                  provider issuer; reconcile that user directory row before this login can succeed"
             );
             Err(ProvisioningFailure::IssuerMismatch)
@@ -262,7 +235,7 @@ async fn provision(
         Err(error) => {
             tracing::warn!(
                 error.type = safe::kind(provisioning_error_code(&error)),
-                "OIDC callback could not provision the verified login"
+                "Sign-in could not provision the verified login"
             );
             Err(ProvisioningFailure::Unavailable)
         }
@@ -284,49 +257,9 @@ const fn provisioning_error_code(error: &coral_auth::Error) -> &'static str {
     }
 }
 
-#[derive(Default)]
-struct CallbackQuery {
-    state: Option<String>,
-    code: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
-fn parse_query(raw: &str) -> Result<CallbackQuery, ()> {
-    let mut query = CallbackQuery::default();
-    query::scan(raw, |name, value| {
-        let target = match name {
-            "state" => &mut query.state,
-            "code" => &mut query.code,
-            "error" => &mut query.error,
-            "error_description" => &mut query.error_description,
-            _ => return,
-        };
-        *target = Some(value.into_owned());
-    })?;
-    Ok(query)
-}
-
-enum CallbackResult {
-    Code(String),
-    AccessDenied,
-    ProviderError,
-}
-
-fn classify_result(query: &CallbackQuery) -> Result<CallbackResult, ()> {
-    match (
-        query.code.as_deref(),
-        query.error.as_deref(),
-        query.error_description.is_some(),
-    ) {
-        (Some(code), None, false) if !code.is_empty() => Ok(CallbackResult::Code(code.into())),
-        (None, Some("access_denied"), _) => Ok(CallbackResult::AccessDenied),
-        (None, Some(error), _) if !error.is_empty() => Ok(CallbackResult::ProviderError),
-        _ => Err(()),
-    }
-}
-
-fn random_code() -> Result<String, ()> {
+/// A fresh URL-safe 256-bit token: a sign-in's value, or an
+/// authorization code.
+pub(super) fn random_token() -> Result<String, ()> {
     let mut bytes = Zeroizing::new([0_u8; 32]);
     SystemRandom::new().fill(&mut *bytes).map_err(|_error| ())?;
     Ok(URL_SAFE_NO_PAD.encode(bytes.as_slice()))
@@ -610,12 +543,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_queries_are_bounded_and_leave_the_sign_in() {
-        for raw in query::rejected_queries() {
-            let Err(()) = parse_query(&raw) else {
-                panic!("malformed callback query must be rejected");
-            };
-        }
+    async fn a_malformed_callback_leaves_the_sign_in() {
         let database = database().await;
         let response = callback_raw(
             state(&database, "https://provider.invalid"),
@@ -980,13 +908,8 @@ mod tests {
             .expect("seed the directory");
         let app = state(&fixture, &server.uri());
 
-        let logs = CapturedLogs::default();
-        let response = {
-            let _guard = tracing::subscriber::set_default(
-                tracing_subscriber::Registry::default().with(logs.clone()),
-            );
-            callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await
-        };
+        let (response, captured) =
+            callback_with_logs(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
 
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "access_denied".into())));
@@ -997,7 +920,6 @@ mod tests {
         assert!(!values.iter().any(|(key, _value)| key == "code"));
         assert_security(&response);
 
-        let captured = logs.captured();
         assert!(
             captured.contains("reconcile"),
             "an operator must be told how to resolve the binding: {captured}"
@@ -1101,11 +1023,17 @@ mod tests {
         state: AuthorizationServerHttpState,
         pairs: &[(&str, &str)],
     ) -> (Response, String) {
+        with_logs(callback(state, pairs)).await
+    }
+
+    /// Awaits `response`, and returns it with what the operator's log got
+    /// meanwhile.
+    async fn with_logs(response: impl Future<Output = Response>) -> (Response, String) {
         let logs = CapturedLogs::default();
         let _guard = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(logs.clone()),
         );
-        let response = Box::pin(callback(state, pairs)).await;
+        let response = Box::pin(response).await;
         (response, logs.captured())
     }
 
@@ -1582,5 +1510,177 @@ mod tests {
             "the client stops waiting"
         );
         assert_eq!(redeem_organization(&db, &back).await, None);
+    }
+
+    /// The state over `database` with `mode` in place of the OIDC sign-in.
+    fn mode_state(
+        database: &TestDatabase,
+        mode: Arc<dyn coral_sign_in::SignInMode>,
+    ) -> AuthorizationServerHttpState {
+        state(database, "https://provider.invalid").with_sign_in_mode(mode, database.database())
+    }
+
+    /// Runs the mode's answer `raw` from the browser that started the
+    /// sign-in `sign_in`, and returns what the operator's log got.
+    async fn mode_answer(
+        state: AuthorizationServerHttpState,
+        sign_in: &str,
+        raw: &str,
+    ) -> (Response, String) {
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, browser_cookie(&state, sign_in, &session()));
+        with_logs(oidc_callback(
+            State(state),
+            RawQuery(Some(raw.to_owned())),
+            headers,
+        ))
+        .await
+    }
+
+    /// Core finishes a sign-in that a mode other than OIDC proves: it finds
+    /// the cookie the mode's answer names, and makes the User by the person
+    /// the mode returns.
+    #[tokio::test]
+    async fn a_sign_in_finishes_through_the_configured_mode() {
+        let database = database().await;
+        let app = mode_state(&database, super::super::test_state::test_mode(""));
+        let (response, _logs) = mode_answer(app, "value-1", "sign_in=value-1&person=00u1").await;
+        assert!(clears_sign_in_cookie(&response));
+        let user_id = stored_user_id(&database.database(), &response).await;
+        let again = UserDirectory::new(database.database())
+            .provision_login(VerifiedLogin::name_id(
+                "00u1",
+                None,
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
+            ))
+            .await
+            .expect("provision");
+        assert_eq!(
+            again,
+            LoginProvisioning::Provisioned(UserId::parse(&user_id).expect("User ID"))
+        );
+    }
+
+    /// Core sends each refusal of a mode with its OAuth error and a text that
+    /// is fixed or in the checked form, and logs one the mode described. A
+    /// refusal of the check ends the sign-in; a request that names no
+    /// sign-in, or that the mode refuses before it names one, leaves it.
+    #[tokio::test]
+    async fn each_refusal_of_a_mode_gets_its_answer() {
+        let database = database().await;
+        let epoch = UnixNanos::new(0);
+        let form = "sign_in_refused 1970-01-01T00:00:00Z";
+        for (refusal, error, description, logged) in [
+            (
+                coral_sign_in::Refusal::new("sign_in_refused", epoch),
+                "access_denied",
+                form,
+                Some("sign_in_refused"),
+            ),
+            (
+                coral_sign_in::Refusal::new("Not a code", epoch),
+                "access_denied",
+                coral_sign_in::DENIED,
+                None,
+            ),
+            (
+                coral_sign_in::Refusal::failed("mode_failed"),
+                "server_error",
+                "authorization failed",
+                None,
+            ),
+        ] {
+            let app = mode_state(
+                &database,
+                Arc::new(super::super::test_state::Refusing(refusal)),
+            );
+            let (response, logs) = mode_answer(app, "value-1", "value-1").await;
+            let values = redirect_query(&response);
+            assert!(
+                values.contains(&("error".into(), error.into())),
+                "{values:?}"
+            );
+            assert!(
+                values.contains(&("error_description".into(), description.into())),
+                "{values:?}"
+            );
+            assert!(clears_sign_in_cookie(&response));
+            match logged {
+                Some(code) => assert_logged_only_the_code(&logs, code, &["value-1"]),
+                None => assert!(!logs.contains(" error.type="), "{logs}"),
+            }
+            assert!(!values.iter().any(|(key, _)| key == "code"), "{values:?}");
+        }
+
+        let mut app = mode_state(&database, super::super::test_state::test_mode(""));
+        app.clock = Arc::new(ManualClock::starting_at(epoch));
+        for (raw, error, description, logged) in [
+            (
+                "sign_in=value-1&sign_in=value-2",
+                "access_denied",
+                "test_malformed 1970-01-01T00:00:00Z",
+                Some("test_malformed"),
+            ),
+            (
+                "person=00u1",
+                "invalid_request",
+                "OIDC callback state is invalid or expired",
+                None,
+            ),
+        ] {
+            let (response, logs) = mode_answer(app.clone(), "value-1", raw).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{raw}");
+            assert!(!response.headers().contains_key(header::LOCATION), "{raw}");
+            assert!(!clears_sign_in_cookie(&response), "{raw}");
+            let body: Value = serde_json::from_slice(
+                &to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+            )
+            .expect("JSON error");
+            assert_eq!(
+                (
+                    body.get("error").and_then(Value::as_str),
+                    body.get("error_description").and_then(Value::as_str)
+                ),
+                (Some(error), Some(description)),
+                "{raw}"
+            );
+            match logged {
+                Some(code) => assert_logged_only_the_code(&logs, code, &["value-1"]),
+                None => assert!(!logs.contains(" error.type="), "{raw}: {logs}"),
+            }
+        }
+    }
+
+    /// The first Owner is the person the mode's settings name: they sign in
+    /// as the Organization's Owner, and another person does not.
+    #[tokio::test]
+    async fn the_first_owner_comes_from_the_mode() {
+        let database = database().await;
+        let app = mode_state(
+            &database,
+            super::super::test_state::test_mode("first_owner = 'owner-1'"),
+        );
+        for (sign_in, person, owner) in
+            [("value-1", "member-1", false), ("value-2", "owner-1", true)]
+        {
+            let (response, _logs) = mode_answer(
+                app.clone(),
+                sign_in,
+                &format!("sign_in={sign_in}&person={person}"),
+            )
+            .await;
+            let user_id = stored_user_id(&database.database(), &response).await;
+            let authority = coral_workspace::OrganizationModule::new(database.database())
+                .resolve_user_authority(&UserId::parse(&user_id).expect("User ID"))
+                .await
+                .expect("authority");
+            assert_eq!(
+                authority.organization_role() == Some(coral_workspace::OrganizationRole::Owner),
+                owner,
+                "{person}"
+            );
+        }
     }
 }

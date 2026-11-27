@@ -227,12 +227,8 @@ impl ResolvedAuthSettings {
         &self.provider
     }
 
-    pub(super) fn handshake_keys(&self) -> &HandshakeKeys {
+    pub(super) fn handshake_keys(&self) -> &Arc<HandshakeKeys> {
         &self.handshake_keys
-    }
-
-    pub(crate) fn bootstrap_owner_subject(&self) -> Option<&str> {
-        self.provider.bootstrap_owner_subject.as_deref()
     }
 
     pub(super) fn matches_session_token_issuer(&self, issuer: &SessionTokenIssuer) -> bool {

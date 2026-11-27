@@ -4,6 +4,7 @@ mod error;
 mod id_token;
 mod oidc_mode;
 mod provider_client;
+mod query;
 mod request;
 mod sealed_handshake;
 pub use request::WorkspaceAuthentication;
