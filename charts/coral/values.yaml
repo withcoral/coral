@@ -202,6 +202,26 @@ web:
       timeoutSeconds: 5
       failureThreshold: 6
 
+  # An Envoy sidecar that spreads each of coral-web's gRPC requests across
+  # every coral pod, found through a headless Service. Without it, coral-web
+  # keeps one connection to coral's Service, and so one coral pod takes all of
+  # one coral-web pod's load. Turn it off when your service mesh spreads
+  # requests: coral-web then calls coral's Service directly.
+  envoy:
+    enabled: true
+    image:
+      registry: docker.io
+      repository: envoyproxy/envoy
+      tag: distroless-v1.40.2
+      digest: sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 64Mi
+
   # Annotations on the pods.
   podAnnotations: {}
   # The pods run as their own ServiceAccount, named <release>-web. Its annotations

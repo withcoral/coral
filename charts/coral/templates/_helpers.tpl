@@ -66,6 +66,9 @@ port behind it. coral's gRPC Service is never among them.
 {{- define "coral.port.runExecutor" -}}14557{{- end -}}
 {{- define "coral.port.runExecutorHealth" -}}14558{{- end -}}
 {{- define "coral.port.web" -}}3000{{- end -}}
+{{/* coral-web's Envoy sidecar: gRPC on loopback, and its health check. */}}
+{{- define "coral.port.envoy" -}}14559{{- end -}}
+{{- define "coral.port.envoyHealth" -}}14560{{- end -}}
 
 {{/*
 An image reference. Call with (list $ .Values.coral.image).
@@ -287,6 +290,138 @@ last one, and silently replace the chart's. Call with
 {{- fail (printf "%s sets %s, which the chart sets" $path $env.name) -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+coral-web's Envoy config. Envoy takes coral-web's gRPC on loopback and sends
+each request to the next coral pod in turn. It finds the pods through the
+headless Service, whose DNS name resolves to every ready pod.
+*/}}
+{{- define "coral.envoyConfig" -}}
+# Every listener together. coral-web needs a few connections, and the
+# kubelet's probe one. Without a cap, a flood of connections could take Envoy
+# past its memory limit.
+overload_manager:
+  resource_monitors:
+    - name: envoy.resource_monitors.global_downstream_max_connections
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig
+        max_active_downstream_connections: 1000
+static_resources:
+  listeners:
+    - name: coral
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: {{ include "coral.port.envoy" . }}
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: coral
+                codec_type: HTTP2
+                # A stream can stay quiet for as long as it waits, such as for
+                # a Run's next event.
+                stream_idle_timeout: 0s
+                route_config:
+                  virtual_hosts:
+                    - name: coral
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: /
+                          route:
+                            cluster: coral
+                            timeout: 0s
+                            # Only failures before coral sees the request, so
+                            # a retry never runs a call twice.
+                            retry_policy:
+                              retry_on: connect-failure,refused-stream,reset-before-request
+                              num_retries: 2
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+    # For the kubelet's startup probe only. Any pod in the cluster can reach
+    # it, so it has its own limit and drops idle connections: connections held
+    # open here can't use up the cap above.
+    - name: health
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: {{ include "coral.port.envoyHealth" . }}
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.connection_limit
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+                stat_prefix: health
+                max_connections: 100
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: health
+                common_http_protocol_options:
+                  idle_timeout: 10s
+                route_config:
+                  virtual_hosts:
+                    - name: health
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: /
+                          direct_response:
+                            status: 404
+                http_filters:
+                  - name: envoy.filters.http.health_check
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+                      pass_through_mode: false
+                      headers:
+                        - name: :path
+                          string_match:
+                            exact: /ready
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: coral
+      # Each address the name resolves to is an endpoint.
+      cluster_type:
+        name: envoy.clusters.dns
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dns.v3.DnsCluster
+          dns_lookup_family: V4_PREFERRED
+          # How soon a new coral pod takes requests, and a gone one stops.
+          dns_refresh_rate: 5s
+      lb_policy: ROUND_ROBIN
+      # Every open stream counts, and each browser tab holds one: Envoy's
+      # default of 1,024 would refuse requests long before coral is busy.
+      circuit_breakers:
+        thresholds:
+          - max_connections: 100000
+            max_pending_requests: 100000
+            max_requests: 100000
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options:
+              # Finds a coral pod that went away without closing its
+              # connections.
+              connection_keepalive:
+                interval: 30s
+                timeout: 5s
+      load_assignment:
+        cluster_name: coral
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: {{ include "coral.fullname" . }}-headless.{{ .Release.Namespace }}.svc
+                      port_value: {{ include "coral.port.grpc" . }}
 {{- end -}}
 
 {{/*

@@ -167,6 +167,28 @@ spec:
       port: {{ include "coral.port.runExecutor" . }}
       targetPort: run-executor
       appProtocol: kubernetes.io/h2c
+{{- if .Values.web.envoy.enabled }}
+---
+# Every ready coral pod's address, for coral-web's Envoy sidecar to spread
+# gRPC requests across. Never exposed outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-headless
+  labels:
+    {{- include "coral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coral
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "coral.selectorLabels" (list . "coral") | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ include "coral.port.grpc" . }}
+      targetPort: grpc
+      appProtocol: kubernetes.io/h2c
+{{- end }}
 ---
 # Sign-in, for your routing to https://<hosts.auth>.
 apiVersion: v1

@@ -7,7 +7,7 @@ description: "Deploy Coral in your Kubernetes cluster, with SQLite or Postgres a
 Install Coral in your Kubernetes cluster with Coral's Helm chart. The chart runs three components:
 
 - `coral`, the server.
-- `coral-web`, the Coral UI.
+- `coral-web`, the Coral UI, with an Envoy sidecar.
 - Run Executors, which run programs in their own pods.
 
 The chart never creates a database or a Secret. You give it both.
@@ -399,6 +399,8 @@ The chart's defaults suit a small production install. Each component runs 2 repl
 | `coral-web`   | 2        | 250m        | 768Mi  |
 | Run Executors | 2        | 250m        | 3Gi    |
 
+Each `coral-web` pod also runs an [Envoy sidecar](#the-envoy-sidecar), with a 50m CPU request and 64Mi of memory.
+
 Each container requests CPU and has no CPU limit, so it can use spare CPU on its node. Its memory request equals its limit, so when memory runs short, the node evicts it only after pods that use more than they request. Change any of these under `resources` for the component.
 
 To size up, copy the values from one of the examples in [`charts/coral/examples`](https://github.com/withcoral/coral/tree/main/charts/coral/examples). These are starting points, not tested limits.
@@ -432,6 +434,16 @@ V8 adds 64 MiB to each heap when Coral stops it. The last 512 MiB is for the pro
 - A PodDisruptionBudget lets a node drain take one pod at a time from each component with 2 or more replicas. To turn them off, set `podDisruptionBudget.enabled: false`.
 - Each component spreads its pods across nodes and zones when it can. To change the spread, replace `topologySpreadConstraints` for the component. To turn it off, set it to `[]`.
 - To choose the nodes a component runs on, set its `nodeSelector`, `tolerations`, `affinity` or `priorityClassName`.
+
+## The Envoy sidecar
+
+Each `coral-web` pod runs an Envoy sidecar. Envoy sends each of the pod's gRPC requests to the next `coral` pod in turn. It finds the pods through the `coral-headless` Service. Without Envoy, a `coral-web` pod keeps one connection to the `coral` Service. One `coral` pod then takes all of that pod's load.
+
+Envoy picks a `coral` pod when a request starts. A long request, such as a live update stream, stays on its pod. After you add `coral` pods, these requests move only when they reconnect.
+
+The sidecar uses the upstream `envoyproxy/envoy` image, pinned by digest. To pull it from your own registry, set `global.imageRegistry` or `web.envoy.image`. To size it, set `web.envoy.resources`.
+
+If your service mesh spreads gRPC requests, turn the sidecar off with `web.envoy.enabled: false`. `coral-web` then calls the `coral` Service directly.
 
 ## Upgrade
 

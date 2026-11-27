@@ -25,6 +25,9 @@ spec:
       annotations:
         # A new annotation, such as an IRSA role, reaches only new pods.
         checksum/serviceaccount: {{ toYaml .Values.web.serviceAccount.annotations | sha256sum }}
+        {{- if .Values.web.envoy.enabled }}
+        checksum/envoy: {{ include "coral.envoyConfig" . | sha256sum }}
+        {{- end }}
         {{- with .Values.web.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -42,6 +45,39 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      {{- if .Values.web.envoy.enabled }}
+      initContainers:
+        # A native sidecar: it starts, and passes its startup probe, before
+        # coral-web starts, and stops after coral-web stops.
+        - name: envoy
+          image: {{ include "coral.image" (list . .Values.web.envoy.image) }}
+          imagePullPolicy: {{ .Values.web.envoy.image.pullPolicy }}
+          restartPolicy: Always
+          args:
+            - --config-path
+            - /etc/envoy/envoy.yaml
+            - --disable-hot-restart
+          ports:
+            - name: envoy-health
+              containerPort: {{ include "coral.port.envoyHealth" . }}
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: envoy-health
+            periodSeconds: 1
+            failureThreshold: 30
+          # No liveness probe: any pod in the cluster can reach the health
+          # port, and a flood there must not restart Envoy and drop every
+          # stream. Kubernetes restarts the sidecar if it exits.
+          resources:
+            {{- toYaml .Values.web.envoy.resources | nindent 12 }}
+          securityContext:
+            {{- include "coral.containerSecurityContext" . | nindent 12 }}
+      {{- end }}
       containers:
         - name: web
           image: {{ include "coral.image" (list . .Values.web.image) }}
@@ -53,7 +89,11 @@ spec:
             - name: PORT
               value: {{ include "coral.port.web" . | quote }}
             - name: CORAL_ENDPOINT
+              {{- if .Values.web.envoy.enabled }}
+              value: http://127.0.0.1:{{ include "coral.port.envoy" . }}
+              {{- else }}
               value: http://{{ $fullname }}:{{ include "coral.port.grpc" . }}
+              {{- end }}
             # coral's gRPC listener is plaintext, on the cluster network only.
             - name: CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT
               value: "1"
@@ -104,8 +144,13 @@ spec:
             {{- toYaml .Values.web.resources | nindent 12 }}
           securityContext:
             {{- include "coral.containerSecurityContext" . | nindent 12 }}
-      {{- if or .Values.tls.extraCABundle.key .Values.web.extraVolumes }}
+      {{- if or .Values.web.envoy.enabled .Values.tls.extraCABundle.key .Values.web.extraVolumes }}
       volumes:
+        {{- if .Values.web.envoy.enabled }}
+        - name: envoy-config
+          configMap:
+            name: {{ $fullname }}-envoy
+        {{- end }}
         {{- include "coral.caBundleVolume" (list "tls.extraCABundle" .Values.tls.extraCABundle "extra-ca") | nindent 8 }}
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}
