@@ -5,7 +5,7 @@
 // and an MCP client would.
 import { execFile, spawn } from 'node:child_process'
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -19,11 +19,16 @@ import {
   type InstallSecrets,
 } from '../support/install.ts'
 
-// The newest Kubernetes minor the chart supports, and the components that
-// serve it. Each is pinned; bump them together with the chart's support window:
-// kube_versions in scripts/check-chart.sh and KUBECTL_VERSION in reel.yml.
-const KIND_NODE_IMAGE =
-  'kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
+// The oldest and newest Kubernetes minors the chart supports, and the
+// components that serve them. Each is pinned; bump them together with the
+// chart's support window: kube_versions in scripts/check-chart.sh and
+// KUBECTL_VERSION in reel.yml. release.yml runs both.
+const KIND_NODE_IMAGES = {
+  oldest:
+    'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0',
+  newest:
+    'kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5',
+} as const
 const CLOUD_PROVIDER_KIND_IMAGE =
   'registry.k8s.io/cloud-provider-kind/cloud-controller-manager:v0.12.0@sha256:1b97632e5dfec8f83c7e970cf18cedb9e6b707e272011d712cabf6ab59d323c9'
 const ENVOY_GATEWAY_CHART = 'oci://docker.io/envoyproxy/gateway-helm'
@@ -31,6 +36,17 @@ const ENVOY_GATEWAY_VERSION = 'v1.10.0'
 // The image Reel's own Postgres uses (scripts/postgres.ts), with pgvector.
 const POSTGRES_IMAGE =
   'pgvector/pgvector:0.8.2-pg17-trixie@sha256:5c97c57367a485a8e99389548db67d441ab1a878f5492c3df04989f34ecf3c75'
+
+// The air-gap rehearsal's registry, on kind's network.
+const REGISTRY_IMAGE =
+  'registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c'
+// The docs page whose mirroring loop the rehearsal runs, and the example
+// values it installs with.
+const KUBERNETES_DOCS = join(repoRoot, 'apps/docs/getting-started/self-host/kubernetes.mdx')
+const AIR_GAPPED_VALUES = join(repoRoot, 'charts/coral/examples/values-airgapped.yaml')
+// kind's defaults, set in its config so that the egress block can name them.
+const POD_SUBNET = '10.244.0.0/16'
+const SERVICE_SUBNET = '10.96.0.0/16'
 
 const NAMESPACE = 'coral'
 const POSTGRES_HOST = `postgres.${NAMESPACE}.svc.cluster.local`
@@ -45,9 +61,18 @@ export interface Install {
 }
 
 export interface InstallOptions {
-  /** The images to install, already built: `make docker-build reef-docker-build`. */
-  coralImage: string
-  webImage: string
+  /** The oldest or the newest Kubernetes minor the chart supports. */
+  kubernetes: keyof typeof KIND_NODE_IMAGES
+  /** The chart to install: a folder, or a packaged `.tgz`. */
+  chart: string
+  /**
+   * Where the images come from. `load` puts images already built into the
+   * cluster: `make docker-build reef-docker-build`. `mirror` rehearses an
+   * air-gapped install: it copies a release's `images.txt` into a registry on
+   * kind's network with the docs' own loop, blocks the cluster's egress, and
+   * installs with `values-airgapped.yaml`.
+   */
+  images: { load: { coral: string; web: string } } | { mirror: string }
   /** Leave the cluster running after the run, for a person to look at. */
   keep: boolean
   /** Where the cluster's objects, events and pod logs go when the run ends. */
@@ -72,7 +97,9 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
     ),
     KUBECONFIG: kubeconfig,
   }
-  const made = { cluster: false, cloudProvider: false }
+  const registry = `${name}-registry`
+  const node = `${name}-control-plane`
+  const made = { cluster: false, cloudProvider: false, registry: false }
   // Setup stops when the run is cancelled; evidence and cleanup do not.
   const command = async (
     signal: AbortSignal | undefined,
@@ -97,6 +124,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       if (options.keep) {
         console.log(`Reel kept the install cluster ${name}; its kubeconfig is ${kubeconfig}`)
       } else {
+        if (made.registry) await run('docker', ['rm', '-f', registry]).catch(() => {})
         if (made.cloudProvider) {
           await run('docker', ['rm', '-f', `${name}-ccm`]).catch(() => {})
           // cloud-provider-kind's load balancers outlive it; they carry the cluster's name.
@@ -125,6 +153,8 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
   try {
     const secrets = await certificates(tls)
     console.log(`Reel install: creating the kind cluster ${name}`)
+    const kindConfig = join(work, 'kind.yaml')
+    await writeFile(kindConfig, kindClusterConfig())
     made.cluster = true
     await exec('kind', [
       'create',
@@ -132,7 +162,9 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       '--name',
       name,
       '--image',
-      KIND_NODE_IMAGE,
+      KIND_NODE_IMAGES[options.kubernetes],
+      '--config',
+      kindConfig,
       '--kubeconfig',
       kubeconfig,
       '--wait',
@@ -142,7 +174,7 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
     await kubectl([
       'label',
       'node',
-      `${name}-control-plane`,
+      node,
       'node.kubernetes.io/exclude-from-external-load-balancers-',
     ])
     // Envoy Gateway serves the Gateway; cloud-provider-kind only gives its
@@ -161,15 +193,53 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       '--gateway-channel',
       'disabled',
     ])
-    console.log('Reel install: loading the images')
-    await exec('kind', [
-      'load',
-      'docker-image',
-      '--name',
-      name,
-      options.coralImage,
-      options.webImage,
-    ])
+    let mirror: string | undefined
+    if ('load' in options.images) {
+      console.log('Reel install: loading the images')
+      await exec('kind', [
+        'load',
+        'docker-image',
+        '--name',
+        name,
+        options.images.load.coral,
+        options.images.load.web,
+      ])
+    } else {
+      console.log("Reel install: mirroring images.txt with the docs' loop")
+      made.registry = true
+      await exec('docker', [
+        'run',
+        '--detach',
+        '--name',
+        registry,
+        '--network',
+        'kind',
+        '--publish',
+        '127.0.0.1::5000',
+        REGISTRY_IMAGE,
+      ])
+      mirror = `${registry}:5000`
+      // containerd on the node pulls from the registry over plain HTTP.
+      await exec('docker', [
+        'exec',
+        node,
+        'sh',
+        '-c',
+        `mkdir -p /etc/containerd/certs.d/${mirror} && printf '%s\\n' '[host."http://${mirror}"]' '  capabilities = ["pull", "resolve"]' > /etc/containerd/certs.d/${mirror}/hosts.toml`,
+      ])
+      // The host pushes through the published port. crane falls back to plain
+      // HTTP for a registry on 127.0.0.1.
+      const published = (await exec('docker', ['port', registry, '5000/tcp'])).trim().split('\n')[0]
+      const copies = join(work, 'mirror')
+      await mkdir(copies)
+      await writeFile(join(copies, 'images.txt'), await readFile(options.images.mirror))
+      await run('bash', ['-euo', 'pipefail', '-c', await docsMirrorLoop(published)], {
+        cwd: copies,
+        env,
+        maxBuffer: 1 << 26,
+        signal: options.signal,
+      })
+    }
     console.log('Reel install: installing Envoy Gateway')
     await exec('helm', [
       'install',
@@ -241,15 +311,31 @@ export async function startInstall(options: InstallOptions): Promise<Install> {
       '--timeout',
       '180s',
     ])
+    if (mirror) {
+      // Everything that is not the Install's comes before this. From here the
+      // cluster reaches only kind's network: the registry, the Gateway and
+      // the Reel container.
+      console.log('Reel install: blocking egress')
+      await blockEgress(exec, node, kubectl)
+    }
     console.log('Reel install: installing the chart')
     const values = join(work, 'values.json')
-    await writeFile(values, JSON.stringify(chartValues(secrets, options)))
+    await writeFile(
+      values,
+      JSON.stringify(
+        chartValues(
+          secrets,
+          'load' in options.images ? options.images.load : { registry: mirror! },
+        ),
+      ),
+    )
     await exec('helm', [
       'install',
       'coral',
-      join(repoRoot, 'charts/coral'),
+      options.chart,
       '--namespace',
       NAMESPACE,
+      ...(mirror ? ['--values', AIR_GAPPED_VALUES] : []),
       '--values',
       values,
       '--wait',
@@ -357,6 +443,119 @@ async function certificates(directory: string) {
     clientSecret: randomBytes(32).toString('hex'),
   }
   return secrets
+}
+
+function kindClusterConfig() {
+  return `
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: ${POD_SUBNET}
+  serviceSubnet: ${SERVICE_SUBNET}
+# Lets the air-gap rehearsal name its registry's address on the node.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+`
+}
+
+/**
+ * The mirroring loop from the Kubernetes docs, with the registry filled in. The
+ * rehearsal runs the commands a customer copies, so the two cannot drift.
+ */
+async function docsMirrorLoop(registry: string) {
+  const docs = await readFile(KUBERNETES_DOCS, 'utf8')
+  const blocks = [...docs.matchAll(/^ *```shell\n([\s\S]*?)^ *```$/gm)]
+    .map((match) => match[1])
+    .filter((block) => block.includes('crane copy'))
+  if (blocks.length !== 1)
+    throw new Error(
+      `Expected one shell block with crane copy in ${KUBERNETES_DOCS}, found ${blocks.length}`,
+    )
+  const placeholder = /^ *registry=<registry>$/m
+  if (!placeholder.test(blocks[0]))
+    throw new Error(`The docs' crane loop no longer sets registry=<registry>`)
+  return blocks[0].replace(placeholder, `registry=${registry}`)
+}
+
+/** iptables or ip6tables commands that reject what goes anywhere but `allowed`. */
+function egressRules(tool: string, allowed: string[]) {
+  return [
+    `${tool} -N REEL-EGRESS`,
+    ...allowed.map((subnet) => `${tool} -A REEL-EGRESS -d ${subnet} -j RETURN`),
+    `${tool} -A REEL-EGRESS -j REJECT`,
+    `${tool} -I OUTPUT 1 -j REEL-EGRESS`,
+    `${tool} -I FORWARD 1 -j REEL-EGRESS`,
+  ].join(' && ')
+}
+
+/**
+ * Lets the node and its pods reach only kind's network, the cluster's own
+ * subnets and loopback, then checks that neither reaches the internet.
+ */
+async function blockEgress(
+  exec: (program: string, args: string[]) => Promise<string>,
+  node: string,
+  kubectl: (args: string[]) => Promise<string>,
+) {
+  const subnets = (
+    await exec('docker', [
+      'network',
+      'inspect',
+      'kind',
+      '--format',
+      '{{range .IPAM.Config}}{{.Subnet}} {{end}}',
+    ])
+  )
+    .split(/\s+/)
+    .filter(Boolean)
+  const v4 = ['127.0.0.0/8', POD_SUBNET, SERVICE_SUBNET, ...subnets.filter((s) => !s.includes(':'))]
+  const v6 = ['::1/128', 'fe80::/10', ...subnets.filter((s) => s.includes(':'))]
+  await exec('docker', [
+    'exec',
+    node,
+    'sh',
+    '-c',
+    `${egressRules('iptables', v4)} && ${egressRules('ip6tables', v6)}`,
+  ])
+  // The node pulls images; the pods run Coral. Neither may reach the
+  // internet. The pod dials an address, so that a lookup failure cannot pass
+  // for a block.
+  const reached = await Promise.all([
+    exec('docker', [
+      'exec',
+      node,
+      'curl',
+      '--silent',
+      '--max-time',
+      '10',
+      '--output',
+      '/dev/null',
+      'https://ghcr.io/v2/',
+    ]).then(
+      () => 'the node',
+      () => undefined,
+    ),
+    kubectl([
+      'exec',
+      'deployment/postgres',
+      '--namespace',
+      NAMESPACE,
+      '--',
+      'timeout',
+      '10',
+      'bash',
+      '-c',
+      'echo > /dev/tcp/1.1.1.1/443',
+    ]).then(
+      () => 'a pod',
+      () => undefined,
+    ),
+  ])
+  const leaks = reached.filter(Boolean)
+  if (leaks.length)
+    throw new Error(`Blocking egress failed: ${leaks.join(' and ')} still reached the internet`)
 }
 
 function gatewayManifest() {
@@ -550,13 +749,31 @@ function memory(size: string) {
   return { requests: { cpu: '100m', memory: size }, limits: { memory: size } }
 }
 
-function chartValues(secrets: InstallSecrets, options: InstallOptions) {
+/**
+ * Small, and with the images given: loaded into the cluster, or from the
+ * mirror's registry, on top of `values-airgapped.yaml`.
+ */
+function chartValues(
+  secrets: InstallSecrets,
+  images: { coral: string; web: string } | { registry: string },
+) {
   const web = `https://${INSTALL_HOSTS.web}`
   const idp = `https://${INSTALL_HOSTS.idp}`
+  const loaded = 'coral' in images
   return {
     host: INSTALL_HOSTS.web,
-    coral: { image: localImage(options.coralImage), replicas: 1, resources: memory('1Gi') },
-    web: { image: localImage(options.webImage), replicas: 1, resources: memory('512Mi') },
+    // The registry needs no credentials.
+    ...(loaded ? {} : { global: { imageRegistry: images.registry }, imagePullSecrets: [] }),
+    coral: {
+      ...(loaded ? { image: localImage(images.coral) } : {}),
+      replicas: 1,
+      resources: memory('1Gi'),
+    },
+    web: {
+      ...(loaded ? { image: localImage(images.web) } : {}),
+      replicas: 1,
+      resources: memory('512Mi'),
+    },
     runExecutors: { replicas: 1, resources: memory('1Gi') },
     httpRoute: { enabled: true, parentRefs: [{ name: 'eg' }] },
     // One CA signs the Gateway's, the identity provider's and Postgres's
@@ -625,11 +842,13 @@ async function collectEvidence(kubectl: (args: string[]) => Promise<string>, dir
 
 /** Fails before anything starts, naming what to install or build. */
 async function checkPrerequisites(options: InstallOptions) {
+  const loaded = 'load' in options.images ? options.images.load : undefined
   for (const [tool, args] of [
     ['kind', ['version']],
     ['kubectl', ['version', '--client']],
     ['helm', ['version']],
     ['openssl', ['version']],
+    ...(loaded ? [] : ([['crane', ['version']]] as const)),
   ] as const) {
     try {
       await run(tool, [...args])
@@ -639,7 +858,8 @@ async function checkPrerequisites(options: InstallOptions) {
       )
     }
   }
-  for (const image of [options.coralImage, options.webImage]) {
+  if (!loaded) return
+  for (const image of [loaded.coral, loaded.web]) {
     try {
       await run('docker', ['image', 'inspect', image])
     } catch {

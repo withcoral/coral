@@ -370,60 +370,12 @@ jobs:
       images-artifact: helm-install-images
 
   # Lints, renders and validates the Helm chart, and runs its helm-unittest
-  # suites. The cache keeps kubeconform and helm-unittest, which come from
-  # GitHub release downloads, and the schemas kubeconform reads; pull requests
-  # never save it.
+  # suites. The release runs the same checks before it promotes.
   chart:
-    name: Chart / Checks
+    name: Chart
     needs: changes
     if: ${{ needs.changes.outputs.code != 'false' }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 10
-    env:
-      KUBECONFORM_VERSION: v0.8.0
-      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
-      HELM_UNITTEST_VERSION: 1.2.1
-      HELM_UNITTEST_SHA256: 48e86ecc1467b009630e5954375e5d8494139f73b466df5fe8c04fa45b634939
-      TOOLS: ${{ github.workspace }}/../chart-tools
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
-        with:
-          version: v4.3.2
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.TOOLS }}
-          key: chart-tools-${{ env.KUBECONFORM_VERSION }}-${{ env.HELM_UNITTEST_VERSION }}-schemas
-      - name: Download kubeconform and helm-unittest
-        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        run: |
-          mkdir -p "$TOOLS"
-          cd "$TOOLS"
-          curl -fsSLo kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/$KUBECONFORM_VERSION/kubeconform-linux-amd64.tar.gz"
-          echo "$KUBECONFORM_SHA256  kubeconform.tgz" | sha256sum -c -
-          tar -xzf kubeconform.tgz kubeconform
-          curl -fsSLo unittest.tgz "https://github.com/helm-unittest/helm-unittest/releases/download/v$HELM_UNITTEST_VERSION/helm-unittest-linux-amd64-$HELM_UNITTEST_VERSION.tgz"
-          echo "$HELM_UNITTEST_SHA256  unittest.tgz" | sha256sum -c -
-          # The archive names the binary for its platform.
-          tar -xzf unittest.tgz untt-linux-amd64
-          mv untt-linux-amd64 untt
-          rm kubeconform.tgz unittest.tgz
-      - run: echo "$TOOLS" >> "$GITHUB_PATH"
-      # The helm-unittest binary runs the suites without a plugin install.
-      - run: make chart-checks
-        env:
-          HELM_UNITTEST: untt
-          # Kept with the tools, so a cache hit downloads no schema.
-          KUBECONFORM_CACHE: ${{ env.TOOLS }}/schemas
-      # Saved after the checks, so that it keeps the schemas they downloaded.
-      - if: ${{ steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.TOOLS }}
-          key: chart-tools-${{ env.KUBECONFORM_VERSION }}-${{ env.HELM_UNITTEST_VERSION }}-schemas
+    uses: ./.github/workflows/chart.yml
 
   # The one check to require. It passes when every gate passed or its paths
   # did not change. A skipped job passes a required check by itself, so

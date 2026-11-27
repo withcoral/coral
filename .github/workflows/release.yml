@@ -8,8 +8,11 @@ name: Release
 # staged build to xtask, which owns packaging, signing, notarization and
 # verification. Every Desktop asset goes to a draft release in the feed
 # repository, which updaters ignore. The images are pushed by digest only,
-# which no tag reaches. The promote job publishes the release whole: it tags
-# the images, pushes and signs the chart, attaches images.txt to this
+# which no tag reaches. Before anything is published, the chart gates prove
+# the release's chart: its checks, an install on kind on the oldest and the
+# newest Kubernetes it supports, and an air-gap rehearsal from images.txt.
+# They have no skip input. The promote job publishes the release whole: it
+# tags the images, pushes and signs the chart, attaches images.txt to this
 # repository's release, then publishes the draft.
 #
 # The feed never lives in withcoral/coral, whose releases the 0.x app
@@ -17,8 +20,8 @@ name: Release
 #
 # Merging the release-please PR is the approval. release-please then publishes
 # a release here, which starts this workflow; everything after it runs by
-# itself. To retry a failed run, dispatch it on the release tag (vX.Y.Z or
-# vX.Y.Z-beta.N) in the ref picker.
+# itself. To retry a failed run, a flaky chart gate included, dispatch it on
+# the release tag (vX.Y.Z or vX.Y.Z-beta.N) in the ref picker.
 #
 # The public docs site builds from the long-lived `docs` branch, which the
 # docs job points at the newest shipped release once promote has published
@@ -345,14 +348,15 @@ jobs:
           ./target/debug/xtask release-desktop-publish "${args[@]}"
 
   # Anyone sees the release only from here. It runs once the draft holds every
-  # platform's assets and the images are tested and signed, so neither an
-  # updater nor a docker pull sees a partial release. The images are tagged,
-  # and the chart pushed and signed, before the draft is published: a rerun
+  # platform's assets, the images are tested and signed, and the chart gates
+  # pass, so neither an updater nor a docker pull sees a partial release. The
+  # images are tagged, and the chart pushed and signed, before the draft is
+  # published: a rerun
   # repairs a draft, but release-desktop-publish refuses a release that is
   # already published, so the step a rerun cannot redo runs last.
   promote:
     name: Publish the release to updaters and registries
-    needs: [validate, draft, images, chart]
+    needs: [validate, draft, images, chart, chart-checks, chart-install, chart-air-gap]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     timeout-minutes: 30
@@ -689,6 +693,46 @@ jobs:
           name: chart
           path: chart/
           if-no-files-found: error
+
+  # The chart gates: what every chart PR checks, on the release's commit. They
+  # read the release's own chart artifact and images, so they prove what
+  # promote publishes. The Reel workflow keeps no secret, and these jobs pass
+  # it none.
+  chart-checks:
+    name: Gate the chart on its checks
+    needs: validate
+    uses: ./.github/workflows/chart.yml
+    with:
+      ref: ${{ needs.validate.outputs.commit-sha }}
+
+  # The packaged chart on kind, with the signed images images.txt pins.
+  chart-install:
+    name: Gate the chart on kind
+    needs: [validate, chart]
+    strategy:
+      fail-fast: false
+      matrix:
+        kubernetes: [oldest, newest]
+    uses: ./.github/workflows/reel.yml
+    with:
+      suite: helm-install
+      ref: ${{ needs.validate.outputs.commit-sha }}
+      release-artifact: chart
+      kubernetes: ${{ matrix.kubernetes }}
+
+  # The docs' air-gapped install: images.txt copied into a registry beside
+  # the cluster with the docs' crane loop, egress blocked, then the chart
+  # installed with values-airgapped.yaml. The images are public by digest
+  # before promote tags them, so the loop copies them as a customer would.
+  chart-air-gap:
+    name: Gate the chart on an air-gap rehearsal
+    needs: [validate, chart]
+    uses: ./.github/workflows/reel.yml
+    with:
+      suite: helm-install
+      ref: ${{ needs.validate.outputs.commit-sha }}
+      release-artifact: chart
+      air-gapped: true
 
   # The images keep the product's names, ghcr.io/withcoral/coral and
   # ghcr.io/withcoral/coral-web. This job is the images' counterpart of the
