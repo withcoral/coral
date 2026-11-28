@@ -34,7 +34,7 @@ web="ghcr.io/withcoral/coral-web:1.2.3@$web_digest"
 
 failures=0
 
-# release NAME CHART... -- LINE...: a fresh release artifact holding the CHART
+# release CHART... -- LINE...: a fresh release artifact holding the CHART
 # files and an images.txt of LINEs.
 release() {
   rm -rf "$work/release" && mkdir "$work/release"
@@ -107,6 +107,8 @@ release coral-1.2.3.tgz -- "$envoy" "$coral"
 refuse 'an image missing from images.txt' 'coral-web' "$work/release"
 release coral-1.2.3.tgz -- "$envoy" "ghcr.io/withcoral/coral-web:1.2.3" "$coral"
 refuse 'an image not pinned by digest' 'coral-web' "$work/release"
+release coral-1.2.3.tgz -- "$envoy" "$web" "$coral" "$web"
+refuse 'an image pinned twice' 'coral-web' "$work/release"
 release coral-1.2.3.tgz -- "$envoy" "$web" "$coral"
 rm "$work/release/images.txt"
 refuse 'no images.txt' 'images.txt' "$work/release" --air-gapped
