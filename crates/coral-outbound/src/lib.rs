@@ -672,6 +672,45 @@ fn public_metadata_ipv4_is_blocked(address: Ipv4Addr) -> bool {
         || a >= 224
 }
 
+// Provider metadata endpoints inside ULA space are exceptions to the normal
+// private-network classification. This list is hand-maintained from provider
+// documentation (and cloud-init for OCI), not derived from the IANA registries.
+//
+// Keep the prefix narrow: AWS documents its EC2-local services under
+// fd00:ec2::, while the other providers currently document individual hosts.
+const UNIQUE_LOCAL_CLOUD_METADATA_PREFIXES: &[(&str, Ipv6Addr, u8)] = &[
+    (
+        "AWS EC2 instance-local services",
+        Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0),
+        32,
+    ),
+    (
+        "Google Cloud metadata",
+        Ipv6Addr::new(0xfd20, 0x00ce, 0, 0, 0, 0, 0, 0x0254),
+        128,
+    ),
+    (
+        "Scaleway metadata",
+        Ipv6Addr::new(0xfd00, 0x0042, 0, 0, 0, 0, 0, 0x0042),
+        128,
+    ),
+    (
+        "Oracle Cloud Infrastructure metadata (cloud-init)",
+        Ipv6Addr::new(0xfd00, 0x00c1, 0, 0, 0, 0, 0xa9fe, 0xa9fe),
+        128,
+    ),
+];
+
+fn cloud_metadata_ipv6_is_blocked(address: Ipv6Addr) -> bool {
+    let address = u128::from(address);
+    UNIQUE_LOCAL_CLOUD_METADATA_PREFIXES
+        .iter()
+        .any(|(_, prefix, prefix_len)| {
+            let shift = 128_u32 - u32::from(*prefix_len);
+            (address >> shift) == (u128::from(*prefix) >> shift)
+        })
+}
+
 /// Reports whether `address` sits outside the public IPv6 internet.
 ///
 /// As with the IPv4 table, each branch is a registry entry that is not globally

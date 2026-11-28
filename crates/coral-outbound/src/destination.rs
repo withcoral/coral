@@ -151,12 +151,26 @@ mod tests {
             for host in ["localhost", "127.0.0.1", "[::1]", "[::ffff:127.0.0.1]"] {
                 destinations.push((format!("{scheme}://{host}/"), Loopback));
             }
-            for host in ["10.0.0.1", "172.16.0.1", "192.168.1.1", "[fd00::1]"] {
+            for host in [
+                "10.0.0.1",
+                "172.16.0.1",
+                "192.168.1.1",
+                "[fd00::1]",
+                "[fd00:ec3::1]",
+            ] {
                 destinations.push((format!("{scheme}://{host}/"), Private));
             }
             for host in [
                 "a.localhost",
                 "169.254.169.254",
+                "[fd00:ec2::1]",
+                "[fd00:ec2::254]",
+                "[fd00:ec2::253]",
+                "[fd00:ec2::123]",
+                "[fd00:ec2::23]",
+                "[fd20:ce::254]",
+                "[fd00:42::42]",
+                "[fd00:c1::a9fe:a9fe]",
                 "100.64.0.1",
                 "[fe80::1]",
                 "[::ffff:10.0.0.1]",
@@ -206,6 +220,15 @@ mod tests {
             ("::ffff:127.0.0.1", Loopback),
             ("169.254.169.254", LinkLocal),
             ("fe80::1", LinkLocal),
+            ("fd00:ec3::1", Private),
+            ("fd00:ec2::1", Special),
+            ("fd00:ec2::254", Special),
+            ("fd00:ec2::253", Special),
+            ("fd00:ec2::123", Special),
+            ("fd00:ec2::23", Special),
+            ("fd20:ce::254", Special),
+            ("fd00:42::42", Special),
+            ("fd00:c1::a9fe:a9fe", Special),
             ("100.64.0.1", Special),
             ("::ffff:100.64.0.1", Special),
             ("0.0.0.0", Special),
@@ -220,6 +243,39 @@ mod tests {
         for mapped in ["::ffff:8.8.8.8", "::ffff:10.0.0.1"] {
             let ip: std::net::IpAddr = mapped.parse().expect("address");
             assert_eq!(classify_address(ip), Special, "{mapped}");
+        }
+    }
+
+    #[test]
+    fn cloud_metadata_dns_answers_are_never_permitted_under_any_policy() {
+        use NetworkAccess::{Deny, HttpAndHttps, Https};
+
+        let answers = [
+            "fd00:ec2::1",
+            "fd00:ec2::254",
+            "fd00:ec2::253",
+            "fd00:ec2::123",
+            "fd00:ec2::23",
+            "fd20:ce::254",
+            "fd00:42::42",
+            "fd00:c1::a9fe:a9fe",
+        ];
+
+        for loopback in [Deny, Https, HttpAndHttps] {
+            for private in [Deny, Https, HttpAndHttps] {
+                let policy = DestinationPolicy::new(loopback, private);
+                for answer in &answers {
+                    let ip: std::net::IpAddr = answer.parse().expect("address");
+                    let class = classify_resolved_address(ip);
+                    assert_eq!(class, AddressClass::Special, "{answer}");
+                    for https in [false, true] {
+                        assert!(
+                            !policy.permits_remote_address(class, https),
+                            "{answer} under {policy:?}, https={https}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -267,6 +323,7 @@ pub fn classify_address(ip: std::net::IpAddr) -> AddressClass {
     match ip {
         IpAddr::V4(ip) if ip.is_link_local() => AddressClass::LinkLocal,
         IpAddr::V6(ip) if ip.is_unicast_link_local() => AddressClass::LinkLocal,
+        IpAddr::V6(ip) if crate::cloud_metadata_ipv6_is_blocked(ip) => AddressClass::Special,
         IpAddr::V4(ip) if ip.is_private() => AddressClass::Private,
         IpAddr::V6(ip) if ip.is_unique_local() => AddressClass::Private,
         ip if crate::public_metadata_ip_is_blocked(ip) => AddressClass::Special,
