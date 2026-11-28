@@ -24,10 +24,32 @@ on:
       images-artifact:
         type: string
         default: ""
+      # The helm-install suite's chart and images from a release: release.yml's
+      # chart artifact, which holds the packaged chart and images.txt. The
+      # runner pulls Coral's images by the digests images.txt pins, and kind
+      # loads them.
+      release-artifact:
+        type: string
+        default: ""
+      # With release-artifact: rehearse an air-gapped install. The docs' loop
+      # copies images.txt into a registry beside the cluster, the cluster loses
+      # egress, and the chart installs with values-airgapped.yaml.
+      air-gapped:
+        type: boolean
+        default: false
+      # The helm-install suite's Kubernetes: the oldest or the newest minor the
+      # chart supports.
+      kubernetes:
+        type: string
+        default: newest
+      # The commit to test; the caller's own by default.
+      ref:
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       suite:
-        description: Product journeys, focused local-mode checks, the packaged Desktop app, or two Coral Instances. The helm-install suite runs from ci.yml, which builds its images.
+        description: Product journeys, focused local-mode checks, the packaged Desktop app, or two Coral Instances. The helm-install suite runs from ci.yml and release.yml, which supply its images.
         type: choice
         options: [main, local-mode, desktop, multi-instance]
         default: main
@@ -46,65 +68,105 @@ permissions:
 
 jobs:
   reel:
-    name: ${{ inputs.suite }}${{ inputs.suite == 'main' && format(' ({0})', inputs.database) || '' }}${{ inputs.shard && format(' {0}', inputs.shard) || '' }}
+    name: ${{ inputs.suite }}${{ inputs.suite == 'main' && format(' ({0})', inputs.database) || '' }}${{ inputs.suite == 'helm-install' && format(' ({0} Kubernetes{1})', inputs.kubernetes, inputs.air-gapped && ', air-gapped' || '') || '' }}${{ inputs.shard && format(' {0}', inputs.shard) || '' }}
     # The container build compiles the runtime.
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 60
     env:
       KIND_VERSION: v0.33.0
       KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-      KUBECTL_VERSION: v1.37.0
-      KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+      # kubectl works one minor either side of the cluster, so each Kubernetes
+      # gets its own. Bump with KIND_NODE_IMAGES in apps/reef/e2e/install/cluster.ts.
+      KUBECTL_VERSION: ${{ inputs.kubernetes == 'oldest' && 'v1.35.8' || 'v1.37.0' }}
+      KUBECTL_SHA256: ${{ inputs.kubernetes == 'oldest' && '874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf' || '6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f' }}
+      # crane copies images.txt in the air-gap rehearsal, as the docs do.
+      CRANE_VERSION: v0.22.1
+      CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
       TOOLS: ${{ github.workspace }}/../install-tools
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: ./.github/actions/npm-install
         with:
           packages: apps/reef
-      # The helm-install suite runs kind, kubectl and Helm on the runner. kind comes
-      # from a GitHub release download, so the cache keeps it; pull requests
-      # never save it.
+      # The helm-install suite runs kind, kubectl, Helm and crane on the runner.
+      # kind and crane come from GitHub release downloads, so the cache keeps
+      # them; pull requests never save it. Every run checks each download's
+      # digest, cached or not, since a release decides promote on this suite.
       - name: Check the helm-install suite has its images
-        if: ${{ inputs.suite == 'helm-install' && inputs.images-artifact == '' }}
+        if: ${{ inputs.suite == 'helm-install' }}
+        env:
+          IMAGES: ${{ inputs.images-artifact }}
+          RELEASE: ${{ inputs.release-artifact }}
+          AIR_GAPPED: ${{ inputs.air-gapped }}
         run: |
-          echo 'The helm-install suite needs images-artifact: run it from ci.yml, whose images job saves the images.'
-          exit 1
+          if [ -z "$IMAGES$RELEASE" ] || { [ -n "$IMAGES" ] && [ -n "$RELEASE" ]; }; then
+            echo 'The helm-install suite needs images-artifact (ci.yml) or release-artifact (release.yml), not both.'
+            exit 1
+          fi
+          if [ "$AIR_GAPPED" = true ] && [ -z "$RELEASE" ]; then
+            echo 'The air-gap rehearsal mirrors a release: give release-artifact.'
+            exit 1
+          fi
       - if: ${{ inputs.suite == 'helm-install' }}
         id: install-tools
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.TOOLS }}
-          key: install-tools-${{ env.KIND_VERSION }}-${{ env.KUBECTL_VERSION }}
-      - name: Download kind and kubectl
+          key: install-tools-${{ env.KIND_VERSION }}-${{ env.KUBECTL_VERSION }}-${{ env.CRANE_VERSION }}
+      - name: Download kind, kubectl and crane
         if: ${{ inputs.suite == 'helm-install' && steps.install-tools.outputs.cache-hit != 'true' }}
         run: |
           mkdir -p "$TOOLS"
           cd "$TOOLS"
           curl -fsSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-linux-amd64"
-          echo "$KIND_SHA256  kind" | sha256sum -c -
           curl -fsSLo kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
-          echo "$KUBECTL_SHA256  kubectl" | sha256sum -c -
-          chmod +x kind kubectl
+          curl -fsSLo crane.tgz "https://github.com/google/go-containerregistry/releases/download/$CRANE_VERSION/go-containerregistry_Linux_x86_64.tar.gz"
+      - name: Check and unpack kind, kubectl and crane
+        if: ${{ inputs.suite == 'helm-install' }}
+        run: |
+          cd "$TOOLS"
+          printf '%s  %s\n' "$KIND_SHA256" kind "$KUBECTL_SHA256" kubectl "$CRANE_SHA256" crane.tgz | sha256sum -c -
+          tar -xzf crane.tgz crane
+          chmod +x kind kubectl crane
       - if: ${{ inputs.suite == 'helm-install' && steps.install-tools.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.TOOLS }}
-          key: install-tools-${{ env.KIND_VERSION }}-${{ env.KUBECTL_VERSION }}
+          key: install-tools-${{ env.KIND_VERSION }}-${{ env.KUBECTL_VERSION }}-${{ env.CRANE_VERSION }}
       - if: ${{ inputs.suite == 'helm-install' }}
         run: echo "$TOOLS" >> "$GITHUB_PATH"
       - if: ${{ inputs.suite == 'helm-install' }}
         uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v4.3.2
-      - if: ${{ inputs.suite == 'helm-install' }}
+      - if: ${{ inputs.images-artifact != '' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ inputs.images-artifact }}
       - name: Load the helm-install suite's images
-        if: ${{ inputs.suite == 'helm-install' }}
+        if: ${{ inputs.images-artifact != '' }}
         run: zstd -dc helm-install-images.tar.zst | docker load
+      - if: ${{ inputs.release-artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.release-artifact }}
+          path: ${{ runner.temp }}/release-chart
+      # The packaged chart, and its images: pulled by the digests images.txt
+      # pins, or, air-gapped, mirrored from images.txt by the suite itself.
+      # make chart-checks tests the script on every change.
+      - name: Take the chart and images from the release
+        if: ${{ inputs.release-artifact != '' }}
+        env:
+          RELEASE: ${{ runner.temp }}/release-chart
+          AIR_GAPPED: ${{ inputs.air-gapped }}
+        run: |
+          set -euo pipefail
+          args=("$RELEASE")
+          if [ "$AIR_GAPPED" = true ]; then args+=(--air-gapped); fi
+          scripts/release-install-inputs.sh "${args[@]}" >> "$GITHUB_ENV"
       # Keeps the Reel image's layers and cache mounts between runs.
       - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
         with:
@@ -118,6 +180,7 @@ jobs:
           REEL_SUITE: ${{ inputs.suite }}
           REEL_DATABASE: ${{ inputs.database }}
           REEL_SHARD: ${{ inputs.shard }}
+          REEL_INSTALL_KUBERNETES: ${{ inputs.kubernetes }}
         run: |
           args=(--suite "$REEL_SUITE")
           if [ -n "$REEL_SHARD" ]; then args+=("--shard=${REEL_SHARD/of//}"); fi
@@ -141,7 +204,7 @@ jobs:
         if: ${{ always() && (failure() || cancelled() || github.event.repository.private) }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: reel-${{ inputs.suite }}-${{ (inputs.suite == 'multi-instance' || inputs.suite == 'helm-install') && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reel-${{ inputs.suite }}-${{ (inputs.suite == 'multi-instance' || inputs.suite == 'helm-install') && 'postgres' || inputs.database }}${{ inputs.suite == 'helm-install' && format('-{0}{1}', inputs.kubernetes, inputs.air-gapped && '-air-gapped' || '') || '' }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/
           if-no-files-found: warn
           retention-days: 7

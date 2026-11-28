@@ -283,7 +283,9 @@ rather than relabeling host artifact directories; no host CA or interface change
 
 Supported host options are `REEL_CONTAINER_ENGINE` (`docker` or `podman`),
 `REEL_SELF_CHECK=1`, and `E2E_FILM=1`, and for the helm-install suite
-`REEL_INSTALL_CORAL_IMAGE`, `REEL_INSTALL_WEB_IMAGE` and `REEL_KEEP_INSTALL=1`. Other developer credentials, database URLs,
+`REEL_INSTALL_CORAL_IMAGE`, `REEL_INSTALL_WEB_IMAGE`, `REEL_INSTALL_KUBERNETES`,
+`REEL_INSTALL_CHART`, `REEL_INSTALL_IMAGES_TXT` and `REEL_KEEP_INSTALL=1` (see
+[The Helm chart on kind](#the-helm-chart-on-kind)). Other developer credentials, database URLs,
 fixture settings and TLS-disable variables do not cross into the container.
 Viewer settings remain `E2E_RESULTS_PORT` and `E2E_RESULTS_ORIGIN` as described above.
 
@@ -396,7 +398,8 @@ It runs in the container only, with Docker. Before the container starts,
   `auth.coral.reel.test` and `mcp.coral.reel.test`, the identity provider's for
   `idp.reel.test`, and Postgres's. The chart gets the CA through
   `tls.extraCABundle` and `database.tls.caBundle`, so the run proves both.
-- A kind cluster on the newest Kubernetes the chart supports, with
+- A kind cluster on the newest Kubernetes the chart supports, or the oldest
+  with `REEL_INSTALL_KUBERNETES=oldest`, with
   cloud-provider-kind, which gives the Gateway an address on kind's Docker
   network, and Envoy Gateway, which serves it. CoreDNS maps the three hosts to
   that address.
@@ -404,7 +407,21 @@ It runs in the container only, with Docker. Before the container starts,
   `sslmode=verify-full`.
 - The chart, with the images it is given: `coral:local` and `coral-web:local`
   by default, or `REEL_INSTALL_CORAL_IMAGE` and `REEL_INSTALL_WEB_IMAGE`. Build
-  them with `make docker-build reef-docker-build`.
+  them with `make docker-build reef-docker-build`. `REEL_INSTALL_CHART` names
+  another chart to install, such as a release's packaged `.tgz`.
+
+`REEL_INSTALL_IMAGES_TXT` names a release's `images.txt` and turns the run into
+an air-gap rehearsal, as the Kubernetes docs describe it. A registry starts on
+kind's network, and the host runs the docs' own `crane copy` loop, read from
+`apps/docs/getting-started/self-host/kubernetes.mdx`, to fill it. Reel loads
+no image into the cluster. Once Envoy Gateway and Postgres run, the node's iptables let
+it and its pods reach only kind's network, the cluster's subnets and loopback;
+setup checks that the node can't reach `ghcr.io` and a pod can't reach
+`1.1.1.1:443`. The pod dials an address, so a failed lookup can't pass for a
+block. Then the chart
+installs with `values-airgapped.yaml`, from that registry. The rehearsal needs
+`crane` on PATH. A killed run can leave a container named
+`reel-<8 hex>-registry`.
 
 The container then joins kind's network as `idp.reel.test` and `sidecar`, and
 trusts the CA. The identity provider and the provider fixtures run in it; pods
@@ -803,3 +820,9 @@ CI runs the helm-install suite, as `reel-helm-install`, on every change to the c
 migrations, to `.proto` files, to workflows, or to Reel outside the other
 suites' scenarios. It installs
 the images that the `images` job built in the same run.
+
+Every release runs it before `promote`, with no skip input, from the release's
+packaged chart and `images.txt`: on the oldest and the newest Kubernetes, with
+the signed images pulled by digest, and once as the air-gap rehearsal.
+`release-artifact`, `kubernetes` and `air-gapped` are `reel.yml`'s inputs for
+this. Rerun a flaky gate by dispatching the release workflow on the tag.

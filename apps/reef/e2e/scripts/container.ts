@@ -2,7 +2,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve as absolute } from 'node:path'
 import { startInstall, type Install } from '../install/cluster.ts'
 import {
   bootstrapConfig,
@@ -105,10 +105,23 @@ try {
   // The helm-install suite's container joins kind's network instead of its own.
   if (options.suite === 'helm-install') {
     if (engine !== 'docker') throw new Error('The helm-install suite runs kind, which needs Docker')
+    const kubernetes = process.env.REEL_INSTALL_KUBERNETES || 'newest'
+    if (kubernetes !== 'oldest' && kubernetes !== 'newest')
+      throw new Error('REEL_INSTALL_KUBERNETES must be oldest or newest')
+    const imagesTxt = process.env.REEL_INSTALL_IMAGES_TXT
     install = await startInstall({
-      // Built from this checkout: make docker-build reef-docker-build.
-      coralImage: process.env.REEL_INSTALL_CORAL_IMAGE || 'coral:local',
-      webImage: process.env.REEL_INSTALL_WEB_IMAGE || 'coral-web:local',
+      kubernetes,
+      // A release's packaged chart, or this checkout's.
+      chart: absolute(process.env.REEL_INSTALL_CHART || join(repoRoot, 'charts/coral')),
+      images: imagesTxt
+        ? { mirror: absolute(imagesTxt) }
+        : {
+            load: {
+              // Built from this checkout: make docker-build reef-docker-build.
+              coral: process.env.REEL_INSTALL_CORAL_IMAGE || 'coral:local',
+              web: process.env.REEL_INSTALL_WEB_IMAGE || 'coral-web:local',
+            },
+          },
       keep: process.env.REEL_KEEP_INSTALL === '1',
       evidence: join(artifacts[0], 'install', 'cluster'),
       signal: cancel.signal,
